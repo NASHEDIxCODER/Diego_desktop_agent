@@ -5,8 +5,8 @@ from email.mime.text import MIMEText
 
 
 def send_email(subject, body, to_email):
-    from_email = os.getenv("ps12344@gmail.com")  # Fetch email address from environment variable
-    from_password = os.getenv("Sk@1")  # Fetch email password from environment variable
+    from_email = os.getenv("sssssssssssssssssss@gmail.com")  
+    from_password = os.getenv("Sssssssss")  
 
     # Create the email
     message = MIMEMultipart()
