@@ -12,7 +12,7 @@ Leo is a voice-controlled desktop assistant for Linux with a “Friday-style” 
 ## ✨ Features
 
 - 🎙 **Always-listening wake word**
-  - Listens for phrases like: `angel priya`, `angel`, `priya`, `hey angel`, `hello priya`, etc.
+  - Listens for phrases like: `hello leo`, `lio`, `hey leo`, `leo`.
   - Uses fuzzy matching so small mispronunciations / ASR errors still trigger Leo.
 
 - 🧑‍💻 **Face authentication**
