@@ -135,11 +135,29 @@ $ python main.py
 * TTS voice and output device
 
 ----
-## 🤝 Contributing
+## 🤝 Contributors
 
-PRs are welcome! Open issues, submit fixes, or request new modules.
+<table>
+<tr>
+<td align="center">
+<a href="https://github.com/NASHEDIxCODER">
+<img src="https://avatars.githubusercontent.com/NASHEDIxCODER" width="100px;" /><br />
+<b>You</b>
+</a><br />
+Owner & Lead Developer
+</td>
 
+<td align="center">
+<a href="https://github.com/dem0000n">
+<img src="https://avatars.githubusercontent.com/dem0000n" width="100px;" /><br />
+<b>Friend Name</b>
+</a><br />
+Contributor
+</td>
+</tr>
+</table>
 ---
+
 ## License
 MIT License - see `LICENSE` file.
 ---
