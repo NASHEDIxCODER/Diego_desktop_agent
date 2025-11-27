@@ -5,10 +5,6 @@ Leo is a voice-controlled desktop assistant for Linux with a “Friday-style” 
 > Talk to your machine, let it talk back, send Telegrams, control YouTube, and tweak your desktop — all hands-free.
 
 ---
-### Created by: nashedi_x_coder
-#### updated by: dem0000n
-
----
 ## ✨ Features
 
 - 🎙 **Always-listening wake word**
@@ -80,7 +76,7 @@ Leo is a voice-controlled desktop assistant for Linux with a “Friday-style” 
 
 ## Tech Stack
 
-Language: Python 3.x (asyncio-friendly)
+Language: Python 3.11 (asyncio-friendly)
 
 Speech Recognition: SpeechRecognition
  + Google Web Speech API
@@ -139,5 +135,16 @@ $ python main.py
 * TTS voice and output device
 
 ----
+## 🤝 Contributing
+
+PRs are welcome! Open issues, submit fixes, or request new modules.
+
+---
 ## License
-This project is licensed under the MIT License.
+MIT License - see `LICENSE` file.
+---
+## 🔥 Author
+
+**leo_desktop_assistant** was crafted by **NASHEDI_X_CODER**.\
+**updated by**: **demo0000n**.
+
