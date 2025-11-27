@@ -7,10 +7,10 @@ import google.generativeai as genai
 # ======================================
 # CONFIG
 # ======================================
-genai.configure(api_key="AIzaSyBUgmid8VumPuytt-Wu5OzF37hiZNIwpIo")
+genai.configure(api_key="gemini_api_key")
 
 model = genai.GenerativeModel(
-    model_name="gemini-2.0-flash",
+    model_name="gemini-1.5-flash",
     system_instruction="""
 You ALWAYS return a single JSON object with the following format:
 

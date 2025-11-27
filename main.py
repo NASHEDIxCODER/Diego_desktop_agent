@@ -4,28 +4,46 @@ import time
 import difflib
 import os
 import subprocess
+from os import close
 from pathlib import Path
-
 import speech_recognition as sr
 from TTS.api import TTS
-
 from auth import faceauth
-# from gemini import gemini  # uncomment when ready
+from scripts.conversation_llm import chat
+from scripts.nlp_controller import parse
+from scripts.telegram_bot import send_message, init, read_latest_message, reply_message
+import asyncio
 
+
+# Ensure DISPLAY exists
+if "DISPLAY" not in os.environ or not os.environ["DISPLAY"]:
+    os.environ["DISPLAY"] = ":0"
+
+# Allow local connections so Xlib / pyautogui can work
+try:
+    subprocess.run(["xhost", "+local:"], check=False)
+except Exception:
+    pass
+
+
+
+# from gemini import gemini  # uncomment when ready
 
 # ---------- CONFIG ----------
 
 LANG_CODE = "en-IN"
-WAKE_DEVICE_INDEX = None   # or an int like 0/1/2
+WAKE_DEVICE_INDEX = None  # or an int like 0/1/2
 
 WAKE_VARIANTS = [
-    "leo",
-    "hey leo",
-    "hello leo",
-    "ok leo",
-    "leo assistant",
-    "lio",
-    "rio",
+    "angel priya",
+    "angel",
+    "priya",
+    "hey angel",
+    "hello priya",
+    "hello angel priya",
+    "jon assistant",
+    "hey angel priya",
+    "hey angel",
 ]
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -57,7 +75,7 @@ def speak(text: str):
     try:
         tts.tts_to_file(text=text, file_path=str(VOICE_FILE))
         subprocess.run(
-            ["aplay", "-q", str(VOICE_FILE)],
+            ["paplay", str(VOICE_FILE)],  # "-q"
             check=False,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -84,6 +102,153 @@ def get_microphone():
     if WAKE_DEVICE_INDEX is None:
         return sr.Microphone()
     return sr.Microphone(device_index=WAKE_DEVICE_INDEX)
+
+async def handle_youtube_mode():
+    from scripts.youtube import (
+        youtube, search_song, skip_ad, pause_or_play, play_next_song,
+        play_previous_song, increase_speed, decrease_speed,
+        set_playback_speed, seek_forward, seek_backward,
+        close_youtube, set_volume, toggle_mute
+    )
+
+    speak("Opening YouTube.")
+    youtube()
+    time.sleep(2)
+
+    speak("Which song do you want to listen?")
+    song = takeCommand()
+    if not song:
+        speak("I didn't get the song name.")
+        return
+
+    search_song(song)
+    time.sleep(5)
+    skip_ad()
+
+    speak("YouTube is ready. Say commands like pause, next, volume, or close YouTube.")
+
+    # ------------------------
+    # YOUTUBE MODE LOOP ONLY
+    # ------------------------
+    while True:
+        cmd = takeCommand()
+        if not cmd:
+            continue
+        cmd = cmd.lower().strip()
+
+        if "pause" in cmd or "play" in cmd:
+            pause_or_play()
+            speak("Playback toggled.")
+
+        elif "next" in cmd:
+            play_next_song()
+            speak("Next song.")
+
+        elif "previous" in cmd:
+            play_previous_song()
+            speak("Previous song.")
+
+        elif "skip ad" in cmd or "skip the ad" in cmd or cmd.strip()=="skip":
+            skip_ad()
+            speak("Ad skipped.")
+
+        elif "faster" in cmd or "increase speed" in cmd:
+            increase_speed()
+            speak("Speed increased.")
+
+        elif "slower" in cmd or "decrease speed" in cmd:
+            decrease_speed()
+            speak("Speed decreased.")
+
+        elif "speed" in cmd:
+            nums = [float(s) for s in cmd.split() if s.replace(".", "").isdigit()]
+            if nums:
+                set_playback_speed(nums[0])
+                speak(f"Speed set to {nums[0]}.")
+            else:
+                speak("Tell me a valid speed like 1.25 or 1.5.")
+
+        elif "forward" in cmd:
+            seek_forward(10)
+            speak("Forward 10 seconds.")
+
+        elif "rewind" in cmd or "backward" in cmd:
+            seek_backward(10)
+            speak("Backward 10 seconds.")
+
+        elif "volume" in cmd:
+            nums = [int(s) for s in cmd.split() if s.isdigit()]
+            if nums:
+                n = max(0, min(100, nums[0]))
+                set_volume(n / 100)
+                speak(f"Volume set to {n} percent.")
+            else:
+                speak("Tell me a number multiple of 10.")
+
+        elif "mute" in cmd or "unmute" in cmd:
+            status = toggle_mute()
+            speak(status if status else "Unable to toggle mute.")
+
+        # ------------------------
+        # EXIT YOUTUBE ONLY HERE
+        # ------------------------
+        elif "exit youtube" in cmd or "close youtube" in cmd:
+            speak("Closing YouTube.")
+            close_youtube()
+            break
+
+        else:
+            speak("I didn't understand. Try again.")
+
+async def handle_telegram_mode(query):
+    intent = parse(query)
+    action = intent.get("action", "none")
+
+    if action == "send_telegram":
+        target = intent.get("target")
+        message = intent.get("message")
+
+        if not target:
+            speak("Whom should I send the message to?")
+            target = takeCommand()
+
+        if not message:
+            speak("What should I say?")
+            message = takeCommand()
+
+        ok, err = await send_message(target, message)
+        speak("Message sent." if ok else (err or "Failed to send message."))
+        return
+
+    if action == "read_telegram":
+        target = intent.get("target")
+        if not target:
+            speak("Whose message should I read?")
+            target = takeCommand()
+        msg = await read_latest_message(target)
+        speak(msg or f"No messages from {target}")
+        return
+
+    if action == "reply_telegram":
+        message = intent.get("message")
+        if not message:
+            speak("What should I reply?")
+            message = takeCommand()
+
+        ok, err = await reply_message(message)
+        speak("Reply sent." if ok else (err or "Failed to send reply."))
+        return
+
+async def handle_brightness(query):
+    from scripts.brightness import set_brightness
+    nums = [int(s) for s in query.split() if s.isdigit()]
+    if nums:
+        value = max(0, min(100, nums[0]))
+        set_brightness(value)
+        speak(f"Brightness set to {value} percent.")
+    else:
+        speak("Tell me a number between 1 and 100.")
+
 
 
 # global recognizer + mic
@@ -160,7 +325,6 @@ def listen_for_wake_word():
             time.sleep(1)
             continue
 
-
 def takeCommand():
     """
     Uses the same global recognizer & mic.
@@ -190,20 +354,6 @@ def takeCommand():
         speak("Network error with speech service.")
         return None
 
-
-# ---------- Email ----------
-
-def sendEmail(to, content):
-    try:
-        with smtplib.SMTP("smtp.gmail.com", 587) as server:
-            server.ehlo()
-            server.starttls()
-            server.login("sonu.samrat7668@gmail.com", "Sk@Samrat1")
-            server.sendmail("youremail@gmail.com", to, content)
-    except Exception as e:
-        print(f"[EMAIL] Failed to send email: {e}")
-
-
 def has_words(text: str, *words):
     text = text.lower()
     return all(w in text for w in words)
@@ -211,92 +361,60 @@ def has_words(text: str, *words):
 
 # ---------- Main ----------
 
-if __name__ == "__main__":
+async def main():
     init_audio_calibration()
 
     wake = listen_for_wake_word()
-    if fuzzy_match(wake, WAKE_VARIANTS):
+    if not fuzzy_match(wake, WAKE_VARIANTS):
+        return
+
         # wishMe()
-        userName = faceauth.recognize_faces()
-        if userName:
-            speak(f"Hello {userName}, how may I assist you?")
-            while True:
-                query = takeCommand()
-                if query is None:
-                    continue
-                query = query.lower()
+    userName = faceauth.recognize_faces()
+    if not userName:
+        faceauth.Unknown_Face()
+        return
 
-                if has_words(query, "open", "gemini"):
-                    speak("Opening Gemini. What is your query?")
-                    while True:
-                        question = takeCommand()
-                        if question is None:
-                            continue
-                        print("Gemini question:", question)
-                        # answer = gemini(question)
-                        # speak(f"{answer} What is your next query?")
-                        if "exit" in question.lower():
-                            speak("Closing Gemini.")
-                            break
+    speak(f" {userName} mera naam angel priya nahi devil priya hai!")
+    # speak(f"Hello {userName}, how may I assist you?")
+    await init()  #telegram init
+    while True:
+        query = takeCommand()
+        if not query:
+            continue
+        query = query.lower().strip()
 
-                elif "youtube" in query:
-                    from scripts.youtube import (
-                        youtube,
-                        search_song,
-                        skip_ad,
-                        stop_song,
-                        play_next_song,
-                        play_back_speed_i,
-                        play_back_speed_d,
-                    )
+        #youtube mode
+        if "youtube" in query or "play" in query:
+            await handle_youtube_mode()
+            continue
 
-                    speak("Opening YouTube.")
-                    youtube()
-                    time.sleep(3)
-                    speak("Which song do you want to listen?")
-                    song = takeCommand()
-                    if song is None:
-                        speak("I didn't understand.")
-                        continue
-                    song = song.lower()
+                # ==================================================
+                # -------------- TELEGRAM MODE ----------------------
+                # ==================================================
+        if "send" in query or "read" in query or "reply" in query:
+            await handle_telegram_mode(query)
+            continue
 
-                    try:
-                        search_song(song)
-                        time.sleep(7)
-                        skip_ad()
-                        yt = listen_for_wake_word()
-                    except Exception as e:
-                        print("YouTube error:", e)
-                        continue
+                # ==================================================
+                # -------------- BRIGHTNESS -------------------------
+                # ==================================================
+        if "brightness" in query:
+            await handle_brightness(query)
+            continue
 
-                    if fuzzy_match(yt, WAKE_VARIANTS):
-                        stop_song()
-                        speak("How may I help you?")
-                        q = takeCommand()
-                        if q is None:
-                            continue
-                        q = q.lower()
+                # ==================================================
+                # -------------- GENERAL CONVERSATION ---------------
+                # ==================================================
+        if "good night" in query or "exit" in query:
+            speak("Goodbye, have a nice day.")
+            break
 
-                        if has_words(q, "next", "song"):
-                            play_next_song()
-                        elif has_words(q, "search", "song"):
-                            speak("Which song?")
-                            song = takeCommand()
-                            if song is None:
-                                speak("I didn't understand.")
-                                break
-                            search_song(song.lower())
-                        elif "pause" in q:
-                            stop_song()
-                        elif has_words(q, "increase", "playback", "speed"):
-                            play_back_speed_i()
-                        elif has_words(q, "decrease", "playback", "speed"):
-                            play_back_speed_d()
-                        elif "exit" in q:
-                            break
+                # fallback normal chat
+        response = chat(query)
+        speak(response)
 
-                elif "exit" in query:
-                    speak("Okay, have a good day.")
-                    break
-        else:
-            faceauth.Unknown_Face()
+
+if __name__ == "__main__":
+    asyncio.run(main())
+
+

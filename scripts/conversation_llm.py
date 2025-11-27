@@ -4,8 +4,10 @@
 # from typing import Optional, Dict
 # import openai
 import google.generativeai as genai
+from numba.typed.listobject import ListModel
 
-genai.configure(api_key= "AIzaSyBUgmid8VumPuytt-Wu5OzF37hiZNIwpIo")
+genai.configure(api_key= "AIzaSyDR0y5HnpMu2rMQk_jQl_StqTft3W6N0Q4he")
+ListModel
 
 
 SYSTEM_PROMPT = """
@@ -23,6 +25,7 @@ When the user asks to sing, sing the lyrics "mera yeshuu yeshuu mera yeshuu yesh
 """
 
 model = genai.GenerativeModel(
+
     model_name="gemini-2.0-flash",
     system_instruction=SYSTEM_PROMPT
 )

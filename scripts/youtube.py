@@ -1,150 +1,206 @@
-import time
 
-import pyautogui
-from pytube import YouTube
+import time
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.keys import Keys
 
-
+# ----------------------
+# SELENIUM SETUP
+# ----------------------
 
 options = webdriver.ChromeOptions()
 options.add_experimental_option("detach", True)
-driver = webdriver.Chrome(options=options)
 
+driver = webdriver.Chrome(options=options)
 wait = WebDriverWait(driver, 15)
 
 
+# ----------------------
+# BASIC OPEN + SEARCH
+# ----------------------
+
 def youtube():
     driver.get("https://www.youtube.com/")
-    # Wait for the search box to appear
     wait.until(EC.presence_of_element_located((By.NAME, "search_query")))
 
 
-def search_song(n: str):
-    # Make sure we're on YouTube
+def search_song(query: str):
     if "youtube.com" not in driver.current_url:
         driver.get("https://www.youtube.com/")
 
-    # Wait for the search box to be ready
-    search = wait.until(
-        EC.element_to_be_clickable((By.NAME, "search_query"))
-    )
-    search.clear()
-    search.send_keys(n)
-    search.send_keys(Keys.RETURN)  # ⬅️ no more search button needed
+    search_box = wait.until(EC.element_to_be_clickable((By.NAME, "search_query")))
+    search_box.clear()
+    search_box.send_keys(query)
+    search_box.send_keys(Keys.RETURN)
 
-    # Wait for the first video result and click it
-    first_result = wait.until(
-        EC.element_to_be_clickable(
-            (By.XPATH, "(//a[@id='video-title' and @href])[1]")
-        )
+    # click first video
+    first_video = wait.until(
+        EC.element_to_be_clickable((By.XPATH, "(//a[@id='video-title' and @href])[1]"))
     )
-    first_result.click()
-    print(f"Playing first result for: {n}")
+    first_video.click()
 
+    # ensure player is ready
+    wait.until(EC.presence_of_element_located((By.CLASS_NAME, "html5-video-player")))
+    print(f"Playing: {query}")
+
+
+# ----------------------
+# AD SKIP
+# ----------------------
 
 def skip_ad():
-    """
-    Try to skip YouTube ad if skippable.
-    """
-    # Give time for ad to load if present
-    time.sleep(5)
     try:
-        # Newer layouts often use this structure:
-        # button.ytp-ad-skip-button, or include "ytp-ad-skip-button" in class
-        skip_button = wait.until(
-            EC.element_to_be_clickable(
-                (
-                    By.XPATH,
-                    "//button[contains(@class,'ytp-ad-skip-button')]",
-                )
-            )
-        )
-        skip_button.click()
+        driver.execute_script("""
+                    let skipBtn = document.querySelector('.ytp-ad-skip-button, .ytp-ad-skip-button-modern');
+                    if (skipBtn) skipBtn.click();
+                """)
         print("Ad skipped")
-    except Exception as e:
-        # Either no ad, or non-skippable ad
-        print(f"Ad not skippable or no ad: {e}")
-        time.sleep(2)
+    except:
+        print("No skippable ad.")
 
 
-def open_history():
+# ----------------------
+# Selenium Player Controls
+
+def pause_or_play():
+    """Click the play/pause button using DOM — 100% reliable."""
     try:
-        driver.get("https://www.youtube.com/feed/history")
-        wait.until(EC.presence_of_element_located((By.TAG_NAME, "ytd-item-section-renderer")))
-        print("Opened YouTube history.")
+        video = driver.find_element(By.TAG_NAME, "video")
+        video.click()
+        print("Play/Pause toggled.")
+        time.sleep(2)
+        driver.execute_script("document.querySelector('video').focus();")
     except Exception as e:
-        print(f"Error opening history: {e}")
+        print("Pause/Play error:", e)
 
 
 def play_next_song():
+    """Click Next button from YouTube UI."""
     try:
-        next_button = wait.until(
-            EC.element_to_be_clickable((By.CLASS_NAME, "ytp-next-button"))
+        driver.execute_script("""
+                    var player = document.querySelector('video');
+                    var next = document.querySelector('.ytp-next-button');
+                    if (next) next.click();
+                """)
+        print("Next video playing.")
+        driver.execute_script("document.querySelector('video').focus();")
+    except Exception as e:
+        print("Error next video:", e)
+
+
+def play_previous_song():
+    """Click Previous button."""
+    try:
+        driver.execute_script("""
+                    var prev = document.querySelector('.ytp-prev-button');
+                    if (prev) prev.click();
+                """)
+        print("Previous video playing.")
+        driver.execute_script("document.querySelector('video').focus();")
+    except Exception as e:
+        print("Error previous video:", e)
+
+
+# ----------------------
+# Playback speed — Selenium + JavaScript
+# ----------------------
+
+def set_playback_speed(speed: float):
+    """Set YouTube speed using JS instead of hotkeys."""
+    try:
+        driver.execute_script(
+            f"document.querySelector('video').playbackRate = {speed};"
         )
-        next_button.click()
-        print("Playing next song.")
+        print(f"Playback speed set to {speed}x")
     except Exception as e:
-        print(f"Error playing next song: {e}")
+        print("Error speed:", e)
 
 
-def stop_song():
-    # YouTube toggle play/pause is "k" or space
-    pyautogui.press("k")
-    print("Song has been stopped (toggled play/pause).")
+def increase_speed():
+    video = driver.execute_script("return document.querySelector('video').playbackRate;")
+    new_speed = min(video + 0.25, 2.0)
+    set_playback_speed(new_speed)
 
 
-def play_back_speed_i():
-    # YouTube: increase playback speed = SHIFT + .
-    pyautogui.hotkey("shift", ".")
-    print("Increased playback speed.")
+def decrease_speed():
+    video = driver.execute_script("return document.querySelector('video').playbackRate;")
+    new_speed = max(video - 0.25, 0.25)
+    set_playback_speed(new_speed)
 
 
-def play_back_speed_d():
-    # YouTube: decrease playback speed = SHIFT + ,
-    pyautogui.hotkey("shift", ",")
-    print("Decreased playback speed.")
+# ----------------------
+# Volume Control — JavaScript
+# ----------------------
 
-
-def download_song():
-    current_url = driver.current_url
-    print("Current URL:", current_url)
-
+def set_volume(level: float):
+    """
+    Set volume 0.0–1.0 using JS.
+    """
+    level = max(0.0, min(1.0, level))
     try:
-        yt = YouTube(current_url)
+        driver.execute_script(f"document.querySelector('video').volume = {level};")
+        print(f"Volume set to {int(level*100)}%")
     except Exception as e:
-        print(f"Error initializing YouTube object: {e}")
-        return
+        print("Volume error:", e)
 
+
+# ----------------------
+# Seek
+# ----------------------
+
+def seek_forward(seconds=10):
     try:
-        title = yt.title
-        safe_title = "".join(x for x in title if x.isalnum() or x in "._- ")
+        driver.execute_script(
+            f"var v=document.querySelector('video'); v.currentTime += {seconds};"
+        )
+        print(f"Seek +{seconds} sec")
+    except:
+        pass
 
-        # Try progressive 480p stream (video+audio)
-        stream = yt.streams.filter(progressive=True, res="480p").first()
-        if not stream:
-            # fallback: take first progressive stream
-            stream = yt.streams.filter(progressive=True).first()
 
-        if stream:
-            stream.download(output_path="", filename=f"{safe_title}.mp4")
-            print(f"Downloaded: {safe_title}.mp4")
-        else:
-            print("No suitable progressive stream found.")
+def seek_backward(seconds=10):
+    try:
+        driver.execute_script(
+            f"var v=document.querySelector('video'); v.currentTime -= {seconds};"
+        )
+        print(f"Seek -{seconds} sec")
+    except:
+        pass
+
+def toggle_mute():
+    """Toggle mute/unmute on YouTube."""
+    try:
+        script = """
+        var v = document.querySelector('video');
+        if (v.muted === true) {
+            v.muted = false;
+            return "unmuted";
+        } else {
+            v.muted = true;
+            return "muted";
+        }
+        """
+        status = driver.execute_script(script)
+        print(f"Video {status}.")
+        return status
     except Exception as e:
-        print(f"Error downloading video: {e}")
+        print("Mute/Unmute error:", e)
 
+def close_youtube():
+    try:
+        driver.quit()
+        print("YouTube closed.")
+    except Exception as e:
+        print("Error closing YouTube:", e)
+
+
+
+# ----------------------
+# MAIN TEST
+# ----------------------
 
 if __name__ == "__main__":
-    youtube()
-    s = "blue eyes"
-    search_song(s)
-    skip_ad()
-    # time.sleep(10)
-    # stop_song()
-    # play_next_song()
-    # open_history()
-    # download_song()
+    print("YouTube started.")
+
