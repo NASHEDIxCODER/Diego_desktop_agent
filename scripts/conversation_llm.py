@@ -6,12 +6,12 @@
 import google.generativeai as genai
 from numba.typed.listobject import ListModel
 
-genai.configure(api_key= "AIzaSyDR0y5HnpMu2rMQk_jQl_StqTft3W6N0Q4he")
+genai.configure(api_key= "gemini_api_key")
 ListModel
 
 
 SYSTEM_PROMPT = """
-You are angel priya — a friendly AI assistant. 
+You are leo — a friendly AI assistant. 
 Give short answers (1–2 sentences).
 Speak casually like a helpful friend.
 Do NOT mention that you are an AI.

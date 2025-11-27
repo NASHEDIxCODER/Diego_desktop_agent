@@ -35,15 +35,12 @@ LANG_CODE = "en-IN"
 WAKE_DEVICE_INDEX = None  # or an int like 0/1/2
 
 WAKE_VARIANTS = [
-    "angel priya",
-    "angel",
-    "priya",
-    "hey angel",
-    "hello priya",
-    "hello angel priya",
-    "jon assistant",
-    "hey angel priya",
-    "hey angel",
+    "hello leo",
+    "leo",
+    "lio",
+    "hey leo",
+    "hello leo",
+    "hello lio",
 ]
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -374,8 +371,7 @@ async def main():
         faceauth.Unknown_Face()
         return
 
-    speak(f" {userName} mera naam angel priya nahi devil priya hai!")
-    # speak(f"Hello {userName}, how may I assist you?")
+    speak(f"Hello {userName}, how may I assist you?")
     await init()  #telegram init
     while True:
         query = takeCommand()

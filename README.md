@@ -5,7 +5,10 @@ Leo is a voice-controlled desktop assistant for Linux with a “Friday-style” 
 > Talk to your machine, let it talk back, send Telegrams, control YouTube, and tweak your desktop — all hands-free.
 
 ---
+### Created by: nashedi_x_coder
+#### updated by: dem0000n
 
+---
 ## ✨ Features
 
 - 🎙 **Always-listening wake word**
