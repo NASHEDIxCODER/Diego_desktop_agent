@@ -1,280 +1,80 @@
-import datetime
-import smtplib
-import time
+"""
+Leo Desktop Assistant — Modular Production-Grade Entry Point
+
+Architecture:
+  Speech → STT → Preprocessor → Intent Classifier → Entity Extractor
+  → Context Manager → Plugin Router → Response → TTS
+
+LLMs (Gemini/OpenAI/Ollama) are OPTIONAL providers used only for:
+  - unknown intent
+  - reasoning
+  - coding
+  - summarization
+  - long conversations
+
+Everything else executes locally.
+"""
+
+import argparse
+import asyncio
 import difflib
+import logging
 import os
 import subprocess
-from os import close
+import sys
+import time
 from pathlib import Path
-import speech_recognition as sr
-from TTS.api import TTS
-from auth import faceauth
-from scripts.conversation_llm import chat
-from scripts.nlp_controller import parse
-from scripts.telegram_bot import send_message, init, read_latest_message, reply_message
-import asyncio
-
 
 # Ensure DISPLAY exists
 if "DISPLAY" not in os.environ or not os.environ["DISPLAY"]:
     os.environ["DISPLAY"] = ":0"
 
-# Allow local connections so Xlib / pyautogui can work
 try:
     subprocess.run(["xhost", "+local:"], check=False)
 except Exception:
     pass
 
+from config.settings import settings
+from telemetry.logger import setup_logging
 
+# Setup structured logging
+setup_logging()
 
-# from gemini import gemini  # uncomment when ready
+logger = logging.getLogger(__name__)
 
-# ---------- CONFIG ----------
+# ── Core imports ──────────────────────────────────────────
+from core.event_bus import bus, Event
+from core.plugin_manager import plugin_manager
 
-LANG_CODE = "en-IN"
-WAKE_DEVICE_INDEX = None  # or an int like 0/1/2
+# ── NLP imports ───────────────────────────────────────────
+from nlp.parser import parser, parse_text
+from nlp.classifier import classifier
+from nlp.context import context_manager
+from nlp.entities import extract_entities
+from nlp.trainer import trainer, ensure_classifier, is_classifier_ready
 
+# ── Voice imports ─────────────────────────────────────────
+from voice.stt import calibrate, listen, listen_wake
+from voice.tts import speak
+
+# ── AI imports ────────────────────────────────────────────
+from ai.llm_client import llm_client, llm_chat
+
+# ── Auth imports ──────────────────────────────────────────
+from auth import faceauth
+
+# ── Wake word variants ────────────────────────────────────
 WAKE_VARIANTS = [
     "hello leo",
     "leo",
     "lio",
     "hey leo",
-    "hello leo",
     "hello lio",
 ]
 
-BASE_DIR = Path(__file__).resolve().parent
-VOICE_FILE = BASE_DIR / "leo.wav"
-
-
-# ---------- TTS (Friday-style) ----------
-
-def _init_tts():
-    try:
-        print("[TTS] Initializing Friday voice model...")
-        return TTS(model_name="tts_models/en/ljspeech/tacotron2-DDC", progress_bar=False)
-    except Exception as e:
-        print(f"[TTS] Failed to initialize TTS: {e}")
-        return None
-
-
-tts = _init_tts()
-
-
-def speak(text: str):
-    if not text:
-        return
-
-    if tts is None:
-        print(f"[SPEAK] {text}")
-        return
-
-    try:
-        tts.tts_to_file(text=text, file_path=str(VOICE_FILE))
-        subprocess.run(
-            ["paplay", str(VOICE_FILE)],  # "-q"
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    except Exception as e:
-        print(f"[WARN] TTS failed: {e}")
-        print(f"[SPEAK-FALLBACK] {text}")
-
-
-def wishMe():
-    hour = int(datetime.datetime.now().hour)
-    if 0 <= hour < 12:
-        speak("Good morning, sir.")
-    elif 12 <= hour < 18:
-        speak("Good afternoon, sir.")
-    else:
-        speak("Good evening, sir.")
-    speak("I am Leo, your assistant. How may I help you?")
-
-
-# ---------- Speech & Wake ----------
-
-def get_microphone():
-    if WAKE_DEVICE_INDEX is None:
-        return sr.Microphone()
-    return sr.Microphone(device_index=WAKE_DEVICE_INDEX)
-
-async def handle_youtube_mode():
-    from scripts.youtube import (
-        youtube, search_song, skip_ad, pause_or_play, play_next_song,
-        play_previous_song, increase_speed, decrease_speed,
-        set_playback_speed, seek_forward, seek_backward,
-        close_youtube, set_volume, toggle_mute
-    )
-
-    speak("Opening YouTube.")
-    youtube()
-    time.sleep(2)
-
-    speak("Which song do you want to listen?")
-    song = takeCommand()
-    if not song:
-        speak("I didn't get the song name.")
-        return
-
-    search_song(song)
-    time.sleep(5)
-    skip_ad()
-
-    speak("YouTube is ready. Say commands like pause, next, volume, or close YouTube.")
-
-    # ------------------------
-    # YOUTUBE MODE LOOP ONLY
-    # ------------------------
-    while True:
-        cmd = takeCommand()
-        if not cmd:
-            continue
-        cmd = cmd.lower().strip()
-
-        if "pause" in cmd or "play" in cmd:
-            pause_or_play()
-            speak("Playback toggled.")
-
-        elif "next" in cmd:
-            play_next_song()
-            speak("Next song.")
-
-        elif "previous" in cmd:
-            play_previous_song()
-            speak("Previous song.")
-
-        elif "skip ad" in cmd or "skip the ad" in cmd or cmd.strip()=="skip":
-            skip_ad()
-            speak("Ad skipped.")
-
-        elif "faster" in cmd or "increase speed" in cmd:
-            increase_speed()
-            speak("Speed increased.")
-
-        elif "slower" in cmd or "decrease speed" in cmd:
-            decrease_speed()
-            speak("Speed decreased.")
-
-        elif "speed" in cmd:
-            nums = [float(s) for s in cmd.split() if s.replace(".", "").isdigit()]
-            if nums:
-                set_playback_speed(nums[0])
-                speak(f"Speed set to {nums[0]}.")
-            else:
-                speak("Tell me a valid speed like 1.25 or 1.5.")
-
-        elif "forward" in cmd:
-            seek_forward(10)
-            speak("Forward 10 seconds.")
-
-        elif "rewind" in cmd or "backward" in cmd:
-            seek_backward(10)
-            speak("Backward 10 seconds.")
-
-        elif "volume" in cmd:
-            nums = [int(s) for s in cmd.split() if s.isdigit()]
-            if nums:
-                n = max(0, min(100, nums[0]))
-                set_volume(n / 100)
-                speak(f"Volume set to {n} percent.")
-            else:
-                speak("Tell me a number multiple of 10.")
-
-        elif "mute" in cmd or "unmute" in cmd:
-            status = toggle_mute()
-            speak(status if status else "Unable to toggle mute.")
-
-        # ------------------------
-        # EXIT YOUTUBE ONLY HERE
-        # ------------------------
-        elif "exit youtube" in cmd or "close youtube" in cmd:
-            speak("Closing YouTube.")
-            close_youtube()
-            break
-
-        else:
-            speak("I didn't understand. Try again.")
-
-async def handle_telegram_mode(query):
-    intent = parse(query)
-    action = intent.get("action", "none")
-
-    if action == "send_telegram":
-        target = intent.get("target")
-        message = intent.get("message")
-
-        if not target:
-            speak("Whom should I send the message to?")
-            target = takeCommand()
-
-        if not message:
-            speak("What should I say?")
-            message = takeCommand()
-
-        ok, err = await send_message(target, message)
-        speak("Message sent." if ok else (err or "Failed to send message."))
-        return
-
-    if action == "read_telegram":
-        target = intent.get("target")
-        if not target:
-            speak("Whose message should I read?")
-            target = takeCommand()
-        msg = await read_latest_message(target)
-        speak(msg or f"No messages from {target}")
-        return
-
-    if action == "reply_telegram":
-        message = intent.get("message")
-        if not message:
-            speak("What should I reply?")
-            message = takeCommand()
-
-        ok, err = await reply_message(message)
-        speak("Reply sent." if ok else (err or "Failed to send reply."))
-        return
-
-async def handle_brightness(query):
-    from scripts.brightness import set_brightness
-    nums = [int(s) for s in query.split() if s.isdigit()]
-    if nums:
-        value = max(0, min(100, nums[0]))
-        set_brightness(value)
-        speak(f"Brightness set to {value} percent.")
-    else:
-        speak("Tell me a number between 1 and 100.")
-
-
-
-# global recognizer + mic
-RECOGNIZER = sr.Recognizer()
-MIC = get_microphone()
-
-
-def init_audio_calibration():
-    """
-    Do a single, solid ambient noise calibration at startup
-    and then fix the energy threshold (no constant re-tuning).
-    """
-    try:
-        with MIC as source:
-            print("[AUDIO] Calibrating for ambient noise...")
-            RECOGNIZER.dynamic_energy_threshold = True
-            RECOGNIZER.adjust_for_ambient_noise(source, duration=1.5)
-            print(f"[AUDIO] Initial energy threshold: {RECOGNIZER.energy_threshold}")
-
-        # lock the threshold in place for stability
-        RECOGNIZER.dynamic_energy_threshold = False
-        RECOGNIZER.energy_threshold *= 1.2  # slightly more tolerant
-        print(f"[AUDIO] Fixed energy threshold: {RECOGNIZER.energy_threshold}")
-    except Exception as e:
-        print(f"[AUDIO] Calibration failed: {e}")
-        speak("I could not calibrate the microphone properly.")
-
 
 def fuzzy_match(text: str, variants, cutoff: float = 0.7) -> bool:
+    """Fuzzy match text against a list of variants."""
     text = text.lower().strip()
     for v in variants:
         v = v.lower().strip()
@@ -286,131 +86,220 @@ def fuzzy_match(text: str, variants, cutoff: float = 0.7) -> bool:
     return False
 
 
-def listen_for_wake_word():
+def wish_me():
+    """Greet the user based on time of day."""
+    import datetime
+    hour = int(datetime.datetime.now().hour)
+    if 0 <= hour < 12:
+        speak("Good morning, sir.")
+    elif 12 <= hour < 18:
+        speak("Good afternoon, sir.")
+    else:
+        speak("Good evening, sir.")
+    speak("I am Leo, your assistant. How may I help you?")
+
+
+async def handle_intent(parsed: dict) -> str:
     """
-    Uses global RECOGNIZER + MIC.
-    Doesn’t recalibrate each time, just listens in short chunks.
-    Logs everything it hears so you can see what Google is actually returning.
+    Route a parsed intent to the appropriate handler.
+
+    Returns a response string to speak.
     """
+    intent = parsed["intent"]
+    entities = parsed["entities"]
+    confidence = parsed["confidence"]
+
+    logger.info("Handling intent: %s (confidence=%.4f)", intent, confidence)
+
+    # ── Greeting ──────────────────────────────────────────
+    if intent == "greeting":
+        wish_me()
+        return ""
+
+    # ── Exit ──────────────────────────────────────────────
+    if intent == "exit":
+        speak("Goodbye, have a nice day.")
+        return "__EXIT__"
+
+    # ── YouTube intents ───────────────────────────────────
+    if intent.startswith("youtube"):
+        event_type = intent  # e.g., "youtube_open", "youtube_pause"
+        await bus.emit(event_type, data=entities, source="nlp")
+        return ""
+
+    # ── Telegram intents ──────────────────────────────────
+    if intent.startswith("telegram"):
+        event_type = intent
+        await bus.emit(event_type, data=entities, source="nlp")
+        return ""
+
+    # ── Brightness intents ────────────────────────────────
+    if intent.startswith("brightness"):
+        event_type = intent
+        await bus.emit(event_type, data=entities, source="nlp")
+        return ""
+
+    # ── Time query ────────────────────────────────────────
+    if intent == "time_query":
+        import datetime
+        now = datetime.datetime.now()
+        response = f"The time is {now.strftime('%I:%M %p')}."
+        speak(response)
+        return ""
+
+    # ── Date query ────────────────────────────────────────
+    if intent == "date_query":
+        import datetime
+        now = datetime.datetime.now()
+        response = f"Today is {now.strftime('%A, %B %d, %Y')}."
+        speak(response)
+        return ""
+
+    # ── Help ──────────────────────────────────────────────
+    if intent == "help":
+        response = ("I can control YouTube, send Telegram messages, "
+                    "adjust brightness, tell the time and date, "
+                    "and have conversations. What would you like to do?")
+        speak(response)
+        return ""
+
+    # ── Joke ──────────────────────────────────────────────
+    if intent == "joke":
+        jokes = [
+            "Why do programmers prefer dark mode? Because light attracts bugs!",
+            "Why did the AI break up with the database? Too many relationships!",
+            "What do you call a fake noodle? An impasta!",
+        ]
+        import random
+        speak(random.choice(jokes))
+        return ""
+
+    # ── Who am I ──────────────────────────────────────────
+    if intent == "who_am_i":
+        speak("You are my user. I recognize you by your face.")
+        return ""
+
+    # ── Unknown / LLM fallback ────────────────────────────
+    if intent == "unknown" or parsed.get("needs_llm", False):
+        response = await llm_chat(parsed["text"])
+        speak(response)
+        return ""
+
+    # ── Fallback to LLM for anything else ─────────────────
+    response = await llm_chat(parsed["text"])
+    speak(response)
+    return ""
+
+
+async def main_loop():
+    """Main assistant loop."""
+    logger.info("Leo Desktop Assistant starting...")
+
+    # 1. Calibrate microphone
+    calibrate()
+
+    # 2. Load or train the NLP classifier (fast if cached)
+    logger.info("Loading NLP classifier...")
+    ensure_classifier()
+
+    # 3. Load plugins
+    logger.info("Loading plugins...")
+    await plugin_manager.load_all()
+    await plugin_manager.initialize_all()
+    logger.info("Plugins loaded: %s", list(plugin_manager.plugins.keys()))
+
+    # 4. Register speak handler on event bus
+    async def on_speak(event: Event):
+        text = event.data.get("text", "")
+        if text:
+            speak(text)
+
+    bus.on("speak", on_speak)
+
+    # 5. Main loop
     while True:
-        try:
-            with MIC as source:
-                print("Listening for wake word...")
-                # no adjust_for_ambient_noise here – already calibrated
-                audio = RECOGNIZER.listen(source, phrase_time_limit=3)
-        except Exception as e:
-            print(f"[ERROR] Microphone error while listening: {e}")
-            speak("I cannot access the microphone right now.")
-            time.sleep(1)
+        # Wait for wake word
+        logger.info("Listening for wake word...")
+        wake_text = listen_wake(phrase_time_limit=3)
+
+        if not wake_text:
             continue
 
-        try:
-            print("Recognizing wake word...")
-            text = RECOGNIZER.recognize_google(audio, language=LANG_CODE)
-            norm = text.lower().strip()
-            print(f"[WAKE] Heard: {norm!r}")
-
-            if fuzzy_match(norm, WAKE_VARIANTS):
-                print("[WAKE] Wake word detected")
-                return norm
-
-        except sr.UnknownValueError:
-            print("[WAKE] Could not understand audio.")
-            continue
-        except sr.RequestError as e:
-            print(f"[WAKE] Recognition service error: {e}")
-            time.sleep(1)
+        if not fuzzy_match(wake_text, WAKE_VARIANTS):
             continue
 
-def takeCommand():
-    """
-    Uses the same global recognizer & mic.
-    Slightly longer phrase_time_limit, no re-calibration, just listen & decode.
-    """
-    try:
-        with MIC as source:
-            print("Listening for command...")
-            audio = RECOGNIZER.listen(source, phrase_time_limit=7)
-    except Exception as e:
-        print(f"[ERROR] Microphone error in takeCommand: {e}")
-        speak("I cannot access the microphone right now.")
-        return None
+        logger.info("Wake word detected: %s", wake_text)
 
-    try:
-        print("Recognizing command...")
-        query = RECOGNIZER.recognize_google(audio, language=LANG_CODE)
-        query = query.strip()
-        print(f"[CMD] User said: {query}")
-        return query
-    except sr.UnknownValueError:
-        print("[CMD] Could not understand audio.")
-        speak("Say that again, please.")
-        return None
-    except sr.RequestError as e:
-        print(f"[CMD] Speech recognition service error: {e}")
-        speak("Network error with speech service.")
-        return None
+        # Face authentication
+        user_name = faceauth.recognize_faces()
+        if not user_name:
+            faceauth.Unknown_Face()
+            continue
 
-def has_words(text: str, *words):
-    text = text.lower()
-    return all(w in text for w in words)
+        speak(f"Hello {user_name}, how may I assist you?")
 
+        # Command loop
+        while True:
+            query = listen(phrase_time_limit=7)
+            if not query:
+                continue
 
-# ---------- Main ----------
+            query = query.lower().strip()
+            logger.info("Command: %s", query)
+
+            # Parse with NLP pipeline
+            parsed = await parse_text(query)
+            logger.debug("Parsed: %s", parsed)
+
+            # Handle the intent
+            result = await handle_intent(parsed)
+
+            if result == "__EXIT__":
+                return
+
+            # Log to DuckDB
+            try:
+                from memory.duckdb_store import store
+                store.add_command(
+                    text=query,
+                    intent=parsed["intent"],
+                    confidence=parsed["confidence"],
+                    response=result,
+                )
+            except Exception as e:
+                logger.debug("Failed to log command: %s", e)
+
 
 async def main():
-    init_audio_calibration()
-
-    wake = listen_for_wake_word()
-    if not fuzzy_match(wake, WAKE_VARIANTS):
-        return
-
-        # wishMe()
-    userName = faceauth.recognize_faces()
-    if not userName:
-        faceauth.Unknown_Face()
-        return
-
-    speak(f"Hello {userName}, how may I assist you?")
-    await init()  #telegram init
-    while True:
-        query = takeCommand()
-        if not query:
-            continue
-        query = query.lower().strip()
-
-        #youtube mode
-        if "youtube" in query or "play" in query:
-            await handle_youtube_mode()
-            continue
-
-                # ==================================================
-                # -------------- TELEGRAM MODE ----------------------
-                # ==================================================
-        if "send" in query or "read" in query or "reply" in query:
-            await handle_telegram_mode(query)
-            continue
-
-                # ==================================================
-                # -------------- BRIGHTNESS -------------------------
-                # ==================================================
-        if "brightness" in query:
-            await handle_brightness(query)
-            continue
-
-                # ==================================================
-                # -------------- GENERAL CONVERSATION ---------------
-                # ==================================================
-        if "good night" in query or "exit" in query:
-            speak("Goodbye, have a nice day.")
-            break
-
-                # fallback normal chat
-        response = chat(query)
-        speak(response)
+    """Entry point."""
+    try:
+        await main_loop()
+    except KeyboardInterrupt:
+        logger.info("Shutting down...")
+    except Exception as e:
+        logger.error("Fatal error: %s", e, exc_info=True)
+    finally:
+        await plugin_manager.shutdown_all()
+        logger.info("Leo shutdown complete.")
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Leo Desktop Assistant")
+    parser.add_argument("--train", action="store_true",
+                        help="Retrain the NLP classifier and exit")
+    parser.add_argument("--examples", type=int, default=100,
+                        help="Examples per intent for training (default: 100)")
+    args = parser.parse_args()
+
+    if args.train:
+        # CLI mode: train and exit
+        from telemetry.logger import setup_logging
+        setup_logging("INFO")
+        logging.getLogger().setLevel(logging.INFO)
+        print(f"Retraining NLP with {args.examples} examples per intent...")
+        total = asyncio.run(trainer.train(examples_per_intent=args.examples))
+        print(f"Training complete! {total} examples generated.")
+        sys.exit(0)
+
+    # Normal startup
     asyncio.run(main())
-
-

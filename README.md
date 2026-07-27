@@ -1,140 +1,232 @@
 # 🦁 Leo Desktop Assistant
 
-Leo is a voice-controlled desktop assistant for Linux with a “Friday-style” personality, wake-word activation, face authentication, Gemini-powered conversation, YouTube automation, Telegram control, and system utilities like brightness control.
+Leo is a **modular, production-grade AI desktop assistant** for Linux with wake-word activation, face authentication, local NLP engine, plugin architecture, and optional LLM integration.
 
 > Talk to your machine, let it talk back, send Telegrams, control YouTube, and tweak your desktop — all hands-free.
 
 ---
+
+## Architecture
+
+```
+Speech → STT → Preprocessor → Intent Classifier → Entity Extractor
+→ Context Manager → Plugin Router → Response → TTS
+```
+
+LLMs (Gemini/OpenAI/Ollama/etc.) are **optional** providers used only for:
+- Unknown intent handling
+- Reasoning and coding
+- Summarization
+- Long conversations
+
+**Everything else executes locally.**
+
+See [docs/architecture.md](docs/architecture.md) for full details, including Mermaid diagrams.
+
+---
+
 ## ✨ Features
 
-- 🎙 **Always-listening wake word**
-  - Listens for phrases like: `hello leo`, `lio`, `hey leo`, `leo`.
-  - Uses fuzzy matching so small mispronunciations / ASR errors still trigger Leo.
+### 🧠 **Local NLP Engine**
+- Semantic intent matching using `sentence-transformers` (all-MiniLM-L6-v2)
+- 3-tier classification: embeddings → centroids → fuzzy matching
+- Entity extraction via spaCy NER + regex
+- Context-aware commands with slot-filling
+- Confidence scoring with automatic LLM fallback
+- Automatic training data generation (100+ examples per intent)
 
-- 🧑‍💻 **Face authentication**
-  - Uses `auth.faceauth` before giving full access.
-  - If the face is unknown, `Unknown_Face()` is triggered and the session is aborted.
-  - Great for a “personal AI” that only answers its real owner.
+### 🎙 **Voice Control**
+- Always-listening wake word (`hello leo`, `leo`, `hey leo`)
+- Google Speech Recognition for STT
+- Coqui TTS with "Friday-style" voice
+- Single ambient-noise calibration at startup
 
-- 🧠 **Conversational AI (Gemini)**
-  - High-level chat is delegated to a Gemini-powered backend via `scripts.conversation_llm.chat`.
-  - Natural language questions, casual chat, and general queries are handled by the LLM.
-  - Local logic decides when to route to Gemini vs. a local action (Telegram / YouTube / brightness).
+### 🧑‍💻 **Face Authentication**
+- Real-time face recognition via OpenCV + face_recognition
+- New face enrollment on unknown detection
+- Firebase backup of face encodings
 
-- 📲 **Telegram automation**
-  - Implemented in `scripts.telegram_bot` (async).
-  - Current flows:
-    - **Send message** – “send telegram to Alice saying I’ll be late”
-    - **Read latest** – “read telegram from Bob”
-    - **Reply** – “reply on telegram” after a conversation
-  - All logic is interpreted via `scripts.nlp_controller.parse` to extract:
-    - `action` → `send_telegram`, `read_telegram`, `reply_telegram`
-    - `target` → contact / user
-    - `message` → message body
+### 🔌 **Plugin Architecture**
+- Event-driven plugin system via async EventBus
+- Each plugin is a standalone module with lifecycle hooks
+- Current plugins:
+  - **YouTube** — Hands-free video control (open, search, pause, skip, volume, speed, seek, close)
+  - **Telegram** — Send, read, and reply to messages
+  - **Brightness** — Screen brightness control
+- Easy to extend: create a new file in `plugins/` inheriting from `BasePlugin`
 
-- 📺 **YouTube hands-free mode**
-  - Triggered by phrases including “youtube” or “play”.
-  - Uses helpers in `scripts.youtube`:
-    - `youtube()` – open YouTube
-    - `search_song()` – search and start a song
-    - `skip_ad()`, `pause_or_play()`, `play_next_song()`, `play_previous_song()`
-    - `increase_speed()`, `decrease_speed()`, `set_playback_speed()`
-    - `seek_forward()`, `seek_backward()`
-    - `set_volume()`, `toggle_mute()`
-    - `close_youtube()`
-  - Voice commands supported (examples):
-    - “pause”, “play”
-    - “next song”, “previous song”
-    - “skip ad”, “skip”
-    - “faster”, “slower”, “set speed to 1 point 5”
-    - “forward 10 seconds”, “rewind 10 seconds”
-    - “volume 50”
-    - “mute”, “unmute”
-    - “exit youtube”, “close youtube”
+### 💾 **Persistent Storage (DuckDB)**
+- Stores intents, examples, embeddings, entities, synonyms
+- Command history and user preferences
+- Plugin registry and context memory with TTL
 
-- 💡 **Brightness control**
-  - Natural language brightness control via `scripts.brightness.set_brightness`.
-  - Example commands:
-    - “set brightness to 30”
-    - “brightness 70”
-  - Values are clamped to `0–100` to avoid invalid brightness levels.
+### 🌐 **Multi-Provider LLM Support**
+- Google Gemini (primary)
+- OpenAI
+- Ollama (local, offline)
+- Automatic fallback between providers
+- Only used when local NLP confidence is low
 
-- 🔊 **Friday-style TTS**
-  - Uses [Coqui TTS](https://github.com/coqui-ai/TTS):
-    - Model: `tts_models/en/ljspeech/tacotron2-DDC`
-  - Synthesizes to `leo.wav` and plays back using `paplay`.
-  - If TTS fails, falls back to printing text to console.
+### 📊 **Structured Logging & Telemetry**
+- JSON-formatted logs with context fields
+- Configurable log levels via `.env`
+- Command history tracking
 
-- 🎧 **Robust speech recognition**
-  - Shared global `speech_recognition.Recognizer` + `Microphone`.
-  - Single ambient-noise calibration at startup (`init_audio_calibration()`), then a fixed threshold:
-    - Reduces lag and random re-calibration
-    - More stable wake-word / command recognition
-  - Wake listening loop and command listening use the same calibrated mic.
+---
+
+## Quick Start
+
+### Prerequisites
+- Python 3.11+
+- Linux with PulseAudio/PipeWire
+- Microphone
+- Webcam (for face auth)
+- Chrome/Chromium (for YouTube Selenium automation)
+
+### Clone & Setup
+```bash
+git clone https://github.com/NASHEDIxCODER/leo_desktop_assistant.git
+cd leo_desktop_assistant
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python -m spacy download en_core_web_sm
+```
+
+### Configuration
+```bash
+cp .env.example .env
+# Edit .env with your API keys
+```
+
+### Run
+```bash
+python main.py
+```
+
+---
+
+## Project Structure
+
+```
+leo_desktop_assistant/
+├── main.py                 # Application entry point
+├── config/
+│   ├── settings.py         # Centralized Pydantic Settings
+│   └── .env.example        # Environment template
+├── core/
+│   ├── event_bus.py        # Async EventBus
+│   ├── plugin_base.py      # BasePlugin interface
+│   └── plugin_manager.py   # Plugin lifecycle manager
+├── nlp/
+│   ├── tokenizer.py        # Text tokenization
+│   ├── normalizer.py       # Text normalization
+│   ├── embeddings.py       # sentence-transformers
+│   ├── classifier.py       # Intent classification
+│   ├── entities.py         # Entity extraction
+│   ├── context.py          # Conversation context
+│   ├── confidence.py       # Confidence scoring
+│   ├── parser.py           # NLP pipeline orchestrator
+│   ├── trainer.py          # Intent training generator
+│   └── evaluator.py        # Benchmarking
+├── voice/
+│   ├── stt.py              # Speech-to-Text
+│   └── tts.py              # Text-to-Speech
+├── ai/
+│   └── llm_client.py       # Unified LLM client
+├── plugins/
+│   ├── youtube_plugin.py   # YouTube control
+│   ├── telegram_plugin.py  # Telegram messaging
+│   └── brightness_plugin.py# Screen brightness
+├── memory/
+│   └── duckdb_store.py     # DuckDB storage
+├── telemetry/
+│   └── logger.py           # Structured logging
+├── auth/                   # Face authentication
+├── scripts/                # Legacy scripts
+├── tests/                  # Test suite
+├── data/                   # Database files
+├── docs/
+│   └── architecture.md     # Full architecture docs
+├── .env.example
+├── requirements.txt
+└── README.md
+```
+
+---
+
+## Voice Commands
+
+### YouTube
+- "Play music on YouTube" / "Open YouTube"
+- "Pause" / "Resume" / "Play"
+- "Next song" / "Previous song"
+- "Volume up" / "Volume down" / "Mute" / "Unmute"
+- "Forward 10 seconds" / "Rewind"
+- "Speed up" / "Slow down"
+- "Close YouTube" / "Exit YouTube"
+
+### Telegram
+- "Send message to [contact] saying [message]"
+- "Read messages from [contact]"
+- "Reply saying [message]"
+
+### Brightness
+- "Set brightness to 50"
+- "Brightness up" / "Brightness down"
+
+### General
+- "What time is it?" / "What's the date?"
+- "Tell me a joke"
+- "What can you do?"
+- "Goodbye" / "Exit"
+
+---
+
+## Configuration
+
+All configuration is in `config/settings.py`, read from `.env`:
+
+| Variable | Description |
+|----------|-------------|
+| `GEMINI_API_KEY` | Google Gemini API key |
+| `OPENAI_API_KEY` | OpenAI API key |
+| `OLLAMA_BASE_URL` | Local Ollama URL |
+| `TELEGRAM_API_ID` | Telegram API ID |
+| `TELEGRAM_API_HASH` | Telegram API hash |
+| `LOG_LEVEL` | Log level (DEBUG/INFO/WARNING) |
+| `WAKE_WORD` | Wake word phrase |
+| `MODEL_NAME` | sentence-transformers model |
+| `SIMILARITY_THRESHOLD` | Intent match threshold |
+
+---
+
+## Testing
+```bash
+pytest tests/ -v
+```
 
 ---
 
 ## Tech Stack
 
-Language: Python 3.11 (asyncio-friendly)
-
-Speech Recognition: SpeechRecognition
- + Google Web Speech API
-
-Text-To-Speech: Coqui TTS
- (TTS.api)
-
-LLM / Conversation: Google Gemini (google-generativeai) via scripts.conversation_llm
-
-Messaging: Telegram Bot API (async)
-
-Audio Backend:
-
-paplay (PulseAudio / PipeWire sink)
-
-Display / Desktop:
-
-X11 (DISPLAY, xhost +local:) for GUI automation and desktop integration
-
-OS: Linux (tested on Arch / BlackArch-style setups)
+| Component | Technology |
+|-----------|-----------|
+| Language | Python 3.11+ (asyncio) |
+| Speech Recognition | SpeechRecognition + Google Web Speech |
+| Text-to-Speech | Coqui TTS |
+| Intent Classification | sentence-transformers (all-MiniLM-L6-v2) |
+| Entity Extraction | spaCy en_core_web_sm |
+| Fuzzy Matching | RapidFuzz |
+| Database | DuckDB |
+| LLM | Gemini / OpenAI / Ollama |
+| Browser Automation | Selenium |
+| Face Recognition | OpenCV + face_recognition |
+| Configuration | Pydantic Settings + python-dotenv |
+| Logging | JSON-structured |
 
 ---
-### Clone & set up virtualenv
-```bash
 
-$ git clone https://github.com/your-username/leo_desktop_assistant.git
-$ cd leo_desktop_assistant
-$ python -m venv .venv
-$ source .venv/bin/activate
-$ pip install -r requirements.txt
-```
----
-**Usage**
-```bash
-$ cd leo_desktop_assistant
-$ source .venv/bin/activate
-$ python main.py
-```
----
-### Roadmap Ideas
-
-**Add more desktop controls:**
-
-* Volume, window management, workspace switching, app launching.
-
-* Add local LLM fallback (offline mode).
-
-* Add hotword detection using a lightweight wake-word engine.
-
-* Add configuration file for:
-
-* Wake words
-
-* Language
-
-* TTS voice and output device
-
-----
 ## 🤝 Contributors
 
 <table>
@@ -142,27 +234,28 @@ $ python main.py
 <td align="center">
 <a href="https://github.com/NASHEDIxCODER">
 <img src="https://avatars.githubusercontent.com/NASHEDIxCODER" width="100px;" /><br />
-<b>You</b>
+<b>NASHEDIxCODER</b>
 </a><br />
 Owner & Lead Developer
 </td>
-
 <td align="center">
 <a href="https://github.com/dem0000n">
 <img src="https://avatars.githubusercontent.com/dem0000n" width="100px;" /><br />
-<b>Friend Name</b>
+<b>demo0000n</b>
 </a><br />
 Contributor
 </td>
 </tr>
 </table>
+
 ---
 
 ## License
-MIT License - see `LICENSE` file.
+MIT License — see `LICENSE` file.
+
 ---
+
 ## 🔥 Author
 
-**leo_desktop_assistant** was crafted by **NASHEDI_X_CODER**.\
-**updated by**: **demo0000n**.
-
+**Leo Desktop Assistant** was crafted by **NASHEDI_X_CODER**.  
+Updated by **demo0000n**.
