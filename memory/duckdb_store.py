@@ -98,6 +98,8 @@ class DuckDBStore:
         DuckDB creates temporary lock files during operations.
         If the process crashes, these can remain and block future connections.
 
+        Also attempts to detect the lock owner (the PID that holds the lock).
+
         Returns:
             True if stale locks were found and cleaned.
         """
@@ -115,24 +117,59 @@ class DuckDBStore:
         for lock_file in lock_patterns:
             if lock_file.exists():
                 try:
+                    # Detect lock owner: check if another process holds the file
+                    lock_owner = None
+                    try:
+                        import fcntl
+                        with open(lock_file, 'r') as lf:
+                            try:
+                                fcntl.flock(lf, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                                # We got the lock, so nobody else holds it — it's stale
+                                fcntl.flock(lf, fcntl.LOCK_UN)
+                                lock_owner = "stale (no contender)"
+                            except BlockingIOError:
+                                # Another process holds the lock
+                                lock_owner = "another process"
+                    except (ImportError, Exception):
+                        pass
+
                     # Check if the file is stale (older than threshold)
                     file_age = now - lock_file.stat().st_mtime
                     if file_age > STALE_LOCK_AGE_SECONDS:
+                        if lock_owner:
+                            logger.info(
+                                "Lock file %s is stale (age=%.0fs, owner=%s) — removing",
+                                lock_file, file_age, lock_owner
+                            )
                         lock_file.unlink()
-                        logger.info(
-                            "Removed stale lock file: %s (age=%.0fs)",
-                            lock_file, file_age
-                        )
                         cleaned = True
                     else:
                         logger.debug(
-                            "Lock file %s is recent (age=%.0fs), not removing",
-                            lock_file, file_age
+                            "Lock file %s is recent (age=%.0fs, owner=%s), not removing",
+                            lock_file, file_age, lock_owner or "unknown"
                         )
                 except Exception as e:
                     logger.warning("Could not inspect lock file %s: %s", lock_file, e)
 
         return cleaned
+
+    def _in_memory_fallback(self) -> Any:
+        """
+        Create an in-memory DuckDB connection as fallback when the
+        persistent database is locked or unavailable.
+        
+        Never blocks command execution.
+        """
+        if not HAS_DUCKDB:
+            return None
+        try:
+            conn = duckdb.connect(":memory:")
+            self._connections.append(conn)
+            logger.info("Connected to DuckDB in-memory (fallback)")
+            return conn
+        except Exception as e:
+            logger.warning("DuckDB in-memory fallback also failed: %s", e)
+            return None
 
     def _connect_with_retry(self) -> Any:
         """Connect to DuckDB with stale lock detection and exponential backoff."""
@@ -238,8 +275,8 @@ class DuckDBStore:
                     self._conn = self._connect_with_retry()
                     self._connections.append(self._conn)
                 except DatabaseLockedError:
-                    logger.warning("DuckDB unavailable, using fallback mode")
-                    self._conn = None
+                    logger.warning("DuckDB locked, falling back to in-memory mode")
+                    self._conn = self._in_memory_fallback()
             else:
                 self._conn = None
         return self._conn
