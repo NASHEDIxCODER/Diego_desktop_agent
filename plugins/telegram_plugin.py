@@ -21,9 +21,13 @@ _telegram = None
 def _get_telegram():
     global _telegram
     if _telegram is None:
-        from scripts import telegram_bot as _t
-        _telegram = _t
-    return _telegram
+        try:
+            from scripts import telegram_bot as _t
+            _telegram = _t
+        except Exception as e:
+            logger.warning("Failed to import telegram_bot: %s", e)
+            _telegram = False
+    return _telegram if _telegram is not False else None
 
 
 class TelegramPlugin(BasePlugin):
@@ -56,13 +60,19 @@ class TelegramPlugin(BasePlugin):
         bus.on("telegram_read", self._on_read)
         bus.on("telegram_reply", self._on_reply)
 
-        # Initialize Telegram client
+        # Initialize Telegram client gracefully — failures disable Telegram but
+        # never block startup.
         try:
             tg = _get_telegram()
             await tg.init()
             logger.info("Telegram client initialized")
+        except ValueError as e:
+            # Telethon API version mismatch (tuple unpack error)
+            logger.warning("Telegram init failed (API version mismatch): %s", e)
+        except ImportError as e:
+            logger.warning("Telegram init failed (missing dependency): %s", e)
         except Exception as e:
-            logger.warning("Telegram init failed: %s", e)
+            logger.warning("Telegram init failed (unexpected): %s", e)
 
     async def shutdown(self) -> None:
         """Cleanup."""

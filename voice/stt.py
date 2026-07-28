@@ -3,36 +3,80 @@ Speech-to-Text module for Leo Desktop Assistant.
 
 Provides speech recognition using Google Web Speech API
 with Whisper as an optional offline fallback.
+
+Handles Python 3.14 compatibility (aifc module removed).
+Compatibility stubs are injected by the compat module (imported in main.py).
 """
 
 import logging
+import sys
 from typing import Optional
-
-import speech_recognition as sr
 
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
 
-# Global recognizer and mic
-_recognizer: Optional[sr.Recognizer] = None
-_mic: Optional[sr.Microphone] = None
+# Python 3.14 compatibility stubs are injected by compat module in main.py
+# Do NOT import compat here — it's already injected at application startup
+
+# Lazy-import speech_recognition
+_recognizer_module = None
+_recognizer: Optional[object] = None
+_mic: Optional[object] = None
+_HAS_SPEECH_RECOGNITION = False
+
+# Alternative audio backends
+_HAS_SOUNDDEVICE = False
+try:
+    import sounddevice as sd
+    _HAS_SOUNDDEVICE = True
+except ImportError:
+    pass
 
 
-def _get_recognizer() -> sr.Recognizer:
+def _import_sr():
+    """Lazy-import speech_recognition."""
+    global _recognizer_module, _HAS_SPEECH_RECOGNITION
+    if _recognizer_module is not None:
+        return _recognizer_module
+
+    try:
+        _recognizer_module = __import__("speech_recognition", fromlist=["Recognizer", "Microphone", "WaitTimeoutError", "UnknownValueError", "RequestError"])
+        _HAS_SPEECH_RECOGNITION = True
+    except ImportError as e:
+        logger.warning("speech_recognition not available: %s", e)
+        _recognizer_module = False
+        return None
+
+    return _recognizer_module
+
+
+def _get_recognizer():
+    """Get or create the speech recognizer."""
     global _recognizer
+    sr = _import_sr()
+    if sr is None:
+        return None
     if _recognizer is None:
         _recognizer = sr.Recognizer()
     return _recognizer
 
 
-def _get_mic() -> sr.Microphone:
+def _get_mic():
+    """Get or create the microphone."""
     global _mic
+    sr = _import_sr()
+    if sr is None:
+        return None
     if _mic is None:
-        if settings.WAKE_DEVICE_INDEX is not None:
-            _mic = sr.Microphone(device_index=settings.WAKE_DEVICE_INDEX)
-        else:
-            _mic = sr.Microphone()
+        try:
+            if settings.WAKE_DEVICE_INDEX is not None:
+                _mic = sr.Microphone(device_index=settings.WAKE_DEVICE_INDEX)
+            else:
+                _mic = sr.Microphone()
+        except Exception as e:
+            logger.warning("Microphone creation failed: %s", e)
+            return None
     return _mic
 
 
@@ -40,6 +84,9 @@ def calibrate(duration: float = 1.5) -> None:
     """Calibrate the microphone for ambient noise."""
     r = _get_recognizer()
     mic = _get_mic()
+    if r is None or mic is None:
+        logger.warning("Speech recognition not available, skipping calibration")
+        return
     try:
         with mic as source:
             logger.info("Calibrating microphone for %.1f seconds...", duration)
@@ -63,8 +110,12 @@ def listen(timeout: Optional[float] = None,
     Returns:
         Recognized text string, or None if failed.
     """
+    sr = _import_sr()
     r = _get_recognizer()
     mic = _get_mic()
+    if r is None or mic is None or sr is None:
+        logger.warning("Speech recognition not available")
+        return None
 
     try:
         with mic as source:
