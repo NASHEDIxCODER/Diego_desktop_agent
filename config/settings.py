@@ -40,25 +40,35 @@ class Settings(BaseSettings):
     WAKE_WORD: str = "leo"
     LANG_CODE: str = "en-IN"
     WAKE_DEVICE_INDEX: Optional[int] = None
+    TTS_SPEED: float = 0.92
+    TTS_VOLUME: float = 1.0
 
     # ── Logging ────────────────────────────────────────────────────
     LOG_LEVEL: str = "INFO"
 
     # ── Database ───────────────────────────────────────────────────
     DUCKDB_PATH: str = "data/leo.duckdb"
+    DUCKDB_RETRY_MAX_ATTEMPTS: int = 3
+    DUCKDB_RETRY_BASE_DELAY: float = 0.5
+
+    # ── Training ─────────────────────────────────────────────────
+    TRAIN_TIMEOUT_SECONDS: int = 600
 
     # ── NLP ────────────────────────────────────────────────────────
     MODEL_NAME: str = "all-MiniLM-L6-v2"
     SIMILARITY_THRESHOLD: float = 0.75
     EMBEDDING_DIM: int = 384
+    MODEL_VERSION: str = "2.0.0"
 
     # ── Paths ──────────────────────────────────────────────────────
     BASE_DIR: Path = Path(__file__).resolve().parent.parent
     DATA_DIR: Path = BASE_DIR / "data"
+    MODELS_DIR: Path = BASE_DIR / "models"
     VOICE_FILE: Path = BASE_DIR / "leo.wav"
     IMAGES_DIR: Path = BASE_DIR / "auth" / "images"
     KNOWN_ENCODINGS_PATH: Path = BASE_DIR / "auth" / "Known_encodings.p"
-    CLASSIFIER_PATH: Path = BASE_DIR / "data" / "classifier.pkl"
+    CLASSIFIER_PATH: Path = BASE_DIR / "models" / "intent_classifier.pkl"
+    METADATA_PATH: Path = BASE_DIR / "models" / "metadata.json"
     EMBEDDING_CACHE_PATH: Path = BASE_DIR / "data" / "embedding_cache.pkl"
 
     model_config = SettingsConfigDict(
@@ -71,5 +81,6 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
-# Ensure data directory exists
+# Ensure directories exist
 settings.DATA_DIR.mkdir(parents=True, exist_ok=True)
+settings.MODELS_DIR.mkdir(parents=True, exist_ok=True)

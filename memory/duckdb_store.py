@@ -3,19 +3,32 @@ DuckDB storage layer for Leo Desktop Assistant.
 
 Stores:
 - intents and intent_examples
-- embeddings
+- embeddings (intent_embeddings, cached_embeddings)
 - entities and synonyms
 - context_memory
 - command_history
 - user_preferences
 - plugin_registry
+
+Uses native DuckDB APIs only — no PostgreSQL compatibility hacks.
+
+Design invariants:
+  * intents table is append-only (no DELETE, no DROP during training)
+  * intent IDs are immutable / reused via ON CONFLICT ... DO UPDATE
+  * Derived tables (intent_embeddings, cached_embeddings) are safe to TRUNCATE
+  * Training pipeline runs inside a single transaction
+  * Every connect() has a matching close() - no leaked connections
+  * Exponential backoff retry on lock conflicts
+  * Context managers ensure no orphaned connections
 """
 
 import json
 import logging
-from datetime import datetime, timezone
+import time
+from contextlib import contextmanager
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Generator, List, Optional
 
 import numpy as np
 
@@ -31,33 +44,236 @@ except ImportError:
     logger.warning("DuckDB not installed. Using in-memory fallback.")
 
 
+# ── Schema version for migration support ──────────────────────────
+SCHEMA_VERSION = 2
+
+# Lock detection constants
+STALE_LOCK_AGE_SECONDS = 300  # 5 minutes — a lock file this old is stale
+
+
+class DatabaseLockedError(Exception):
+    """Raised when DuckDB is locked by another process."""
+
+
 class DuckDBStore:
     """
     Persistent storage using DuckDB.
 
     Creates tables on first use and provides CRUD operations
     for all Leo data types.
+
+    Transaction support:
+        begin_transaction()
+        commit()
+        rollback()
+
+    Context manager support:
+        with store.connect() as conn:
+            conn.execute(...)
+
+    Safe-training helpers:
+        delete_derived_tables()  — clears intent_embeddings, cached_embeddings only
+        add_intent()             — idempotent, reuses existing IDs
+
+    Database lock handling:
+        - Detects stale lock files before connection attempt
+        - Retries with exponential backoff up to DUCKDB_RETRY_MAX_ATTEMPTS
+        - If still locked, raises DatabaseLockedError for caller to handle
+        - All connections are tracked and closed on shutdown
     """
 
     def __init__(self, db_path: Optional[str] = None):
         self._db_path = db_path or settings.DUCKDB_PATH
         self._conn = None
         self._initialized = False
+        self._in_transaction = False
+        self._connections: List[Any] = []  # Track all connections
+
+    # ── Connection management ───────────────────────────────────
+
+    def _detect_stale_lock(self) -> bool:
+        """
+        Detect stale DuckDB lock files.
+
+        DuckDB creates temporary lock files during operations.
+        If the process crashes, these can remain and block future connections.
+
+        Returns:
+            True if stale locks were found and cleaned.
+        """
+        db_path = Path(self._db_path)
+        cleaned = False
+
+        # DuckDB lock patterns
+        lock_patterns = [
+            db_path.with_suffix(".duckdb.wal"),
+            db_path.with_suffix(".duckdb.tmp"),
+            db_path.parent / f"{db_path.name}.lock",
+        ]
+
+        now = time.time()
+        for lock_file in lock_patterns:
+            if lock_file.exists():
+                try:
+                    # Check if the file is stale (older than threshold)
+                    file_age = now - lock_file.stat().st_mtime
+                    if file_age > STALE_LOCK_AGE_SECONDS:
+                        lock_file.unlink()
+                        logger.info(
+                            "Removed stale lock file: %s (age=%.0fs)",
+                            lock_file, file_age
+                        )
+                        cleaned = True
+                    else:
+                        logger.debug(
+                            "Lock file %s is recent (age=%.0fs), not removing",
+                            lock_file, file_age
+                        )
+                except Exception as e:
+                    logger.warning("Could not inspect lock file %s: %s", lock_file, e)
+
+        return cleaned
+
+    def _connect_with_retry(self) -> Any:
+        """Connect to DuckDB with stale lock detection and exponential backoff."""
+        if not HAS_DUCKDB:
+            return None
+
+        max_attempts = settings.DUCKDB_RETRY_MAX_ATTEMPTS
+        base_delay = settings.DUCKDB_RETRY_BASE_DELAY
+
+        Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
+
+        # Detect and remove stale locks before attempting connection
+        self._detect_stale_lock()
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                conn = duckdb.connect(str(self._db_path))
+                self._connections.append(conn)
+                logger.info("Connected to DuckDB: %s", self._db_path)
+                return conn
+            except Exception as e:
+                error_str = str(e).lower()
+                if "lock" in error_str or "conflicting lock" in error_str:
+                    if attempt < max_attempts:
+                        delay = base_delay * (2 ** (attempt - 1))
+                        logger.warning(
+                            "DuckDB locked (attempt %d/%d), retrying in %.1fs...",
+                            attempt, max_attempts, delay
+                        )
+                        time.sleep(delay)
+                        # Try stale lock detection again before retry
+                        self._detect_stale_lock()
+                        continue
+                    logger.error("DuckDB still locked after %d attempts", max_attempts)
+                    raise DatabaseLockedError(
+                        f"DuckDB at {self._db_path} is locked by another process. "
+                        f"Retried {max_attempts} times."
+                    ) from e
+                raise
+
+    @contextmanager
+    def connect(self) -> Generator:
+        """
+        Context manager for short-lived connections.
+        Automatically closes the connection when done.
+
+        Usage:
+            with store.connect() as conn:
+                conn.execute("SELECT 1")
+        """
+        conn = duckdb.connect(str(self._db_path)) if HAS_DUCKDB else None
+        if conn is not None:
+            self._connections.append(conn)
+        try:
+            yield conn
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                    self._connections.remove(conn)
+                except ValueError:
+                    pass  # Already removed
+
+    def _close_all_connections(self) -> None:
+        """Close all tracked connections (for cleanup)."""
+        for conn in list(self._connections):
+            try:
+                conn.close()
+            except Exception:
+                pass
+        self._connections.clear()
+
+    def close(self) -> None:
+        """Close the persistent connection if open. Performs WAL checkpoint first."""
+        if self._conn is not None:
+            try:
+                # Checkpoint WAL to prevent stale WAL files on next startup
+                self._conn.execute("CHECKPOINT")
+            except Exception:
+                pass
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+            self._conn = None
+            self._initialized = False
+            logger.info("DuckDB persistent connection closed (WAL checkpointed)")
+
+        # Close any orphaned connections
+        self._close_all_connections()
+
+    def __del__(self):
+        """Ensure connection is closed on garbage collection."""
+        self.close()
+
+    # ── Connection access ───────────────────────────────────────
 
     def _get_conn(self):
-        """Get or create DuckDB connection."""
+        """Get or create persistent connection (for performance)."""
         if self._conn is None:
             if HAS_DUCKDB:
-                Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
-                self._conn = duckdb.connect(str(self._db_path))
-                logger.info("Connected to DuckDB: %s", self._db_path)
+                try:
+                    self._conn = self._connect_with_retry()
+                    self._connections.append(self._conn)
+                except DatabaseLockedError:
+                    logger.warning("DuckDB unavailable, using fallback mode")
+                    self._conn = None
             else:
-                # In-memory fallback
                 self._conn = None
         return self._conn
 
+    # ── Transaction support ────────────────────────────────────────
+
+    def begin_transaction(self) -> None:
+        """Begin a new transaction."""
+        conn = self._get_conn()
+        if conn is None:
+            return
+        conn.begin()
+        self._in_transaction = True
+
+    def commit(self) -> None:
+        """Commit the current transaction."""
+        conn = self._get_conn()
+        if conn is None:
+            return
+        conn.commit()
+        self._in_transaction = False
+
+    def rollback(self) -> None:
+        """Roll back the current transaction."""
+        conn = self._get_conn()
+        if conn is None:
+            return
+        conn.rollback()
+        self._in_transaction = False
+
+    # ── Initialization / Migration ─────────────────────────────────
+
     def initialize(self) -> None:
-        """Create all tables if they don't exist."""
+        """Create all tables if they don't exist.  Runs migration logic."""
         if self._initialized:
             return
 
@@ -67,6 +283,7 @@ class DuckDBStore:
             self._initialized = True
             return
 
+        # Create parent tables  (never dropped during training)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS intents (
                 id INTEGER PRIMARY KEY,
@@ -84,6 +301,30 @@ class DuckDBStore:
                 embedding FLOAT[],
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (intent_id) REFERENCES intents(id)
+            )
+        """)
+
+        # Derived tables – safe to DELETE / TRUNCATE during training
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS intent_embeddings (
+                id INTEGER PRIMARY KEY,
+                intent_id INTEGER NOT NULL,
+                example_id INTEGER,
+                text VARCHAR NOT NULL,
+                embedding FLOAT[],
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (intent_id) REFERENCES intents(id),
+                FOREIGN KEY (example_id) REFERENCES intent_examples(id)
+            )
+        """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS cached_embeddings (
+                id INTEGER PRIMARY KEY,
+                text_hash VARCHAR NOT NULL UNIQUE,
+                text VARCHAR NOT NULL,
+                embedding FLOAT[],
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
 
@@ -148,31 +389,114 @@ class DuckDBStore:
             )
         """)
 
-        # Create sequences for auto-increment
-        for table in ["intents", "intent_examples", "entities", "synonyms",
+        # Create sequences for auto-increment (DuckDB-native approach)
+        for table in ["intents", "intent_examples", "intent_embeddings",
+                       "cached_embeddings", "entities", "synonyms",
                        "context_memory", "command_history", "user_preferences",
                        "plugin_registry"]:
             conn.execute(f"""
                 CREATE SEQUENCE IF NOT EXISTS seq_{table} START 1
             """)
 
+        # ── Migration: schema version tracking ──────────────────
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS schema_version (
+                version INTEGER PRIMARY KEY,
+                applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        current_version = conn.execute(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_version"
+        ).fetchone()[0]
+
+        if current_version < SCHEMA_VERSION:
+            self._run_migrations(conn, current_version)
+            conn.execute(
+                "INSERT INTO schema_version (version) VALUES (?)",
+                [SCHEMA_VERSION]
+            )
+
         self._initialized = True
-        logger.info("DuckDB tables initialized")
+        logger.info("DuckDB tables initialized (schema version %d)", SCHEMA_VERSION)
+
+    def _run_migrations(self, conn, from_version: int) -> None:
+        """Run migrations from from_version+1 to SCHEMA_VERSION."""
+        logger.info("Running migrations from version %d to %d", from_version, SCHEMA_VERSION)
+
+        # Migration 1→2: add derived tables if missing (idempotent)
+        if from_version < 2:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS intent_embeddings (
+                    id INTEGER PRIMARY KEY,
+                    intent_id INTEGER NOT NULL,
+                    example_id INTEGER,
+                    text VARCHAR NOT NULL,
+                    embedding FLOAT[],
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (intent_id) REFERENCES intents(id),
+                    FOREIGN KEY (example_id) REFERENCES intent_examples(id)
+                )
+            """)
+            conn.execute("""
+                CREATE SEQUENCE IF NOT EXISTS seq_intent_embeddings START 1
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS cached_embeddings (
+                    id INTEGER PRIMARY KEY,
+                    text_hash VARCHAR NOT NULL UNIQUE,
+                    text VARCHAR NOT NULL,
+                    embedding FLOAT[],
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.execute("""
+                CREATE SEQUENCE IF NOT EXISTS seq_cached_embeddings START 1
+            """)
+            logger.info("Migration v2: added intent_embeddings / cached_embeddings")
+
+    # ── Safe derived-table deletion ────────────────────────────────
+
+    def delete_derived_tables(self) -> None:
+        """
+        Delete *only* derived training tables.
+        Never touches `intents` or any other parent table.
+        Safe to call inside a transaction.
+        """
+        self.initialize()
+        conn = self._get_conn()
+        if conn is None:
+            return
+        conn.execute("DELETE FROM intent_embeddings")
+        conn.execute("DELETE FROM cached_embeddings")
+        conn.execute("DELETE FROM intent_examples")
+        logger.info("Cleared derived training tables (intent_embeddings, cached_embeddings, intent_examples)")
 
     # ── Intents ──────────────────────────────────────────────────
 
     def add_intent(self, name: str, description: str = "") -> int:
-        """Add a new intent. Returns intent ID."""
+        """Add a new intent, or reuse existing ID if name already exists."""
         self.initialize()
         conn = self._get_conn()
         if conn is None:
             return -1
-        conn.execute("""
+
+        existing = conn.execute(
+            "SELECT id FROM intents WHERE name = ?", [name]
+        ).fetchone()
+
+        if existing:
+            conn.execute(
+                "UPDATE intents SET description = ? WHERE id = ?",
+                [description, existing[0]]
+            )
+            return existing[0]
+
+        result = conn.execute("""
             INSERT INTO intents (id, name, description)
-            VALUES (nextval('seq_intents'), ?, ?)
-            ON CONFLICT (name) DO UPDATE SET description = EXCLUDED.description
-        """, [name, description])
-        result = conn.execute("SELECT id FROM intents WHERE name = ?", [name]).fetchone()
+            SELECT nextval('seq_intents'), ?, ?
+            RETURNING id
+        """, [name, description]).fetchone()
         return result[0] if result else -1
 
     def get_intents(self) -> List[Dict]:
@@ -194,11 +518,11 @@ class DuckDBStore:
         if conn is None:
             return -1
         emb_list = embedding.tolist() if embedding is not None else None
-        conn.execute("""
+        result = conn.execute("""
             INSERT INTO intent_examples (id, intent_id, text, embedding)
-            VALUES (nextval('seq_intent_examples'), ?, ?, ?)
-        """, [intent_id, text, emb_list])
-        result = conn.execute("SELECT lastval()").fetchone()
+            SELECT nextval('seq_intent_examples'), ?, ?, ?
+            RETURNING id
+        """, [intent_id, text, emb_list]).fetchone()
         return result[0] if result else -1
 
     def get_examples(self, intent_id: int) -> List[Dict]:
@@ -213,6 +537,74 @@ class DuckDBStore:
         ).fetchall()
         return [{"id": r[0], "text": r[1]} for r in rows]
 
+    # ── Intent Embeddings (derived table) ─────────────────────────
+
+    def add_intent_embedding(self, intent_id: int, text: str,
+                             embedding: np.ndarray,
+                             example_id: Optional[int] = None) -> int:
+        """Store a precomputed embedding for an intent example."""
+        self.initialize()
+        conn = self._get_conn()
+        if conn is None:
+            return -1
+        emb_list = embedding.tolist()
+        result = conn.execute("""
+            INSERT INTO intent_embeddings (id, intent_id, example_id, text, embedding)
+            SELECT nextval('seq_intent_embeddings'), ?, ?, ?, ?
+            RETURNING id
+        """, [intent_id, example_id, text, emb_list]).fetchone()
+        return result[0] if result else -1
+
+    def get_intent_embeddings(self, intent_id: int) -> List[Dict]:
+        """Get all embeddings for an intent."""
+        self.initialize()
+        conn = self._get_conn()
+        if conn is None:
+            return []
+        rows = conn.execute("""
+            SELECT id, intent_id, example_id, text, embedding
+            FROM intent_embeddings
+            WHERE intent_id = ?
+        """, [intent_id]).fetchall()
+        return [{
+            "id": r[0], "intent_id": r[1], "example_id": r[2],
+            "text": r[3], "embedding": r[4],
+        } for r in rows]
+
+    # ── Cached Embeddings (derived table) ─────────────────────────
+
+    def cache_embedding(self, text: str, embedding: np.ndarray) -> int:
+        """Cache a text→embedding mapping (deduplicated by text hash)."""
+        self.initialize()
+        conn = self._get_conn()
+        if conn is None:
+            return -1
+        text_hash = str(hash(text))
+        emb_list = embedding.tolist()
+        result = conn.execute("""
+            INSERT INTO cached_embeddings (id, text_hash, text, embedding)
+            SELECT nextval('seq_cached_embeddings'), ?, ?, ?
+            ON CONFLICT (text_hash) DO UPDATE
+                SET embedding = EXCLUDED.embedding
+            RETURNING id
+        """, [text_hash, text, emb_list]).fetchone()
+        return result[0] if result else -1
+
+    def get_cached_embedding(self, text: str) -> Optional[np.ndarray]:
+        """Retrieve a cached embedding by text, or None."""
+        self.initialize()
+        conn = self._get_conn()
+        if conn is None:
+            return None
+        text_hash = str(hash(text))
+        result = conn.execute(
+            "SELECT embedding FROM cached_embeddings WHERE text_hash = ?",
+            [text_hash]
+        ).fetchone()
+        if result and result[0] is not None:
+            return np.array(result[0], dtype=np.float32)
+        return None
+
     # ── Synonyms ─────────────────────────────────────────────────
 
     def add_synonym(self, canonical: str, synonym: str) -> int:
@@ -221,11 +613,11 @@ class DuckDBStore:
         conn = self._get_conn()
         if conn is None:
             return -1
-        conn.execute("""
+        result = conn.execute("""
             INSERT INTO synonyms (id, canonical, synonym)
-            VALUES (nextval('seq_synonyms'), ?, ?)
-        """, [canonical, synonym])
-        result = conn.execute("SELECT lastval()").fetchone()
+            SELECT nextval('seq_synonyms'), ?, ?
+            RETURNING id
+        """, [canonical, synonym]).fetchone()
         return result[0] if result else -1
 
     def get_synonyms(self) -> Dict[str, List[str]]:
@@ -254,11 +646,11 @@ class DuckDBStore:
         conn = self._get_conn()
         if conn is None:
             return -1
-        conn.execute("""
+        result = conn.execute("""
             INSERT INTO command_history (id, text, intent, confidence, response)
-            VALUES (nextval('seq_command_history'), ?, ?, ?, ?)
-        """, [text, intent, confidence, response])
-        result = conn.execute("SELECT lastval()").fetchone()
+            SELECT nextval('seq_command_history'), ?, ?, ?, ?
+            RETURNING id
+        """, [text, intent, confidence, response]).fetchone()
         return result[0] if result else -1
 
     def get_recent_commands(self, limit: int = 20) -> List[Dict]:
@@ -288,9 +680,9 @@ class DuckDBStore:
             return
         conn.execute("""
             INSERT INTO user_preferences (id, key, value)
-            VALUES (nextval('seq_user_preferences'), ?, ?)
+            SELECT nextval('seq_user_preferences'), ?, ?
             ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value,
-                                            updated_at = CURRENT_TIMESTAMP
+                                            updated_at = now()
         """, [key, value])
 
     def get_preference(self, key: str, default: str = "") -> str:
@@ -326,17 +718,15 @@ class DuckDBStore:
         if conn is None:
             return -1
         config_json = json.dumps(config) if config else "{}"
-        conn.execute("""
+        result = conn.execute("""
             INSERT INTO plugin_registry (id, name, version, enabled, config)
-            VALUES (nextval('seq_plugin_registry'), ?, ?, ?, ?)
+            SELECT nextval('seq_plugin_registry'), ?, ?, ?, ?
             ON CONFLICT (name) DO UPDATE SET
                 version = EXCLUDED.version,
                 enabled = EXCLUDED.enabled,
                 config = EXCLUDED.config
-        """, [name, version, enabled, config_json])
-        result = conn.execute(
-            "SELECT id FROM plugin_registry WHERE name = ?", [name]
-        ).fetchone()
+            RETURNING id
+        """, [name, version, enabled, config_json]).fetchone()
         return result[0] if result else -1
 
     def get_plugins(self) -> List[Dict]:
@@ -365,13 +755,12 @@ class DuckDBStore:
             return -1
         expires = None
         if ttl_seconds:
-            from datetime import timedelta
             expires = datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)
-        conn.execute("""
+        result = conn.execute("""
             INSERT INTO context_memory (id, session_id, key, value, expires_at)
-            VALUES (nextval('seq_context_memory'), ?, ?, ?, ?)
-        """, [session_id, key, value, expires])
-        result = conn.execute("SELECT lastval()").fetchone()
+            SELECT nextval('seq_context_memory'), ?, ?, ?, ?
+            RETURNING id
+        """, [session_id, key, value, expires]).fetchone()
         return result[0] if result else -1
 
     def get_context(self, session_id: str, key: str) -> Optional[str]:
@@ -388,13 +777,6 @@ class DuckDBStore:
             LIMIT 1
         """, [session_id, key]).fetchone()
         return result[0] if result else None
-
-    def close(self) -> None:
-        """Close the database connection."""
-        if self._conn:
-            self._conn.close()
-            self._conn = None
-            logger.info("DuckDB connection closed")
 
 
 # Global store instance

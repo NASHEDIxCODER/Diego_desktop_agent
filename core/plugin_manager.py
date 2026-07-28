@@ -6,6 +6,7 @@ Plugins are loaded from the plugins/ directory and
 registered with the event bus.
 """
 
+import asyncio
 import importlib
 import inspect
 import logging
@@ -88,13 +89,14 @@ class PluginManager:
         return self._plugins
 
     async def initialize_all(self) -> None:
-        """Initialize all loaded plugins."""
+        """Initialize all loaded plugins. Failing plugins are disabled but do not stop startup."""
         for name, plugin in self._plugins.items():
             try:
                 await plugin.initialize()
                 logger.info("Initialized plugin: %s", name)
             except Exception as e:
-                logger.error("Failed to initialize plugin %s: %s", name, e)
+                logger.error("Failed to initialize plugin %s: %s — disabling", name, e)
+                plugin.disable()
 
     async def shutdown_all(self) -> None:
         """Shut down all plugins gracefully."""
@@ -109,16 +111,62 @@ class PluginManager:
         """Get a loaded plugin by name."""
         return self._plugins.get(name)
 
-    async def handle_event(self, event: Event) -> None:
-        """Dispatch an event to all enabled plugins."""
+    async def handle_event(self, event: Event, timeout: float = 30.0) -> None:
+        """
+        Dispatch an event to all enabled plugins with timeout isolation.
+
+        Each plugin runs independently with a timeout.
+        A hanging or crashing plugin does not affect other plugins or the main loop.
+
+        Instrumentation:
+          - Logs received intent, selected plugin, execute() call, returned status,
+            and execution time.
+          - Prints why execution failed.
+
+        Args:
+            event: The event to dispatch.
+            timeout: Maximum seconds to wait per plugin handler.
+        """
+        import time as _time
         for name, plugin in self._plugins.items():
             if not plugin.enabled:
+                logger.debug("Plugin %s is disabled, skipping event %s", name, event.type)
                 continue
+
+            logger.info(
+                "[PLUGIN] received intent='%s' → selected plugin='%s'",
+                event.type, name,
+            )
+
+            start_ts = _time.monotonic()
             try:
-                await plugin.handle_event(event.type, event.data)
+                result = await asyncio.wait_for(
+                    plugin.handle_event(event.type, event.data),
+                    timeout=timeout
+                )
+                elapsed = _time.monotonic() - start_ts
+                status = "success" if result is not None else "no_return"
+                logger.info(
+                    "[PLUGIN] plugin='%s' event='%s' execute() → status='%s' "
+                    "returned='%s' time=%.3fs",
+                    name, event.type, status, result, elapsed,
+                )
+            except asyncio.TimeoutError:
+                elapsed = _time.monotonic() - start_ts
+                logger.error(
+                    "[PLUGIN] plugin='%s' event='%s' execute() → status='timeout' "
+                    "time=%.3fs — FAILED: plugin timed out after %ss",
+                    name, event.type, elapsed, timeout,
+                )
+                plugin.disable()
             except Exception as e:
-                logger.error("Plugin %s error handling event %s: %s",
-                             name, event.type, e)
+                elapsed = _time.monotonic() - start_ts
+                logger.error(
+                    "[PLUGIN] plugin='%s' event='%s' execute() → status='error' "
+                    "time=%.3fs — FAILED: %s",
+                    name, event.type, elapsed, e,
+                )
+                plugin.disable()
 
 
 # Global singleton
