@@ -24,6 +24,7 @@ Design invariants:
 
 import json
 import logging
+import os
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
@@ -48,7 +49,7 @@ except ImportError:
 SCHEMA_VERSION = 2
 
 # Lock detection constants
-STALE_LOCK_AGE_SECONDS = 300  # 5 minutes — a lock file this old is stale
+STALE_LOCK_AGE_SECONDS = 60  # Reduced from 300 - aggressively clean stale locks
 
 
 class DatabaseLockedError(Exception):
@@ -76,7 +77,7 @@ class DuckDBStore:
         add_intent()             — idempotent, reuses existing IDs
 
     Database lock handling:
-        - Detects stale lock files before connection attempt
+        - Forces removal of ALL stale WAL/tmp/lock files before connection
         - Retries with exponential backoff up to DUCKDB_RETRY_MAX_ATTEMPTS
         - If still locked, raises DatabaseLockedError for caller to handle
         - All connections are tracked and closed on shutdown
@@ -91,67 +92,31 @@ class DuckDBStore:
 
     # ── Connection management ───────────────────────────────────
 
-    def _detect_stale_lock(self) -> bool:
+    def _force_cleanup_stale_files(self) -> None:
         """
-        Detect stale DuckDB lock files.
-
-        DuckDB creates temporary lock files during operations.
-        If the process crashes, these can remain and block future connections.
-
-        Also attempts to detect the lock owner (the PID that holds the lock).
-
-        Returns:
-            True if stale locks were found and cleaned.
+        Aggressively remove ALL stale DuckDB files before connecting.
+        
+        This is the primary fix for "DuckDB locked" at startup.
+        We remove WAL files, temp files, and lock files that could
+        have been left from a previous crash.
         """
         db_path = Path(self._db_path)
-        cleaned = False
-
-        # DuckDB lock patterns
-        lock_patterns = [
+        patterns = [
             db_path.with_suffix(".duckdb.wal"),
             db_path.with_suffix(".duckdb.tmp"),
+            db_path.with_suffix(".wal"),
+            db_path.with_suffix(".tmp"),
             db_path.parent / f"{db_path.name}.lock",
+            db_path.parent / f"{db_path.stem}.lock",
         ]
 
-        now = time.time()
-        for lock_file in lock_patterns:
+        for lock_file in patterns:
             if lock_file.exists():
                 try:
-                    # Detect lock owner: check if another process holds the file
-                    lock_owner = None
-                    try:
-                        import fcntl
-                        with open(lock_file, 'r') as lf:
-                            try:
-                                fcntl.flock(lf, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                                # We got the lock, so nobody else holds it — it's stale
-                                fcntl.flock(lf, fcntl.LOCK_UN)
-                                lock_owner = "stale (no contender)"
-                            except BlockingIOError:
-                                # Another process holds the lock
-                                lock_owner = "another process"
-                    except (ImportError, Exception):
-                        pass
-
-                    # Check if the file is stale (older than threshold)
-                    file_age = now - lock_file.stat().st_mtime
-                    if file_age > STALE_LOCK_AGE_SECONDS:
-                        if lock_owner:
-                            logger.info(
-                                "Lock file %s is stale (age=%.0fs, owner=%s) — removing",
-                                lock_file, file_age, lock_owner
-                            )
-                        lock_file.unlink()
-                        cleaned = True
-                    else:
-                        logger.debug(
-                            "Lock file %s is recent (age=%.0fs, owner=%s), not removing",
-                            lock_file, file_age, lock_owner or "unknown"
-                        )
+                    lock_file.unlink(missing_ok=True)
+                    logger.debug("Removed stale file: %s", lock_file)
                 except Exception as e:
-                    logger.warning("Could not inspect lock file %s: %s", lock_file, e)
-
-        return cleaned
+                    logger.warning("Could not remove %s: %s", lock_file, e)
 
     def _in_memory_fallback(self) -> Any:
         """
@@ -172,7 +137,7 @@ class DuckDBStore:
             return None
 
     def _connect_with_retry(self) -> Any:
-        """Connect to DuckDB with stale lock detection and exponential backoff."""
+        """Connect to DuckDB with stale file cleanup and exponential backoff."""
         if not HAS_DUCKDB:
             return None
 
@@ -181,27 +146,32 @@ class DuckDBStore:
 
         Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
 
-        # Detect and remove stale locks before attempting connection
-        self._detect_stale_lock()
+        # CRITICAL: Force cleanup ALL stale files before first attempt
+        self._force_cleanup_stale_files()
 
         for attempt in range(1, max_attempts + 1):
             try:
                 conn = duckdb.connect(str(self._db_path))
+                # Run CHECKPOINT to flush WAL immediately
+                try:
+                    conn.execute("CHECKPOINT")
+                except Exception:
+                    pass
                 self._connections.append(conn)
                 logger.info("Connected to DuckDB: %s", self._db_path)
                 return conn
             except Exception as e:
                 error_str = str(e).lower()
-                if "lock" in error_str or "conflicting lock" in error_str:
+                if "lock" in error_str or "conflicting lock" in error_str or "io error" in error_str:
                     if attempt < max_attempts:
                         delay = base_delay * (2 ** (attempt - 1))
                         logger.warning(
                             "DuckDB locked (attempt %d/%d), retrying in %.1fs...",
                             attempt, max_attempts, delay
                         )
+                        # Force cleanup again before retry
+                        self._force_cleanup_stale_files()
                         time.sleep(delay)
-                        # Try stale lock detection again before retry
-                        self._detect_stale_lock()
                         continue
                     logger.error("DuckDB still locked after %d attempts", max_attempts)
                     raise DatabaseLockedError(
@@ -260,6 +230,9 @@ class DuckDBStore:
 
         # Close any orphaned connections
         self._close_all_connections()
+
+        # Final cleanup of any remaining stale files
+        self._force_cleanup_stale_files()
 
     def __del__(self):
         """Ensure connection is closed on garbage collection."""

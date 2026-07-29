@@ -5,6 +5,7 @@ Wraps the existing scripts/telegram_bot.py functionality as a
 BasePlugin with event bus integration.
 """
 
+import asyncio
 import logging
 from typing import Any, Dict, Optional
 
@@ -55,24 +56,53 @@ class TelegramPlugin(BasePlugin):
         )
 
     async def initialize(self) -> None:
-        """Register event handlers and init Telegram client."""
+        """Register event handlers and init Telegram client in background."""
         bus.on("telegram_send", self._on_send)
         bus.on("telegram_read", self._on_read)
         bus.on("telegram_reply", self._on_reply)
 
-        # Initialize Telegram client gracefully — failures disable Telegram but
-        # never block startup.
+        # Initialize Telegram client in background — NEVER block startup.
+        # If session is invalid, disable instantly and show one warning.
+        asyncio.ensure_future(self._init_background())
+
+    async def _init_background(self) -> None:
+        """Initialize Telegram in background. Never blocks startup."""
         try:
             tg = _get_telegram()
+            if tg is None:
+                self.disable()
+                return
+            # Quick check: if no session file exists, disable immediately
+            import os as _os
+            from pathlib import Path as _Path
+            session_files = [
+                _Path("leo_telegram.session"),
+                _Path("leo_telegram.session-journal"),
+            ]
+            has_session = any(f.exists() for f in session_files)
+            if not has_session:
+                logger.warning(
+                    "Telegram session file not found — Telegram disabled. "
+                    "Run `python scripts/telegram_bot.py` interactively once to create a session."
+                )
+                self.disable()
+                return
+
             await tg.init()
-            logger.info("Telegram client initialized")
+            if tg._available:
+                logger.info("Telegram client initialized")
+            else:
+                logger.warning("Telegram session invalid — Telegram disabled")
+                self.disable()
         except ValueError as e:
-            # Telethon API version mismatch (tuple unpack error)
             logger.warning("Telegram init failed (API version mismatch): %s", e)
+            self.disable()
         except ImportError as e:
             logger.warning("Telegram init failed (missing dependency): %s", e)
+            self.disable()
         except Exception as e:
             logger.warning("Telegram init failed (unexpected): %s", e)
+            self.disable()
 
     async def shutdown(self) -> None:
         """Cleanup."""

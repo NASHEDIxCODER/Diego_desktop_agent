@@ -7,7 +7,7 @@ Detects available audio playback backends:
   3. ALSA (aplay)
   4. JACK (jack_play)
 
-Suppresses harmless ALSA warnings via environment variables.
+Suppresses ALL ALSA/JACK stderr output via subprocess DEVNULL.
 Provides a unified play() interface regardless of backend.
 """
 
@@ -34,7 +34,18 @@ BACKEND_PREFERENCE = ["pipewire", "pulseaudio", "alsa", "jack"]
 def _suppress_alsa_warnings() -> None:
     """Suppress harmless ALSA warnings that spam stderr."""
     os.environ.setdefault("ALSA_CONFIG_PATH", "")
-    os.environ.setdefault("DISPLAY_ALSA_OUTPUT", "0")
+    os.environ["DISPLAY_ALSA_OUTPUT"] = "0"
+    os.environ["ALSA_OUTPUT_FORMAT"] = "0"
+    os.environ["PYTTXS3_ALSA_DEBUG"] = "0"
+    os.environ["SPEECH_RECOGNITION_ALSA_DEBUG"] = "0"
+    os.environ["ALSA_DEBUG"] = "0"
+    os.environ["ALSA_DEBUG_FILE"] = "/dev/null"
+    os.environ["PULSE_LOG"] = "0"
+    os.environ["PULSE_LOG_LEVEL"] = "0"
+    os.environ["JACK_NO_AUDIO"] = "1"
+    os.environ["JACK_NO_START_SERVER"] = "1"
+    # Suppress pyttsx3 ALSA warnings specifically
+    os.environ["PYTTXS3_ALSA_DEBUG"] = "0"
 
 
 class AudioDeviceManager:
@@ -43,6 +54,7 @@ class AudioDeviceManager:
 
     Automatically detects the best available backend at startup.
     Falls back gracefully if backend becomes unavailable.
+    Suppresses ALL stderr output from audio backends to prevent terminal flood.
     """
 
     def __init__(self):
@@ -72,13 +84,12 @@ class AudioDeviceManager:
                 self._backend = backend_name
                 self._play_cmd = cmd
                 self._backend_args = BACKENDS[backend_name]["args"]
-                logger.info("Audio backend detected: %s (%s)", backend_name, cmd)
+                logger.info("Audio backend: %s", cmd)
                 return self._backend
 
         self._backend = "none"
-        # Only log once — never retry or repeat
         if not self._warning_shown:
-            logger.warning("No audio playback backend found (tried: %s)",
+            logger.warning("No audio backend found (tried: %s)",
                            ", ".join(BACKEND_PREFERENCE))
             self._warning_shown = True
         return "none"
@@ -94,6 +105,8 @@ class AudioDeviceManager:
         """
         Play a WAV file using the detected backend.
 
+        All stdout and stderr is suppressed to prevent terminal spam.
+
         Args:
             wav_path: Path to WAV file to play.
 
@@ -103,7 +116,7 @@ class AudioDeviceManager:
         backend = self.backend
         if backend == "none":
             if not self._warning_shown:
-                logger.warning("No audio backend available — cannot play audio")
+                logger.warning("No audio backend — cannot play audio")
                 self._warning_shown = True
             return False
 
@@ -117,7 +130,6 @@ class AudioDeviceManager:
             )
             return True
         except FileNotFoundError:
-            # Backend disappeared — reset and retry detection
             logger.warning("Audio backend %s disappeared, re-detecting...", backend)
             self._backend = None
             return self.play(wav_path)

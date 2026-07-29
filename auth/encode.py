@@ -16,7 +16,7 @@ def encode_and_upload_faces():
         'storageBucket': "gs://leo-assit.appspot.com"
     }
 
-    cred = credentials.Certificate("serviceAccountKey.json")
+    cred = credentials.Certificate("auth/serviceAccountKey.json")
     # Initialize or get the Firebase app
 
     firebase_admin.initialize_app(cred, name="leo assist", options=options)
