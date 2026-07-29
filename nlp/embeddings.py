@@ -1,4 +1,3 @@
-
 """
 Embedding generation for Leo NLP pipeline.
 
@@ -8,16 +7,17 @@ for intent matching and similarity search.
 Caches embeddings to disk to avoid recomputation on every startup.
 Cache key is SHA256(embedding_model + dataset_hash + text).
 
-Refactored to:
+Optimizations:
 - Load SentenceTransformer once (singleton)
-- Collect ALL examples, encode in batches (batch_size=64)
-- normalize_embeddings=True, show_progress_bar=True
-- Store embeddings after batch completion
-- Heartbeat after every batch
+- Cache model locally to avoid HTTP requests at startup
+- Support HF_TOKEN for authenticated models
+- No HEAD requests during model loading
+- Fully offline after first download
 """
 
 import hashlib
 import logging
+import os
 import pickle
 import time
 from pathlib import Path
@@ -43,6 +43,9 @@ _heartbeat_callback: Optional[callable] = None
 
 # Dataset hash for cache key — set by trainer before encoding
 _dataset_hash: str = ""
+
+# Track whether we've set offline mode after first load
+_offline_mode_set = False
 
 
 def set_heartbeat_callback(cb: Optional[callable]) -> None:
@@ -107,15 +110,52 @@ def _save_cache() -> None:
         logger.warning("Failed to save embedding cache: %s", e)
 
 
+def _model_is_cached_locally() -> bool:
+    """Check if the embedding model is already cached in the HuggingFace cache directory."""
+    model_name = settings.MODEL_NAME
+    hf_home = os.environ.get("HF_HOME") or os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache/huggingface")
+    model_path = Path(hf_home) / "hub" / f"models--{model_name.replace('/', '--')}"
+    if model_path.exists():
+        # Check for actual model files (snapshots)
+        snapshots = list(model_path.glob("snapshots/*"))
+        if snapshots:
+            return True
+    return False
+
+
+def _set_offline_mode():
+    """Set HuggingFace to offline mode immediately."""
+    global _offline_mode_set
+    if not _offline_mode_set:
+        os.environ["TRANSFORMERS_OFFLINE"] = "1"
+        os.environ["HF_HUB_OFFLINE"] = "1"
+        _offline_mode_set = True
+        logger.info("Set HuggingFace to offline mode")
+
+
 def _get_model():
     """Lazy-load the sentence-transformers model (loaded once)."""
     global _model
     if _model is None:
         try:
             from sentence_transformers import SentenceTransformer
-            _model = SentenceTransformer(settings.MODEL_NAME)
+
+            # Set offline mode BEFORE loading if model is already cached locally
+            if _model_is_cached_locally():
+                _set_offline_mode()
+                logger.info("Model found in local cache, enabling offline mode before load")
+
+            # Support HF_TOKEN for authenticated models
+            hf_token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN")
+            model_kwargs = {}
+            if hf_token:
+                model_kwargs["use_auth_token"] = hf_token
+
+            _model = SentenceTransformer(settings.MODEL_NAME, **model_kwargs)
+            _set_offline_mode()
             logger.info("Loaded embedding model: %s (dim=%d)",
                         settings.MODEL_NAME, settings.EMBEDDING_DIM)
+
         except Exception as e:
             logger.error("Failed to load embedding model: %s", e)
             raise

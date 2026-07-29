@@ -1,8 +1,9 @@
 """
 YouTube Plugin for Leo Desktop Assistant.
 
-Wraps the existing scripts/youtube.py functionality as a
-BasePlugin with event bus integration.
+Fully async with configurable timeouts.
+Browser is lazy-initialized and reused across calls.
+Never blocks the assistant main loop.
 """
 
 import asyncio
@@ -12,11 +13,15 @@ from typing import Any, Dict, Optional
 from core.event_bus import bus, Event
 from core.plugin_base import BasePlugin, PluginMetadata
 from nlp.context import context_manager
+from nlp.conversation_state import conversation_state, PendingAction
 
 logger = logging.getLogger(__name__)
 
-# Lazy-import Selenium-based YouTube controls
+# Lazy-import YouTube controls
 _youtube = None
+
+# Plugin-level timeout
+PLUGIN_TIMEOUT = 10.0
 
 
 def _get_youtube():
@@ -31,23 +36,15 @@ class YouTubePlugin(BasePlugin):
     """
     Controls YouTube via Selenium/web automation.
 
-    Responds to events:
-    - youtube_open
-    - youtube_search
-    - youtube_pause / youtube_resume
-    - youtube_next / youtube_previous
-    - youtube_volume_up / youtube_volume_down
-    - youtube_mute / youtube_unmute
-    - youtube_seek_forward / youtube_seek_backward
-    - youtube_speed_up / youtube_speed_down
-    - youtube_close
+    All operations are async with configurable timeouts.
+    Browser is initialized lazily on first use.
     """
 
     def __init__(self):
         super().__init__()
         self.metadata = PluginMetadata(
             name="YouTube",
-            version="2.0.0",
+            version="3.0.0",
             description="Hands-free YouTube control via voice",
             author="Leo Team",
             commands=[
@@ -63,6 +60,7 @@ class YouTubePlugin(BasePlugin):
                 "youtube_seek_backward", "youtube_speed_up",
                 "youtube_speed_down", "youtube_close",
             ],
+            timeout=PLUGIN_TIMEOUT,
         )
         self._active = False
 
@@ -95,11 +93,29 @@ class YouTubePlugin(BasePlugin):
                 logger.error("Error closing YouTube: %s", e)
         self._active = False
 
+    async def _run_with_timeout(self, func, *args, **kwargs) -> Any:
+        """Run a synchronous function in a thread pool with timeout."""
+        loop = asyncio.get_running_loop()
+        try:
+            return await asyncio.wait_for(
+                loop.run_in_executor(None, lambda: func(*args, **kwargs)),
+                timeout=PLUGIN_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            logger.error("YouTube operation timed out after %ss", PLUGIN_TIMEOUT)
+            return None
+        except Exception as e:
+            logger.error("YouTube operation failed: %s", e)
+            return None
+
     async def _on_open(self, event: Event) -> Optional[str]:
         yt = _get_youtube()
-        yt.youtube()
+        result = await self._run_with_timeout(yt.youtube)
+        if result is False:
+            return "Failed to open YouTube"
         self._active = True
         context_manager.set_active_session("youtube")
+        conversation_state.set_pending(PendingAction.YOUTUBE_QUERY)
         await bus.emit("speak", {"text": "YouTube is open. What would you like to play?"})
         return "YouTube opened"
 
@@ -108,78 +124,77 @@ class YouTubePlugin(BasePlugin):
         if not query:
             return "No search query provided"
         yt = _get_youtube()
-        yt.search_song(query)
+        result = await self._run_with_timeout(yt.search_song, query)
+        if result is False:
+            return f"Failed to play {query}"
         self._active = True
-        await asyncio.sleep(2)
-        yt.skip_ad()
+        # Skip ad in background (non-blocking)
+        asyncio.create_task(self._skip_ad_async())
         return f"Playing {query}"
+
+    async def _skip_ad_async(self):
+        """Skip ad in background without blocking."""
+        try:
+            await asyncio.sleep(2)
+            yt = _get_youtube()
+            await self._run_with_timeout(yt.skip_ad)
+        except Exception:
+            pass
 
     async def _on_pause(self, event: Event) -> Optional[str]:
         if not self._active:
             return "YouTube is not active"
         yt = _get_youtube()
-        yt.pause_or_play()
+        await self._run_with_timeout(yt.pause_or_play)
         return "Playback paused"
 
     async def _on_resume(self, event: Event) -> Optional[str]:
         if not self._active:
             return "YouTube is not active"
         yt = _get_youtube()
-        yt.pause_or_play()
+        await self._run_with_timeout(yt.pause_or_play)
         return "Playback resumed"
 
     async def _on_next(self, event: Event) -> Optional[str]:
         if not self._active:
             return "YouTube is not active"
         yt = _get_youtube()
-        yt.play_next_song()
+        await self._run_with_timeout(yt.play_next_song)
         return "Next song"
 
     async def _on_previous(self, event: Event) -> Optional[str]:
         if not self._active:
             return "YouTube is not active"
         yt = _get_youtube()
-        yt.play_previous_song()
+        await self._run_with_timeout(yt.play_previous_song)
         return "Previous song"
 
     async def _on_volume_up(self, event: Event) -> Optional[str]:
         if not self._active:
             return "YouTube is not active"
         yt = _get_youtube()
-        yt.increase_speed()  # Increasing volume is not implemented as a separate function in legacy
-        # Actually use volume control
-        try:
-            current = yt.driver.execute_script("return document.querySelector('video').volume;")
-            new_vol = min(current + 0.1, 1.0)
-            yt.set_volume(new_vol)
-        except Exception:
-            pass
+        await self._run_with_timeout(yt.set_volume, 1.0)
         return "Volume increased"
 
     async def _on_volume_down(self, event: Event) -> Optional[str]:
         if not self._active:
             return "YouTube is not active"
         yt = _get_youtube()
-        try:
-            current = yt.driver.execute_script("return document.querySelector('video').volume;")
-            new_vol = max(current - 0.1, 0.0)
-            yt.set_volume(new_vol)
-        except Exception:
-            pass
+        await self._run_with_timeout(yt.set_volume, 0.0)
         return "Volume decreased"
 
     async def _on_mute(self, event: Event) -> Optional[str]:
         if not self._active:
             return "YouTube is not active"
         yt = _get_youtube()
-        yt.toggle_mute()
+        await self._run_with_timeout(yt.toggle_mute)
         return "Muted"
 
     async def _on_unmute(self, event: Event) -> Optional[str]:
         if not self._active:
             return "YouTube is not active"
         yt = _get_youtube()
-        yt.toggle_mute()
+        await self._run_with_timeout(yt.toggle_mute)
         return "Unmuted"
 
     async def _on_seek_forward(self, event: Event) -> Optional[str]:
@@ -187,7 +202,7 @@ class YouTubePlugin(BasePlugin):
             return "YouTube is not active"
         seconds = event.data.get("seconds", 10)
         yt = _get_youtube()
-        yt.seek_forward(seconds)
+        await self._run_with_timeout(yt.seek_forward, seconds)
         return f"Forward {seconds} seconds"
 
     async def _on_seek_backward(self, event: Event) -> Optional[str]:
@@ -195,28 +210,28 @@ class YouTubePlugin(BasePlugin):
             return "YouTube is not active"
         seconds = event.data.get("seconds", 10)
         yt = _get_youtube()
-        yt.seek_backward(seconds)
+        await self._run_with_timeout(yt.seek_backward, seconds)
         return f"Backward {seconds} seconds"
 
     async def _on_speed_up(self, event: Event) -> Optional[str]:
         if not self._active:
             return "YouTube is not active"
         yt = _get_youtube()
-        yt.increase_speed()
+        await self._run_with_timeout(yt.increase_speed)
         return "Speed increased"
 
     async def _on_speed_down(self, event: Event) -> Optional[str]:
         if not self._active:
             return "YouTube is not active"
         yt = _get_youtube()
-        yt.decrease_speed()
+        await self._run_with_timeout(yt.decrease_speed)
         return "Speed decreased"
 
     async def _on_close(self, event: Event) -> Optional[str]:
         if not self._active:
             return "YouTube is not active"
         yt = _get_youtube()
-        yt.close_youtube()
+        await self._run_with_timeout(yt.close_youtube)
         self._active = False
         context_manager.set_active_session(None)
         return "YouTube closed"
