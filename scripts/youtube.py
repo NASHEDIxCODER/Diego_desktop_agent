@@ -87,14 +87,11 @@ def _close_browser():
 
 
 def youtube():
-    """Open YouTube homepage. Returns True on success."""
-    if not _ensure_browser():
-        return False
+    """Open YouTube homepage using webbrowser. Returns True on success."""
+    import webbrowser
     try:
-        _driver.get("https://www.youtube.com/")
-        from selenium.webdriver.common.by import By
-        from selenium.webdriver.support import expected_conditions as EC
-        _wait.until(EC.presence_of_element_located((By.NAME, "search_query")))
+        webbrowser.open("https://www.youtube.com/")
+        logger.info("YouTube opened in browser")
         return True
     except Exception as e:
         logger.warning("YouTube open failed: %s", e)
