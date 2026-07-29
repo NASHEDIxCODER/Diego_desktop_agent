@@ -1,29 +1,23 @@
+"""
+Encode face images and save to local pickle file.
+
+Firebase upload is OPTIONAL — only performed if serviceAccountKey.json exists.
+Local authentication does NOT require Firebase.
+"""
+
 import os
 import pickle
+from pathlib import Path
 
 import cv2 as cv
 import face_recognition
-import firebase_admin
-from firebase_admin import credentials, firestore
-
-
-# from main import speak
 
 
 def encode_and_upload_faces():
-    options = {
-        'databaseURL': "https://leo-assit-default-rtdb.firebaseio.com/",
-        'storageBucket': "gs://leo-assit.appspot.com"
-    }
-
-    cred = credentials.Certificate("auth/serviceAccountKey.json")
-    # Initialize or get the Firebase app
-
-    firebase_admin.initialize_app(cred, name="leo assist", options=options)
-
-    # Initialize Firestore database
-    db = firestore.client(firebase_admin.get_app("leo assist"))
-
+    """Encode all face images in ./images/ and save to Known_encodings.p.
+    
+    Firebase upload is performed only if serviceAccountKey.json exists.
+    """
     # importing the users images
     folderPath = 'images'
     pathlist = os.listdir(folderPath)
@@ -33,7 +27,6 @@ def encode_and_upload_faces():
     for path in pathlist:
         imglist.append(cv.imread(os.path.join(folderPath, path)))
         userName.append(os.path.splitext(path)[0])
-        # userName.append(os.path.basename(path)[0])
 
     def FindEncodings(imagelist):
         encodeList = []
@@ -47,36 +40,43 @@ def encode_and_upload_faces():
                 print(f"No face detected in image: {img}")
         return encodeList
 
-    def upload_face_encodings_to_firebase(encodings, names):
-        # ❌ faces_ref = db.collections('faces')
-        # generator ^
-
-        # ✅ this is a CollectionReference
-        faces_ref = db.collection('faces')
-
-        for i, encoding in enumerate(encodings):
-            face_data = {
-                'encoding': encoding.tolist(),  # numpy array -> list
-                'name': names[i]
-            }
-            faces_ref.document(f'face_{names[i]}').set(face_data)
-
-        print("Face encodings uploaded to Firebase successfully.")
-
-    # speak("encoding started")
     Known_encodings = FindEncodings(imglist)
     Known_EncodingWithName = [Known_encodings, userName]
-    # speak("encoding complete")
-    # speak("uploading faces in database")
-    upload_face_encodings_to_firebase(Known_encodings, userName)
+
+    # Save locally (always)
     file = open("Known_encodings.p", 'wb')
     pickle.dump(Known_EncodingWithName, file)
     file.close()
-    print("file close")
-    # for name in userName:
-    #     speak(name)
+    print(f"Saved {len(Known_encodings)} face encodings to Known_encodings.p")
 
-    # speak("faces uploaded successfully")
+    # Upload to Firebase (optional — only if serviceAccountKey.json exists)
+    service_account_path = Path("serviceAccountKey.json")
+    if service_account_path.exists():
+        try:
+            import firebase_admin
+            from firebase_admin import credentials, firestore
+
+            options = {
+                'databaseURL': "https://leo-assit-default-rtdb.firebaseio.com/",
+                'storageBucket': "gs://leo-assit.appspot.com"
+            }
+            cred = credentials.Certificate(str(service_account_path))
+            firebase_admin.initialize_app(cred, name="leo assist", options=options)
+            db = firestore.client(firebase_admin.get_app("leo assist"))
+
+            faces_ref = db.collection('faces')
+            for i, encoding in enumerate(Known_encodings):
+                face_data = {
+                    'encoding': encoding.tolist(),
+                    'name': userName[i]
+                }
+                faces_ref.document(f'face_{userName[i]}').set(face_data)
+
+            print("Face encodings uploaded to Firebase successfully.")
+        except Exception as e:
+            print(f"Firebase upload skipped (optional): {e}")
+    else:
+        print("serviceAccountKey.json not found — Firebase upload skipped (optional)")
 
 
 if __name__ == "__main__":

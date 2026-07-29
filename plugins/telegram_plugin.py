@@ -3,10 +3,14 @@ Telegram Plugin for Leo Desktop Assistant.
 
 Wraps the existing scripts/telegram_bot.py functionality as a
 BasePlugin with event bus integration.
+
+CRITICAL: NEVER block startup. If .env variables are missing,
+disable instantly with one warning.
 """
 
 import asyncio
 import logging
+import os
 from typing import Any, Dict, Optional
 
 from core.event_bus import bus, Event
@@ -56,34 +60,54 @@ class TelegramPlugin(BasePlugin):
         )
 
     async def initialize(self) -> None:
-        """Register event handlers and init Telegram client in background."""
+        """Register event handlers. Never blocks startup."""
         bus.on("telegram_send", self._on_send)
         bus.on("telegram_read", self._on_read)
         bus.on("telegram_reply", self._on_reply)
 
-        # Initialize Telegram client in background — NEVER block startup.
-        # If session is invalid, disable instantly and show one warning.
-        asyncio.ensure_future(self._init_background())
+        # Check .env for Telegram credentials — if missing, disable immediately
+        api_id = os.environ.get("TELEGRAM_API_ID", "")
+        api_hash = os.environ.get("TELEGRAM_API_HASH", "")
+        session = os.environ.get("TELEGRAM_SESSION", "")
 
-    async def _init_background(self) -> None:
+        if not api_id or not api_hash:
+            logger.warning(
+                "TELEGRAM_API_ID or TELEGRAM_API_HASH not set in .env — "
+                "Telegram plugin disabled. Set these values in .env to enable."
+            )
+            self.disable()
+            return
+
+        # Initialize in background — NEVER block startup
+        asyncio.ensure_future(self._init_background(api_id, api_hash, session))
+
+    async def _init_background(self, api_id: str, api_hash: str, session: str) -> None:
         """Initialize Telegram in background. Never blocks startup."""
         try:
             tg = _get_telegram()
             if tg is None:
                 self.disable()
                 return
+
+            # Set credentials from .env
+            tg.API_ID = int(api_id)
+            tg.API_HASH = api_hash
+            if session:
+                tg.SESSION = session
+
             # Quick check: if no session file exists, disable immediately
             import os as _os
             from pathlib import Path as _Path
             session_files = [
-                _Path("leo_telegram.session"),
-                _Path("leo_telegram.session-journal"),
+                _Path(f"{tg.SESSION}.session"),
+                _Path(f"{tg.SESSION}.session-journal"),
             ]
             has_session = any(f.exists() for f in session_files)
             if not has_session:
                 logger.warning(
-                    "Telegram session file not found — Telegram disabled. "
-                    "Run `python scripts/telegram_bot.py` interactively once to create a session."
+                    "Telegram session file '%s.session' not found — Telegram disabled. "
+                    "Run `python scripts/telegram_bot.py` interactively once to create a session.",
+                    tg.SESSION
                 )
                 self.disable()
                 return

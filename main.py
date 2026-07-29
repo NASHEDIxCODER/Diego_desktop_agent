@@ -501,7 +501,8 @@ async def main_loop():
             await asyncio.sleep(1)
             continue
 
-        if _is_speaking:
+        # Pause wake-word detection while TTS is speaking
+        if _is_speaking or speech_synthesizer.is_speaking():
             await asyncio.sleep(0.1)
             continue
 
@@ -510,9 +511,10 @@ async def main_loop():
         if not wake_text:
             continue
         if not wake_word_engine.detect(wake_text):
+            logger.debug("Wake rejected: phrase='%s'", wake_text)
             continue
         timings["wake"] = time.time() - t0
-        logger.info("Wake detected")
+        logger.info("Wake detected: phrase='%s'", wake_text)
 
         set_correlation_id()
 
@@ -522,17 +524,18 @@ async def main_loop():
             try:
                 user_name = faceauth.recognize_faces()
                 if not user_name:
-                    faceauth.Unknown_Face()
+                    logger.info("Face auth: unknown or no face detected")
+                    _speak_with_flag("Authentication failed.")
                     continue
                 timings["face"] = time.time() - t_auth
                 logger.info("Face authenticated: %s", user_name)
                 _speak_with_flag(
-                    f"Authentication successful. Welcome back {user_name}. "
-                    "I am ready. How can I help you today?"
+                    f"Welcome back, {user_name}. How can I help you today?"
                 )
             except Exception as e:
                 logger.warning("Face auth failed: %s", e)
-                _speak_with_flag("Hello, how may I assist you?")
+                _speak_with_flag("Authentication failed.")
+                continue
         else:
             _speak_with_flag("Hello, how may I assist you?")
 

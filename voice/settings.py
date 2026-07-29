@@ -6,10 +6,14 @@ changed without restarting the assistant. All settings are
 initialized from .env but can be modified at runtime.
 
 Settings:
-  VOICE_RATE: Speech rate (words per minute, default 150)
-  VOICE_VOLUME: Volume level (0.0 to 1.0, default 1.0)
+  TTS_ENGINE: TTS engine to use (kokoro, xtts, piper, pyttsx3, auto)
+  TTS_VOICE: Voice identifier for the selected engine
+  TTS_RATE: Speech rate (words per minute, default 145)
+  TTS_VOLUME: Volume level (0.0 to 1.0, default 1.0)
+  TTS_DEVICE: Compute device (auto, cpu, cuda)
+  TTS_CACHE: Enable audio caching (true/false)
+  TTS_STREAMING: Enable streaming playback (true/false)
   VOICE_PITCH: Voice pitch (0.5 to 2.0, default 1.0)
-  VOICE_ID: TTS voice identifier
   WAKE_WORD: Wake word phrase
   WAKE_SENSITIVITY: Wake word detection sensitivity (0.0 to 1.0)
   LANG_CODE: Language code for STT
@@ -26,11 +30,22 @@ from typing import Optional
 class VoiceSettings:
     """Runtime voice configuration. Thread-safe value object."""
 
-    # TTS parameters
-    voice_rate: int = 150        # Words per minute
-    voice_volume: float = 1.0    # 0.0 to 1.0
-    voice_pitch: float = 1.0     # 0.5 to 2.0
-    voice_id: str = "default"
+    # TTS engine parameters
+    tts_engine: str = "auto"       # kokoro, xtts, piper, pyttsx3, auto
+    tts_voice: str = "default"     # Voice identifier for the selected engine
+    tts_rate: int = 145            # Words per minute
+    tts_volume: float = 1.0        # 0.0 to 1.0
+    tts_device: str = "auto"       # auto, cpu, cuda
+    tts_cache: bool = True         # Cache generated audio
+    tts_streaming: bool = True     # Enable streaming playback
+    tts_cache_dir: str = "data/tts_cache"  # Cache directory
+    tts_speaker_wav: str = ""      # Reference speaker WAV for voice cloning
+
+    # Legacy (deprecated, kept for backward compatibility)
+    voice_rate: int = 145          # Alias for tts_rate
+    voice_volume: float = 1.0      # Alias for tts_volume
+    voice_pitch: float = 1.0       # 0.5 to 2.0
+    voice_id: str = "default"      # Legacy voice ID
 
     # Wake word
     wake_word: str = "leo"
@@ -52,19 +67,44 @@ class VoiceSettings:
         """Update settings from environment variables (called once at startup)."""
         import os
 
-        if os.getenv("VOICE_RATE"):
+        if os.getenv("TTS_ENGINE"):
+            self.tts_engine = os.getenv("TTS_ENGINE", "auto")
+        if os.getenv("TTS_VOICE"):
+            self.tts_voice = os.getenv("TTS_VOICE", "default")
+        if os.getenv("TTS_RATE"):
             try:
-                self.voice_rate = int(os.getenv("VOICE_RATE", "150"))
+                self.tts_rate = int(os.getenv("TTS_RATE", "145"))
+                self.voice_rate = self.tts_rate  # Sync legacy field
             except ValueError:
                 pass
-        if os.getenv("VOICE_VOLUME"):
+        if os.getenv("TTS_VOLUME"):
             try:
-                self.voice_volume = float(os.getenv("VOICE_VOLUME", "1.0"))
+                self.tts_volume = float(os.getenv("TTS_VOLUME", "1.0"))
+                self.voice_volume = self.tts_volume
             except ValueError:
                 pass
-        if os.getenv("VOICE_PITCH"):
+        if os.getenv("TTS_DEVICE"):
+            self.tts_device = os.getenv("TTS_DEVICE", "auto")
+        if os.getenv("TTS_CACHE"):
+            self.tts_cache = os.getenv("TTS_CACHE", "true").lower() == "true"
+        if os.getenv("TTS_STREAMING"):
+            self.tts_streaming = os.getenv("TTS_STREAMING", "true").lower() == "true"
+        if os.getenv("TTS_CACHE_DIR"):
+            self.tts_cache_dir = os.getenv("TTS_CACHE_DIR", "data/tts_cache")
+        if os.getenv("TTS_SPEAKER_WAV"):
+            self.tts_speaker_wav = os.getenv("TTS_SPEAKER_WAV", "")
+
+        # Legacy env vars (backward compatibility)
+        if not os.getenv("TTS_RATE") and os.getenv("VOICE_RATE"):
             try:
-                self.voice_pitch = float(os.getenv("VOICE_PITCH", "1.0"))
+                self.tts_rate = int(os.getenv("VOICE_RATE", "145"))
+                self.voice_rate = self.tts_rate
+            except ValueError:
+                pass
+        if not os.getenv("TTS_VOLUME") and os.getenv("VOICE_VOLUME"):
+            try:
+                self.tts_volume = float(os.getenv("VOICE_VOLUME", "1.0"))
+                self.voice_volume = self.tts_volume
             except ValueError:
                 pass
         if os.getenv("VOICE_ID"):
@@ -82,6 +122,13 @@ class VoiceSettings:
     def to_dict(self) -> dict:
         """Return settings as a dictionary (for logging/serialization)."""
         return {
+            "tts_engine": self.tts_engine,
+            "tts_voice": self.tts_voice,
+            "tts_rate": self.tts_rate,
+            "tts_volume": self.tts_volume,
+            "tts_device": self.tts_device,
+            "tts_cache": self.tts_cache,
+            "tts_streaming": self.tts_streaming,
             "voice_rate": self.voice_rate,
             "voice_volume": self.voice_volume,
             "voice_pitch": self.voice_pitch,
