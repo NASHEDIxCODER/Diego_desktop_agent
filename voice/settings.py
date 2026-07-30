@@ -34,7 +34,7 @@ class VoiceSettings:
     tts_engine: str = "auto"       # kokoro, xtts, piper, pyttsx3, auto
     tts_voice: str = "default"     # Voice identifier for the selected engine
     tts_rate: int = 145            # Words per minute
-    tts_volume: float = 1.0        # 0.0 to 1.0
+    tts_volume: float = 0.7        # 0.0 to 1.0 (reduced to prevent echo feedback)
     tts_device: str = "auto"       # auto, cpu, cuda
     tts_cache: bool = True         # Cache generated audio
     tts_streaming: bool = True     # Enable streaming playback

@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     OPENROUTER_API_KEY: Optional[str] = None
     GROQ_API_KEY: Optional[str] = None
     OLLAMA_BASE_URL: str = "http://localhost:11434"
+    OLLAMA_MODEL: Optional[str] = None  # Auto-detected if not set
 
     # ── Telegram ───────────────────────────────────────────────────
     TELEGRAM_BOT_TOKEN: Optional[str] = None

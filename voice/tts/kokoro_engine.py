@@ -208,6 +208,7 @@ class KokoroEngine(BaseTTSEngine):
                 )
                 if result.returncode == 0:
                     return True
+                logger.debug("pw-play returned %d", result.returncode)
 
             # Fallback: PulseAudio
             paplay = _shutil.which("paplay")
@@ -221,6 +222,7 @@ class KokoroEngine(BaseTTSEngine):
                 )
                 if result.returncode == 0:
                     return True
+                logger.debug("paplay returned %d", result.returncode)
 
             # Fallback: ALSA
             aplay = _shutil.which("aplay")
@@ -234,8 +236,25 @@ class KokoroEngine(BaseTTSEngine):
                 )
                 if result.returncode == 0:
                     return True
+                logger.debug("aplay returned %d", result.returncode)
+
+            # Fallback: ffplay
+            ffplay = _shutil.which("ffplay")
+            if ffplay:
+                result = _subprocess.run(
+                    [ffplay, "-nodisp", "-autoexit", wav_path],
+                    check=False,
+                    stdout=_subprocess.DEVNULL,
+                    stderr=_subprocess.DEVNULL,
+                    timeout=60,
+                )
+                if result.returncode == 0:
+                    return True
 
             logger.warning("No audio playback backend available")
+            return False
+        except _subprocess.TimeoutExpired:
+            logger.warning("Audio playback timed out after 60s")
             return False
         except Exception as e:
             logger.warning("Audio playback error: %s", e)

@@ -19,12 +19,10 @@ from voice.settings import voice_settings
 logger = logging.getLogger(__name__)
 
 # Default wake word variants for fuzzy matching
+# Reduced set to minimize false positives
 DEFAULT_WAKE_VARIANTS = [
     "hello leo",
-    "leo",
-    "lio",
     "hey leo",
-    "hello lio",
     "ok leo",
     "hi leo",
 ]
@@ -102,12 +100,16 @@ class WakeWordEngine:
         text_lower = text.lower().strip()
         for variant in self._variants:
             variant_lower = variant.lower().strip()
+            # Exact substring match
             if variant_lower in text_lower:
                 self._detection_count += 1
                 return True
             # Fuzzy match for slight mispronunciations
+            # Google STT often returns slightly different text than expected
+            # (e.g. "hello leo" → "hello leo" with extra spaces/punctuation)
+            # Use 0.75 to account for STT variance while still rejecting noise
             ratio = difflib.SequenceMatcher(None, text_lower, variant_lower).ratio()
-            if ratio >= 0.7:
+            if ratio >= 0.75 and len(text_lower) >= len(variant_lower) * 0.5:
                 self._detection_count += 1
                 return True
 
