@@ -41,12 +41,13 @@ class LLMClient:
 
     def __init__(self):
         self._base_url = settings.OLLAMA_BASE_URL.rstrip("/")
-        self._model = "llama3.2"
+        self._model = None  # Will be auto-detected
         self._available = False
         self._checked = False
+        self._model_names = []
 
     async def ensure_initialized(self) -> bool:
-        """Check if Ollama is reachable."""
+        """Check if Ollama is reachable and auto-detect models."""
         if self._checked:
             return self._available
         self._checked = True
@@ -55,9 +56,11 @@ class LLMClient:
                 resp = await client.get(f"{self._base_url}/api/tags")
                 if resp.status_code == 200:
                     models = resp.json().get("models", [])
-                    model_names = [m["name"] for m in models]
-                    logger.info("Ollama available. Models: %s", model_names)
+                    self._model_names = [m["name"] for m in models]
+                    logger.info("Ollama available. Models: %s", self._model_names)
                     self._available = True
+                    # Auto-select model
+                    self._select_model()
                 else:
                     logger.warning("Ollama returned status %d", resp.status_code)
         except httpx.ConnectError:
@@ -65,6 +68,33 @@ class LLMClient:
         except Exception as e:
             logger.warning("Ollama check failed: %s", e)
         return self._available
+
+    def _select_model(self) -> None:
+        """
+        Auto-select the best available model.
+        
+        Priority:
+        1. Configured model from settings (if installed)
+        2. First installed model
+        3. Fallback to 'llama3.2'
+        """
+        if not self._model_names:
+            self._model = "llama3.2"
+            return
+
+        # Check if configured model is available
+        configured = getattr(settings, 'OLLAMA_MODEL', None) or getattr(settings, 'LLM_MODEL', None)
+        if configured:
+            # Check for exact match or tag match
+            for m in self._model_names:
+                if m == configured or m.startswith(f"{configured}:"):
+                    self._model = m
+                    logger.info("Using configured model: %s", self._model)
+                    return
+
+        # Use first installed model
+        self._model = self._model_names[0]
+        logger.info("Auto-selected model: %s", self._model)
 
     async def chat(self, message: str, context: str = "") -> str:
         """

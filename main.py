@@ -105,15 +105,22 @@ from nlp.conversation_state import conversation_state, PendingAction
 # ── AI imports ────────────────────────────────────────────
 from ai.llm_client import llm_client, llm_chat
 
+# ── Agent imports ─────────────────────────────────────────
+from agent.planner import agent_planner
+from agent.executor import agent_executor
+from agent.browser import browser_controller
+
 # ── Voice imports ─────────────────────────────────────────
+# NOTE: voice.recognizer is DEPRECATED. All STT is in voice.stt.
 from voice.supervisor import VoiceSupervisor, VoiceState, voice_supervisor
 from voice.settings import voice_settings
 from voice.synthesizer import speech_synthesizer
-from voice.recognizer import speech_recognizer
 from voice.wake_word import wake_word_engine
 from voice.microphone import microphone
 from voice.noise import noise_calibrator
 from voice.audio_device import audio_device
+from voice.tts.manager import tts_manager
+from voice.stt import get_backend_diagnostics, print_startup_diagnostics
 
 # ── Embeddings: preload SentenceTransformer at startup ───
 from nlp.embeddings import preload_embedding_model
@@ -251,10 +258,11 @@ async def _init_nlp(status: dict) -> None:
 
 
 async def _init_embeddings(status: dict) -> None:
-    """Preload embedding model."""
+    """Preload embedding model — runs in executor to avoid blocking event loop."""
     startup_health.register("embeddings")
     try:
-        preload_embedding_model()
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, preload_embedding_model)
         startup_health.set_state("embeddings", SubsystemState.READY,
                                  f"Model: {settings.MODEL_NAME}")
     except Exception as e:
@@ -440,10 +448,14 @@ async def main_loop():
     # Optional: Vision
     vision = None
     try:
-        from vision import vision as _vision
-        vision = _vision
-        startup_health.set_state("vision", SubsystemState.READY, "Available")
-    except Exception:
+        from vision import vision_manager as _vision_manager
+        vision = _vision_manager
+        if vision.initialize():
+            startup_health.set_state("vision", SubsystemState.READY, "Available")
+        else:
+            startup_health.set_state("vision", SubsystemState.DISABLED, "No backends")
+    except Exception as e:
+        logger.debug("Vision init: %s", e)
         startup_health.set_state("vision", SubsystemState.DISABLED, "Unavailable")
 
     # Voice calibration
@@ -456,6 +468,9 @@ async def main_loop():
             voice_ok = False
             startup_health.set_state("voice", SubsystemState.DISABLED, "Calibration failed")
 
+    # ── Print voice subsystem diagnostics ──────────────
+    print_startup_diagnostics()
+
     # ── Speaking flag for STT feedback prevention ─────
     _is_speaking = False
     _orig_synthesizer_speak = speech_synthesizer.speak
@@ -464,8 +479,12 @@ async def main_loop():
         nonlocal _is_speaking
         _is_speaking = True
         try:
-            return _orig_synthesizer_speak(text)
+            result = _orig_synthesizer_speak(text)
+            return result
         finally:
+            # Small pause to let audio finish through speakers before mic resumes
+            import time as _time
+            _time.sleep(0.3)
             _is_speaking = False
 
     speech_synthesizer.speak = _speak_with_flag
@@ -475,6 +494,14 @@ async def main_loop():
         if text:
             _speak_with_flag(text)
     bus.on("speak", on_speak)
+
+    # ── Interruption commands ──────────────────────────
+    _INTERRUPT_PHRASES = {"stop", "cancel", "shut up", "be quiet", "silence", "that's enough"}
+
+    def _is_interruption(text: str) -> bool:
+        """Check if the user is trying to interrupt the assistant."""
+        text_lower = text.lower().strip()
+        return any(phrase in text_lower for phrase in _INTERRUPT_PHRASES)
 
     # ── Register conversation state handlers ────────────
     async def handle_youtube_query(text: str, data: dict) -> str:
@@ -495,110 +522,360 @@ async def main_loop():
 
     # ── Timing accumulators ─────────────────────────────
     timings = {}
+    _interaction_count = 0
+    _command_retry_count = 0
+    _max_command_retries = 10  # Max silent retries before returning to WAIT_WAKE
+
+    # ── State machine ───────────────────────────────────
+    _STATE = "BOOT"
+    _STATE_ENTER_TIME = time.time()
+    logger.info("[BOOT] Leo Desktop Assistant booting")
+
+    def _set_state(new_state: str) -> None:
+        nonlocal _STATE, _STATE_ENTER_TIME
+        elapsed = time.time() - _STATE_ENTER_TIME
+        logger.info("[STATE] %s → %s (was in %s for %.1fs)", _STATE, new_state, _STATE, elapsed)
+        _STATE = new_state
+        _STATE_ENTER_TIME = time.time()
+
+    def _get_state_duration() -> float:
+        return time.time() - _STATE_ENTER_TIME
+
+    def _check_state_timeout(max_seconds: float) -> bool:
+        """Check if current state has exceeded max_seconds. Returns True if timed out."""
+        if _get_state_duration() > max_seconds:
+            logger.warning("[TIMEOUT] State %s exceeded max duration %.1fs", _STATE, max_seconds)
+            return True
+        return False
+
+    # ── Thread monitoring ───────────────────────────────
+    async def _thread_monitor():
+        """Periodically log active threads, queue sizes, and detect leaks."""
+        import threading
+        while True:
+            await asyncio.sleep(30.0)
+            try:
+                threads = threading.enumerate()
+                active = [t for t in threads if t.is_alive()]
+                daemon = [t for t in active if t.daemon]
+                non_daemon = [t for t in active if not t.daemon]
+                logger.info("[THREADS] Total=%d Active=%d Daemon=%d NonDaemon=%d",
+                          len(threads), len(active), len(daemon), len(non_daemon))
+                # Log suspicious thread counts
+                if len(active) > 50:
+                    logger.warning("[THREADS] High thread count: %d (possible leak)", len(active))
+                # Log executor threads
+                import concurrent.futures
+                for name in dir(concurrent.futures):
+                    obj = getattr(concurrent.futures, name, None)
+                    if isinstance(obj, concurrent.futures.ThreadPoolExecutor):
+                        logger.debug("[THREADS] Executor %s: %d workers", name, obj._max_workers)
+            except Exception as e:
+                logger.debug("[THREADS] Monitor error: %s", e)
+
+    # Start thread monitor
+    _thread_monitor_task = asyncio.create_task(_thread_monitor())
+
+    # ── Background preload tasks (only for tasks NOT done in startup) ──
+    _background_tasks = set()
+
+    # Embeddings are already preloaded in _init_embeddings() during startup.
+    # No need to preload again here.
+
+    async def _bg_init_vision():
+        """Initialize vision in background (if not already initialized)."""
+        logger.info("[BG] Initializing vision...")
+        try:
+            if vision and not vision.is_available:
+                vision.initialize()
+        except Exception as e:
+            logger.debug("[BG] Vision init: %s", e)
+
+    if vision:
+        _bg_t2 = asyncio.create_task(_bg_init_vision())
+        _background_tasks.add(_bg_t2)
+        _bg_t2.add_done_callback(_background_tasks.discard)
+
+    _set_state("READY")
+    logger.info("[READY] Assistant ready, entering wake loop")
+
+    print()
+    if voice_ok:
+        print("  Listening for wake word...")
+    else:
+        print("  Voice unavailable — running in text-only mode")
+    print()
 
     while True:
         if not voice_ok:
             await asyncio.sleep(1)
             continue
 
+        # ── STATE: WAIT_WAKE ────────────────────────────
+        _set_state("WAIT_WAKE")
+
         # Pause wake-word detection while TTS is speaking
-        if _is_speaking or speech_synthesizer.is_speaking():
+        # Check both the local flag AND the synthesizer's internal flag
+        _is_tts_busy = _is_speaking or speech_synthesizer.is_speaking() or tts_manager.is_speaking()
+        if _is_tts_busy:
+            logger.debug("[WAKE] TTS busy, skipping wake detection")
             await asyncio.sleep(0.1)
             continue
 
-        t0 = time.time()
-        wake_text = listen_wake(phrase_time_limit=3)
+        # Timeout: if we've been in WAIT_WAKE too long (shouldn't happen, but safety)
+        if _check_state_timeout(300.0):  # 5 minutes max
+            logger.info("[WAKE] Resetting wake detection after timeout")
+            _set_state("WAIT_WAKE")
+            continue
+
+        # Run continuous wake listener in executor
+        # This blocks until wake word is detected (never times out)
+        _wake_start = time.time()
+        _loop = asyncio.get_running_loop()
+        try:
+            logger.info("[WAKE] Wake listener active - waiting for 'hello leo'...")
+            wake_text = await _loop.run_in_executor(
+                None, 
+                lambda: listen_wake(phrase_time_limit=5.0)
+            )
+        except Exception as e:
+            logger.warning("[WAKE] Listen error: %s", e)
+            # Sleep to prevent busy loop on persistent errors
+            await asyncio.sleep(2.0)
+            continue
+
         if not wake_text:
+            # Wake listener returned without detection.
+            # This happens when:
+            # - HAS_SOUNDDEVICE is False (misconfigured backend)
+            # - Microphone init failed at module level
+            # - Stream error occurred
+            # Sleep to prevent WAIT_WAKE → WAIT_WAKE busy loop.
+            # The log will show WAIT_WAKE only once every 2 seconds,
+            # not thousands of times per second.
+            await asyncio.sleep(2.0)
             continue
+
+        # ── STATE: WAKE_DETECTED ────────────────────────
+        _set_state("WAKE_DETECTED")
+
+        # Compute similarity score for debugging
+        text_lower = wake_text.lower().strip()
+        best_ratio = 0.0
+        best_variant = ""
+        for variant in wake_word_engine._variants:
+            import difflib
+            ratio = difflib.SequenceMatcher(None, text_lower, variant.lower()).ratio()
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best_variant = variant
+
         if not wake_word_engine.detect(wake_text):
-            logger.debug("Wake rejected: phrase='%s'", wake_text)
+            logger.debug("[WAKE] REJECTED: phrase='%s' best_match='%s' ratio=%.3f threshold=%.3f",
+                        wake_text, best_variant, best_ratio, 0.85)
             continue
-        timings["wake"] = time.time() - t0
-        logger.info("Wake detected: phrase='%s'", wake_text)
+
+        timings["wake"] = time.time() - _wake_start
+        logger.info("[WAKE] DETECTED: phrase='%s' best_match='%s' ratio=%.3f (%.0fms)",
+                   wake_text, best_variant, best_ratio, timings["wake"]*1000)
 
         set_correlation_id()
 
-        # ── Face authentication ─────────────────────────
+        # ── STATE: FACE_AUTH ────────────────────────────
+        _set_state("FACE_AUTH")
         t_auth = time.time()
+        user_name = None
         if faceauth:
             try:
-                user_name = faceauth.recognize_faces()
-                if not user_name:
-                    logger.info("Face auth: unknown or no face detected")
-                    _speak_with_flag("Authentication failed.")
-                    continue
-                timings["face"] = time.time() - t_auth
-                logger.info("Face authenticated: %s", user_name)
-                _speak_with_flag(
-                    f"Welcome back, {user_name}. How can I help you today?"
+                _loop = asyncio.get_running_loop()
+                # 5 second timeout for face auth
+                user_name = await asyncio.wait_for(
+                    _loop.run_in_executor(None, faceauth.recognize_faces),
+                    timeout=5.0
                 )
+                if not user_name:
+                    logger.info("[AUTH] Unknown or no face detected — skipping")
+                else:
+                    timings["face"] = time.time() - t_auth
+                    logger.info("[AUTH] Authenticated: %s (%.0fms)", user_name, timings["face"]*1000)
+            except asyncio.TimeoutError:
+                logger.warning("[AUTH] Timed out after 5s — skipping")
             except Exception as e:
-                logger.warning("Face auth failed: %s", e)
-                _speak_with_flag("Authentication failed.")
-                continue
-        else:
-            _speak_with_flag("Hello, how may I assist you?")
+                logger.warning("[AUTH] Failed: %s — skipping", e)
 
-        # ── Command loop ────────────────────────────────
+        # ── STATE: GREETING ─────────────────────────────
+        _set_state("GREETING")
+        greeting_text = f"Welcome back, {user_name}. How can I help you today?" if user_name else "Hello, how may I assist you?"
+        logger.info("[GREETING] Speaking: '%s'", greeting_text)
+        # Run TTS in executor to avoid blocking event loop
+        try:
+            _loop = asyncio.get_running_loop()
+            await asyncio.wait_for(
+                _loop.run_in_executor(None, lambda: _speak_with_flag(greeting_text)),
+                timeout=30.0  # 30s max for greeting TTS
+            )
+        except asyncio.TimeoutError:
+            logger.warning("[GREETING] TTS timed out after 30s")
+        except Exception as e:
+            logger.warning("[GREETING] TTS error: %s", e)
+        logger.info("[GREETING] Complete")
+
+        # ── STATE: WAIT_COMMAND ─────────────────────────
+        _set_state("WAIT_COMMAND")
+        _command_retry_count = 0
         while True:
-            if _is_speaking:
+            # Check if TTS is still speaking
+            _is_tts_busy = _is_speaking or speech_synthesizer.is_speaking() or tts_manager.is_speaking()
+            if _is_tts_busy:
+                logger.debug("[CMD] Waiting for TTS to finish (is_speaking=%s, synth=%s, tts=%s)",
+                           _is_speaking, speech_synthesizer.is_speaking(), tts_manager.is_speaking())
                 await asyncio.sleep(0.1)
                 continue
 
+            # Timeout: max 2 minutes in WAIT_COMMAND
+            if _check_state_timeout(120.0):
+                logger.warning("[CMD] WAIT_COMMAND timed out after 120s — returning to WAIT_WAKE")
+                break
+
+            # Max retries: if we get too many silent loops, return to WAIT_WAKE
+            if _command_retry_count >= _max_command_retries:
+                logger.warning("[CMD] Max retries (%d) reached without command — returning to WAIT_WAKE",
+                              _max_command_retries)
+                break
+
             t_stt = time.time()
-            query = listen(phrase_time_limit=7)
-            if not query:
+            logger.info("[CMD] Calling listen() (retry=%d/%d)", _command_retry_count + 1, _max_command_retries)
+
+            # Run listen in executor to avoid blocking event loop
+            _loop = asyncio.get_running_loop()
+            try:
+                query = await asyncio.wait_for(
+                    _loop.run_in_executor(None, lambda: listen(phrase_time_limit=7)),
+                    timeout=15.0  # 15s total timeout for listen+STT
+                )
+            except asyncio.TimeoutError:
+                logger.warning("[CMD] listen() timed out after 15s")
+                _command_retry_count += 1
                 continue
+            except Exception as e:
+                logger.error("[CMD] listen() error: %s", e, exc_info=True)
+                _command_retry_count += 1
+                continue
+
+            if not query:
+                logger.debug("[CMD] No speech detected (retry %d/%d)",
+                           _command_retry_count + 1, _max_command_retries)
+                _command_retry_count += 1
+                continue
+
+            # Reset retry counter on successful capture
+            _command_retry_count = 0
             timings["stt"] = time.time() - t_stt
+            logger.info("[CMD] STT: '%s' (%.0fms)", query, timings["stt"]*1000)
 
             query = query.lower().strip()
 
+            # ── Check for interruption commands ─────────
+            if _is_interruption(query):
+                logger.info("[CMD] Interruption: '%s'", query)
+                speech_synthesizer._speaking = False
+                tts_manager._speaking = False
+                _speak_with_flag("Stopped.")
+                break
+
             # ── Check pending conversation action ───────
             if conversation_state.has_pending_action:
-                logger.info("Pending action: %s", conversation_state.pending_action.name)
+                logger.info("[CMD] Pending action: %s", conversation_state.pending_action.name)
                 await conversation_state.handle(query)
                 continue
 
-            # ── NLP classification ──────────────────────
-            t_nlp = time.time()
-            results = inference.classify(query, top_k=1)
-            if not results:
-                results = [{"intent": "unknown", "confidence": 0.0, "metadata": {}}]
-            top = results[0]
-            entities = extract_entities(query)
-            timings["nlp"] = time.time() - t_nlp
+            # ── STATE: EXECUTE ──────────────────────────
+            _set_state("EXECUTE")
 
-            parsed = {
-                "text": query,
-                "intent": top["intent"],
-                "confidence": top["confidence"],
-                "entities": entities,
-                "metadata": top.get("metadata", {}),
-            }
+            # Try Agent Planner first (if available)
+            t_plan = time.time()
+            planner_used = False
+            result = ""
 
-            context_manager.update(query, top["intent"], entities, top["confidence"])
+            if agent_planner.is_available:
+                try:
+                    logger.info("[PLANNER] Processing request via Agent Planner...")
+                    # Run planner in executor (it may use LLM)
+                    _loop = asyncio.get_running_loop()
+                    planner_result = await _loop.run_in_executor(
+                        None, lambda: agent_planner.process_request(query)
+                    )
+                    if planner_result:
+                        result = planner_result
+                        planner_used = True
+                        logger.info("[PLANNER] Result: '%s'", result[:100])
+                    else:
+                        logger.info("[PLANNER] No result, falling back to NLP")
+                except Exception as e:
+                    logger.warning("[PLANNER] Failed: %s, falling back to NLP", e)
+            else:
+                logger.debug("[PLANNER] Agent planner not available, using NLP")
 
-            logger.info("Intent detected: %s", top["intent"])
+            # NLP fallback (if planner didn't handle it)
+            if not planner_used:
+                t_nlp = time.time()
+                results = inference.classify(query, top_k=1)
+                if not results:
+                    results = [{"intent": "unknown", "confidence": 0.0, "metadata": {}}]
+                top = results[0]
+                entities = extract_entities(query)
+                timings["nlp"] = time.time() - t_nlp
+                logger.info("[NLP] Classified: intent='%s' confidence=%.2f (%.0fms)",
+                           top["intent"], top["confidence"], timings["nlp"]*1000)
 
-            # ── Plugin execution ────────────────────────
-            t_plugin = time.time()
-            result = await handle_intent(parsed)
-            timings["plugin"] = time.time() - t_plugin
+                # Check if vision is needed
+                if vision and vision.is_available:
+                    source = vision.needs_vision(top.get("intent", "unknown"), query)
+                    if source:
+                        logger.info("[VISION] Needed: %s", source.name)
+                        vision_result = await vision.analyze_screen(source)
+                        if vision_result and vision_result.text:
+                            query = f"{query}\n[Screen context: {vision_result.text[:500]}]"
+                            logger.debug("[VISION] Context added (%d chars)", len(vision_result.text))
 
-            if result == "__EXIT__":
-                return
+                parsed = {
+                    "text": query,
+                    "intent": top["intent"],
+                    "confidence": top["confidence"],
+                    "entities": entities,
+                    "metadata": top.get("metadata", {}),
+                }
+                context_manager.update(query, top["intent"], entities, top["confidence"])
+                logger.info("[NLP] Intent: %s (conf=%.2f)", top["intent"], top["confidence"])
 
-            # ── Timing summary ──────────────────────────
-            if all(k in timings for k in ("wake", "stt", "nlp", "plugin")):
-                logger.info(
-                    "Wake:%.1fs Face:%.1fs STT:%.1fs NLP:%.1fs Plugin:%.1fs Total:%.1fs",
-                    timings.get("wake", 0),
-                    timings.get("face", 0),
-                    timings.get("stt", 0),
-                    timings.get("nlp", 0),
-                    timings.get("plugin", 0),
-                    sum(timings.values()),
-                )
+                # Plugin execution
+                t_plugin = time.time()
+                result = await handle_intent(parsed)
+                timings["plugin"] = time.time() - t_plugin
+                logger.info("[PLUGIN] Result: '%s' (%.0fms)", result, timings["plugin"]*1000)
+
+                if result == "__EXIT__":
+                    logger.info("[CMD] Exit requested — shutting down")
+                    return
+
+            timings["planning"] = time.time() - t_plan
+
+            # ── STATE: SPEAK → WAIT_WAKE ───────────────
+            _set_state("SPEAK")
+
+            # ── Performance report ──────────────────────
+            _interaction_count += 1
+            report_parts = []
+            for key in ["wake", "face", "vision", "stt", "nlp", "plugin"]:
+                if key in timings:
+                    report_parts.append(f"{key}={timings[key]*1000:.0f}ms")
+            total = sum(v for v in timings.values() if isinstance(v, (int, float)))
+            report_parts.append(f"total={total*1000:.0f}ms")
+            logger.info(
+                "PERF [#%d] %s",
+                _interaction_count,
+                " | ".join(report_parts),
+            )
 
             # ── Log to DuckDB if available ──────────────
             if status.get("duckdb"):
@@ -610,10 +887,11 @@ async def main_loop():
                         confidence=top["confidence"],
                         response=result,
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("[DB] Log failed: %s", e)
 
-            logger.info("Interaction completed")
+            logger.info("[STATE] → WAIT_WAKE (interaction #%d complete)", _interaction_count)
+            break  # Return to wake word loop
 
 
 async def shutdown_gracefully(sig: Optional[int] = None) -> None:

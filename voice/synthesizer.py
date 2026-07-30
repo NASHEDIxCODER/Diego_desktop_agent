@@ -80,12 +80,20 @@ class SpeechSynthesizer:
         if not text or not text.strip():
             return False
 
-        # Prevent overlapping speech
+        # Prevent overlapping speech — use a lock instead of busy-wait
         if self._speaking:
             logger.debug("Already speaking, waiting...")
             import time as _time
-            while self._speaking:
+            # Use a short timeout loop to avoid infinite wait
+            _timeout = 30.0
+            _waited = 0.0
+            while self._speaking and _waited < _timeout:
                 _time.sleep(0.05)
+                _waited += 0.05
+            if self._speaking:
+                logger.warning("TTS stuck speaking for %.1fs — forcing reset", _timeout)
+                self._speaking = False
+                tts_manager._speaking = False
 
         self._speaking = True
         try:

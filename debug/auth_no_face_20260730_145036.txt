@@ -1,0 +1,4 @@
+time: 20260730_145036
+blur_score: 19.25
+brightness: 142.19
+resolution: 640x480
