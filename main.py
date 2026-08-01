@@ -59,10 +59,31 @@ os.environ.setdefault("QT_QPA_FONTDIR", "/usr/share/fonts")
 os.environ.setdefault("FONTCONFIG_PATH", "/etc/fonts")
 
 # ── Fix 3: HuggingFace offline-friendly settings ──
+# The embedding model is cached locally. Normal startup must NOT contact
+# HuggingFace. Only the first download (when model is not cached) may use
+# the network. We set offline mode BEFORE any model imports happen.
 os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "0")
-os.environ.setdefault("TRANSFORMERS_OFFLINE", "0")
 os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "30")
+# Check if the embedding model is already cached locally
+# sentence-transformers adds the "sentence-transformers/" prefix to model names
+_hf_home = os.environ.get("HF_HOME") or os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache/huggingface")
+_model_name = "all-MiniLM-L6-v2"
+_model_cache_candidates = [
+    os.path.join(_hf_home, "hub", f"models--{_model_name.replace('/', '--')}", "snapshots"),
+    os.path.join(_hf_home, "hub", f"models--sentence-transformers--{_model_name.replace('/', '--')}", "snapshots"),
+]
+_model_is_cached = any(
+    os.path.isdir(p) and bool(os.listdir(p))
+    for p in _model_cache_candidates
+)
+if _model_is_cached:
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    print("  [HF] Embedding model cached locally — HuggingFace offline mode enabled")
+else:
+    os.environ.setdefault("TRANSFORMERS_OFFLINE", "0")
+    os.environ.setdefault("HF_HUB_OFFLINE", "0")
 
 # ── Fix 4: Disable noisy TensorFlow/Keras warnings ──
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
@@ -121,6 +142,7 @@ from voice.noise import noise_calibrator
 from voice.audio_device import audio_device
 from voice.tts.manager import tts_manager
 from voice.stt import get_backend_diagnostics, print_startup_diagnostics
+from voice.audio_manager import audio_manager
 
 # ── Embeddings: preload SentenceTransformer at startup ───
 from nlp.embeddings import preload_embedding_model
@@ -335,20 +357,74 @@ async def _init_plugins(status: dict) -> None:
 
 
 async def _init_voice(status: dict) -> None:
-    """Initialize voice subsystem."""
+    """Initialize voice subsystem — starts unified AudioManager."""
     startup_health.register("voice")
     try:
         voice_settings.update_from_env()
         audio_device.detect_backend()
-        mic = microphone.get_microphone()
-        mic_available = mic is not None
-        if not mic_available:
+
+        # Start the unified AudioManager (opens ONE InputStream for the entire session)
+        loop = asyncio.get_running_loop()
+        am_started = await loop.run_in_executor(None, audio_manager.start)
+
+        if not am_started:
             status["voice"] = False
-            startup_health.set_state("voice", SubsystemState.DISABLED, "Mic unavailable")
+            startup_health.set_state("voice", SubsystemState.DISABLED,
+                                     "AudioManager failed to start")
+            return
+
+        # Calibrate ambient noise — EXACTLY ONCE after stream has stabilized.
+        # Wait for the ring buffer to fill with stable audio before measuring.
+        await asyncio.sleep(0.5)  # Let the stream stabilize
+        await loop.run_in_executor(None, audio_manager.calibrate, 1.5)
+
+        # Pre-seed the noise suppression profile by processing ambient audio.
+        # This ensures spectral gating has a noise reference BEFORE any
+        # wake word detection begins.
+        try:
+            await loop.run_in_executor(None, audio_manager.get_recent_processed, 1.0)
+        except Exception as e:
+            logger.debug("[AUDIO] Noise profile pre-seed: %s", e)
+
+        # AudioManager owns the microphone — do NOT call microphone.get_microphone()
+        # which would open a second PyAudio stream. All STT reads from the
+        # AudioManager ring buffer instead.
+        noise_calibrator.load_profile()
+
+        # ── Initialize ALL offline wake detection components NOW ──
+        # Silero VAD, openWakeWord (+ verifier), and faster-whisper are
+        # loaded eagerly here so the startup health report below reflects
+        # the REAL runtime state instead of a race-condition false
+        # "NOT AVAILABLE".
+        from voice.stt import init_wake_detection
+        wake_init = await loop.run_in_executor(None, init_wake_detection)
+
+        # Register the wake-model subsystem with the true runtime state
+        from voice.wake_model_manager import wake_model_manager as _wmm
+        startup_health.register("wake_model")
+        if _wmm.verify_model_exists() and _wmm.loaded:
+            name = _wmm.model_name or "?"
+            verifier = "custom verifier" if _wmm.verifier_path else "no verifier"
+            startup_health.set_state(
+                "wake_model", SubsystemState.READY,
+                f"model={name}, phrase='{_wmm.wake_phrase}', {verifier}",
+            )
+        elif _wmm.verify_model_exists():
+            status["degraded"] = True
+            startup_health.set_state(
+                "wake_model", SubsystemState.DEGRADED,
+                f"model found but failed to load: {_wmm.load_error or 'unknown error'}",
+            )
         else:
-            noise_calibrator.load_profile()
-            status["voice"] = True
-            startup_health.set_state("voice", SubsystemState.READY, "Mic available")
+            status["degraded"] = True
+            startup_health.set_state(
+                "wake_model", SubsystemState.DEGRADED,
+                "no wake model found — run: python main.py --train-wake",
+            )
+
+        status["voice"] = True
+        startup_health.set_state("voice", SubsystemState.READY,
+                                 f"AudioManager running (backend={audio_manager.backend})")
     except Exception as e:
         status["voice"] = False
         startup_health.set_state("voice", SubsystemState.DISABLED, str(e))
@@ -359,9 +435,27 @@ async def _init_telegram(status: dict) -> None:
     startup_health.register("telegram")
     try:
         from scripts.telegram_bot import _available as tg_available
-        # Quick check: if no session file exists, disable immediately
+        # Check .env for Telegram credentials
         import os as _os
         from pathlib import Path as _Path
+        api_id = _os.environ.get("TELEGRAM_API_ID", "")
+        api_hash = _os.environ.get("TELEGRAM_API_HASH", "")
+
+        missing = []
+        if not api_id:
+            missing.append("TELEGRAM_API_ID")
+        if not api_hash:
+            missing.append("TELEGRAM_API_HASH")
+
+        if missing:
+            status["degraded"] = True
+            startup_health.set_state(
+                "telegram", SubsystemState.DEGRADED,
+                f"Missing {' and '.join(missing)}",
+            )
+            return
+
+        # Quick check: if no session file exists, disable immediately
         session_files = [
             _Path("leo_telegram.session"),
             _Path("leo_telegram.session-journal"),
@@ -451,22 +545,29 @@ async def main_loop():
         from vision import vision_manager as _vision_manager
         vision = _vision_manager
         if vision.initialize():
-            startup_health.set_state("vision", SubsystemState.READY, "Available")
+            # Check if the reasoning model is actually available.
+            # If screen capture/OCR work but the vision model failed,
+            # report DEGRADED (not READY).
+            diag = vision.get_diagnostics()
+            model_ok = diag.get("vision_model") not in (None, "", "none")
+            if model_ok:
+                startup_health.set_state("vision", SubsystemState.READY, "Available")
+            else:
+                status["degraded"] = True
+                startup_health.set_state(
+                    "vision", SubsystemState.DEGRADED,
+                    "Screen/OCR available, reasoning model unavailable",
+                )
         else:
             startup_health.set_state("vision", SubsystemState.DISABLED, "No backends")
     except Exception as e:
         logger.debug("Vision init: %s", e)
         startup_health.set_state("vision", SubsystemState.DISABLED, "Unavailable")
 
-    # Voice calibration
+    # Voice calibration — ALREADY DONE in _init_voice().
+    # Do NOT recalibrate here. Calibration happens exactly once
+    # after the microphone stream has stabilized.
     voice_ok = status.get("voice", False)
-    if voice_ok:
-        try:
-            calibrate()
-        except Exception as e:
-            logger.warning("Calibration failed: %s", e)
-            voice_ok = False
-            startup_health.set_state("voice", SubsystemState.DISABLED, "Calibration failed")
 
     # ── Print voice subsystem diagnostics ──────────────
     print_startup_diagnostics()
@@ -895,9 +996,60 @@ async def main_loop():
 
 
 async def shutdown_gracefully(sig: Optional[int] = None) -> None:
-    """Perform graceful shutdown of all subsystems."""
+    """Perform graceful shutdown of all subsystems.
+
+    Order is critical — a worker thread must NEVER touch the AudioManager
+    after it is stopped:
+      1. Set the global shutdown event so every voice worker (wake loop,
+         command recorder, STT) exits its loop WITHOUT accessing AudioManager.
+      2. Cancel all pending asyncio tasks (thread monitor, background init).
+      3. Join worker threads — give blocked listen() calls a moment to see
+         the shutdown event and return.
+      4. ONLY THEN stop the AudioManager (closes the InputStream).
+      5. Shut down the remaining subsystems.
+    """
+    import threading as _threading
+    from voice.audio_manager import shutdown_event
+
     logger.info("Shutting down (signal=%s)...", sig)
 
+    # ── 1. Signal all voice workers to stop ──────────────────────
+    shutdown_event.set()
+    logger.info("[SHUTDOWN] shutdown_event set — voice workers exiting")
+
+    # ── 2. Cancel all pending asyncio tasks ─────────────────────
+    try:
+        current = asyncio.current_task()
+        tasks = [t for t in asyncio.all_tasks()
+                 if t is not current and not t.done()]
+        for t in tasks:
+            t.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+            logger.info("[SHUTDOWN] Cancelled %d asyncio task(s)", len(tasks))
+    except Exception as e:
+        logger.debug("[SHUTDOWN] Task cancel error: %s", e)
+
+    # ── 3. Join worker threads (bounded wait) ───────────────────
+    deadline = time.time() + 3.0
+    while time.time() < deadline:
+        alive = [t for t in _threading.enumerate()
+                 if t.is_alive() and not t.daemon
+                 and t is not _threading.current_thread()
+                 and "MainThread" not in t.name]
+        if not alive:
+            break
+        await asyncio.sleep(0.05)
+    logger.info("[SHUTDOWN] Worker threads joined")
+
+    # ── 4. NOW stop AudioManager — no component touches it after ─
+    try:
+        audio_manager.stop()
+        logger.info("[SHUTDOWN] AudioManager stopped")
+    except Exception as e:
+        logger.warning("AudioManager shutdown error: %s", e)
+
+    # ── 5. Shut down remaining subsystems ───────────────────────
     try:
         await voice_supervisor.shutdown()
     except Exception as e:
@@ -989,6 +1141,178 @@ def cmd_benchmark():
     print(evaluator.report())
 
 
+def cmd_select_mic():
+    """Interactive microphone selection."""
+    from voice.mic_selector import select_microphone_interactive
+    select_microphone_interactive()
+
+
+def cmd_calibrate():
+    """Auto-calibrate wake detection with 10 repetitions of 'hello leo'."""
+    import numpy as _np
+    from voice.audio_manager import audio_manager
+    from voice.audio_processing import audio_preprocessor
+    from voice.stt import _recognize_bytes
+    from voice.wake_word import wake_word_engine
+
+    print()
+    print("  ═══════════════════════════════════════════")
+    print("  AUTO-CALIBRATION")
+    print("  ═══════════════════════════════════════════")
+    print("  You will say 'hello leo' 10 times.")
+    print("  Leo measures thresholds, gain, and wake scores.")
+    print()
+
+    if not audio_manager.start():
+        print("  FAILED: cannot start AudioManager")
+        sys.exit(1)
+
+    time.sleep(1)  # Let buffer fill
+
+    scores = []
+    snrs = []
+    energy_thresholds = []
+
+    for i in range(10):
+        print(f"  [{i+1}/10] Say 'hello leo'...")
+        # Listen for speech (max 8s)
+        audio_bytes = audio_manager.record_command(timeout=8.0, phrase_limit=7.0)
+        if audio_bytes is None:
+            print("    No speech detected, try again")
+            continue
+
+        # Process with noise suppression
+        samples = _np.frombuffer(audio_bytes, dtype=_np.int16)
+        processed = audio_preprocessor.process(samples)
+        proc_bytes = processed.tobytes()
+
+        # STT
+        text = _recognize_bytes(proc_bytes, audio_manager.sample_rate)
+        if not text:
+            print("    No speech recognized, try again")
+            continue
+
+        print(f"    Recognized: '{text}'")
+
+        # Compute wake score
+        best_ratio = 0.0
+        for variant in wake_word_engine._variants:
+            import difflib
+            ratio = difflib.SequenceMatcher(None, text.lower(), variant.lower()).ratio()
+            best_ratio = max(best_ratio, ratio)
+
+        scores.append(best_ratio)
+
+        # Compute SNR
+        rms = float(_np.sqrt(_np.mean(samples.astype(float) ** 2)))
+        preproc_metrics = audio_preprocessor.get_metrics()
+        nf = preproc_metrics.get('noise_floor_raw', 0)
+        if nf and nf > 0:
+            snr_db = 20 * _np.log10((rms / 32768.0 + 1e-10) / (nf + 1e-10))
+        else:
+            snr_db = 40.0
+        snrs.append(snr_db)
+
+        # Energy threshold
+        energy_thresholds.append(max(300.0, rms * 1.5))
+
+    audio_manager.stop()
+
+    if scores:
+        import statistics
+        avg_score = statistics.mean(scores)
+        avg_snr = statistics.mean(snrs)
+        best_threshold = statistics.median(energy_thresholds) if energy_thresholds else 300.0
+
+        print()
+        print("  ═══════════════════════════════════════════")
+        print("  CALIBRATION RESULTS")
+        print("  ═══════════════════════════════════════════")
+        print(f"  Successful phrases: {len(scores)}/10")
+        print(f"  Average wake score: {avg_score:.3f}")
+        print(f"  Average SNR:        {avg_snr:.1f} dB")
+        print(f"  Energy threshold:   {best_threshold:.0f}")
+        print()
+
+        # Save calibration
+        calibration = {
+            "wake_score_threshold": max(0.7, avg_score * 0.8),
+            "energy_threshold": best_threshold,
+            "snr_db": avg_snr,
+            "calibrated_at": time.time(),
+        }
+        try:
+            from pathlib import Path as _Path
+            cal_path = _Path("data/wake_calibration.json")
+            cal_path.parent.mkdir(parents=True, exist_ok=True)
+            import json
+            with open(cal_path, "w") as f:
+                json.dump(calibration, f, indent=2)
+            print(f"  Calibration saved to: {cal_path}")
+        except Exception as e:
+            print(f"  WARNING: Failed to save calibration: {e}")
+
+        print()
+    else:
+        print()
+        print("  Calibration failed — no phrases recognized.")
+        print("  Check microphone levels and try again.")
+        print()
+
+
+def cmd_audio_debug():
+    """Real-time audio level visualizer."""
+    from voice.audio_manager import audio_manager
+    from voice.audio_processing import audio_preprocessor
+    import numpy as _np
+
+    def _bar(value, max_val, width=40):
+        pct = min(max(int(value / max_val * width), 0), width)
+        return "█" * pct + "░" * (width - pct)
+
+    print("\n  Real-time audio debug (Ctrl+C to stop)\n")
+
+    if not audio_manager.start():
+        print("  FAILED: cannot start AudioManager")
+        sys.exit(1)
+
+    try:
+        while True:
+            time.sleep(0.1)
+            audio = audio_manager.get_recent_audio(0.1)
+            if len(audio) == 0:
+                continue
+
+            rms = float(_np.sqrt(_np.mean(audio.astype(float) ** 2)))
+            peak = float(_np.max(_np.abs(audio)))
+            norm_rms = rms / 32768.0
+
+            preproc = audio_preprocessor.get_metrics()
+            noise_floor = preproc.get("noise_floor_raw", 0)
+            gain = preproc.get("gain_applied", 1.0)
+
+            # Compute noise floor dB
+            nf_db = 20 * _np.log10(noise_floor / 32768.0) if noise_floor > 0 else -120.0
+
+            # VAD state
+            vad_state = audio_manager.get_diagnostics().get("vad_state", "?")
+
+            import sys as _sys
+            _sys.stdout.write(f"\r")
+            _sys.stdout.write(
+                f" In: {_bar(rms, 32768)} {norm_rms*100:5.1f}% "
+                f"| RMS={rms:6.0f} Peak={peak:6.0f} "
+                f"| Noise={nf_db:6.1f}dB Gain={gain:.2f}x "
+                f"| VAD={vad_state}"
+            )
+            _sys.stdout.flush()
+
+    except KeyboardInterrupt:
+        print("\n\n  Stopped")
+    finally:
+        audio_manager.stop()
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Leo Desktop Assistant")
     parser.add_argument("--train", action="store_true",
@@ -999,6 +1323,14 @@ if __name__ == "__main__":
                         help="Show NLP model status")
     parser.add_argument("--benchmark", action="store_true",
                         help="Run NLP benchmarks")
+    parser.add_argument("--select-mic", action="store_true",
+                        help="Interactively select the best microphone")
+    parser.add_argument("--calibrate", action="store_true",
+                        help="Auto-calibrate wake detection thresholds")
+    parser.add_argument("--audio-debug", action="store_true",
+                        help="Real-time audio level visualizer")
+    parser.add_argument("--train-wake", action="store_true",
+                        help="Record 100 wake phrases + train custom verifier")
 
     args = parser.parse_args()
 
@@ -1012,5 +1344,22 @@ if __name__ == "__main__":
     if args.benchmark:
         cmd_benchmark()
         sys.exit(0)
+
+    if args.select_mic:
+        cmd_select_mic()
+        sys.exit(0)
+
+    if args.calibrate:
+        cmd_calibrate()
+        sys.exit(0)
+
+    if args.audio_debug:
+        cmd_audio_debug()
+        sys.exit(0)
+
+    if args.train_wake:
+        from voice.calibrate_wake import run_calibration
+        ok = run_calibration()
+        sys.exit(0 if ok else 1)
 
     asyncio.run(main())

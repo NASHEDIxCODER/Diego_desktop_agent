@@ -2,9 +2,10 @@
 NoiseCalibrator — Calibrates microphone and persists noise profile.
 
 Features:
-- Calibrates microphone for ambient noise on first use
+- Calibrates microphone for ambient noise EXACTLY ONCE at startup
 - Persists noise profile to disk for fast startup
-- Automatically recalibrates if ambient noise changes significantly
+- Does NOT auto-recalibrate during the session
+- Adaptive noise estimation is handled by AudioPreprocessor's spectral gating
 - Never blocks startup — uses cached profile if available
 """
 
@@ -36,8 +37,8 @@ class NoiseCalibrator:
     The calibrator:
     1. Checks for a cached noise profile on disk
     2. If found, uses cached values for instant startup
-    3. Periodically checks if ambient noise has changed significantly
-    4. Recalibrates silently in background if needed
+    3. Calibration happens EXACTLY ONCE at startup
+    4. Adaptive noise estimation is handled by AudioPreprocessor
     """
 
     def __init__(self):
@@ -138,11 +139,19 @@ class NoiseCalibrator:
 
     @property
     def needs_recalibration(self) -> bool:
-        """Check if recalibration might be needed based on time elapsed."""
-        if self._calibrated_at is None:
-            return True
-        # Recalibrate every 24 hours
-        return (time.time() - self._calibrated_at) > 86400
+        """
+        Check if recalibration might be needed.
+
+        Calibration happens EXACTLY ONCE at startup after the stream
+        has stabilized. We do NOT auto-recalibrate during the session.
+        Instead, adaptive noise estimation is handled by the
+        AudioPreprocessor's spectral gating which continuously
+        tracks the noise floor.
+
+        Returns:
+            False — never auto-recalibrate.
+        """
+        return False
 
 
 # Global singleton

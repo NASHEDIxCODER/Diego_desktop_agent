@@ -1,19 +1,18 @@
 """
 SpeechRecognizer — STT with fallback chain for Leo.
 
-Provides speech-to-text with multiple recognition backends:
-1. Google Web Speech API (primary, requires internet)
-2. Whisper offline (if available)
-3. Vosk offline (if available)
-4. Fallback text input
+DEPRECATED: All STT is in voice.stt which uses the AudioManager.
+This module exists for legacy compatibility and now reads from
+the AudioManager ring buffer instead of opening its own microphone.
 
-Each backend is isolated. One failure falls through to the next.
+The AudioManager owns the microphone. This module never opens
+a PyAudio stream or instantiates speech_recognition.Microphone().
 """
 
 import logging
 from typing import Optional
 
-from voice.microphone import microphone
+from voice.audio_manager import audio_manager
 from voice.noise import noise_calibrator
 from voice.settings import voice_settings
 
@@ -24,11 +23,8 @@ class SpeechRecognizer:
     """
     Speech-to-text engine with automatic fallback.
 
-    The recognizer:
-    1. Creates a recognizer with cached noise profile
-    2. Listens for speech with configurable timeout
-    3. Tries Google STT first, falls through on failure
-    4. Never raises — returns None on total failure
+    Reads audio from the AudioManager ring buffer.
+    Never opens its own microphone stream.
     """
 
     def __init__(self):
@@ -61,6 +57,9 @@ class SpeechRecognizer:
         """
         Listen for speech and return recognized text.
 
+        Reads from the AudioManager ring buffer.
+        Never opens a new microphone stream.
+
         Args:
             timeout: Max seconds to wait for speech to start.
             phrase_time_limit: Max seconds for a single phrase.
@@ -77,20 +76,19 @@ class SpeechRecognizer:
         if phrase_time_limit is None:
             phrase_time_limit = voice_settings.stt_phrase_limit
 
-        mic = microphone.get_microphone()
-        if mic is None:
+        if not audio_manager.is_running:
+            logger.warning("[RECOGNIZER] AudioManager not running — cannot listen")
             return None
 
-        # Listen
-        try:
-            with mic as source:
-                audio = sr.listen(source, timeout=timeout,
-                                  phrase_time_limit=phrase_time_limit)
-        except self._sr_module.WaitTimeoutError:
+        # Record from the AudioManager ring buffer
+        audio_bytes = audio_manager.record_command(timeout=timeout, phrase_limit=phrase_time_limit)
+        if audio_bytes is None:
             return None
-        except Exception as e:
-            logger.debug("Listen error: %s", e)
-            return None
+
+        samplerate = audio_manager.sample_rate
+
+        # Create AudioData from the AudioManager PCM stream
+        audio = sr.AudioData(audio_bytes, samplerate, 2)
 
         # Recognize with fallback chain
         text = self._recognize(sr, audio)
@@ -100,6 +98,9 @@ class SpeechRecognizer:
         """
         Try multiple recognition backends in order.
 
+        PRIMARY: Whisper (offline)
+        FALLBACK: Google Web Speech API (optional)
+
         Args:
             recognizer: speech_recognition Recognizer instance.
             audio: Audio data to recognize.
@@ -107,13 +108,13 @@ class SpeechRecognizer:
         Returns:
             Recognized text, or None if all backends failed.
         """
-        # 1. Google Web Speech API
-        text = self._try_google(recognizer, audio)
+        # 1. Whisper (offline, primary)
+        text = self._try_whisper(recognizer, audio)
         if text:
             return text
 
-        # 2. Whisper (offline)
-        text = self._try_whisper(recognizer, audio)
+        # 2. Google Web Speech API (fallback)
+        text = self._try_google(recognizer, audio)
         if text:
             return text
 

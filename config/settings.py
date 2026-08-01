@@ -39,6 +39,10 @@ class Settings(BaseSettings):
     WHISPER_MODEL: str = "base"
     COQUI_MODEL: str = "tts_models/en/ljspeech/tacotron2-DDC"
     WAKE_WORD: str = "leo"
+    WAKE_PHRASE: str = "hello leo"
+    # Path to a local ONNX wake model. If set, this model is loaded.
+    # If unset/empty, the bundled openWakeWord model is used.
+    WAKE_MODEL: Optional[str] = None
     LANG_CODE: str = "en-IN"
     WAKE_DEVICE_INDEX: Optional[int] = None
     TTS_SPEED: float = 0.92
@@ -65,6 +69,7 @@ class Settings(BaseSettings):
     BASE_DIR: Path = Path(__file__).resolve().parent.parent
     DATA_DIR: Path = BASE_DIR / "data"
     MODELS_DIR: Path = BASE_DIR / "models"
+    MODELS_WAKE_DIR: Path = BASE_DIR / "models" / "wake"
     VOICE_FILE: Path = BASE_DIR / "leo.wav"
     IMAGES_DIR: Path = BASE_DIR / "auth" / "images"
     KNOWN_ENCODINGS_PATH: Path = BASE_DIR / "auth" / "Known_encodings.p"
@@ -85,3 +90,4 @@ settings = Settings()
 # Ensure directories exist
 settings.DATA_DIR.mkdir(parents=True, exist_ok=True)
 settings.MODELS_DIR.mkdir(parents=True, exist_ok=True)
+settings.MODELS_WAKE_DIR.mkdir(parents=True, exist_ok=True)

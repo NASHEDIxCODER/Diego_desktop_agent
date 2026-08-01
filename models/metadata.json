@@ -3,9 +3,9 @@
   "dataset_hash": "80d9e653e9467d84b03c5d9a7362d29121005c891fac2523437a34345ab02f57",
   "embedding_model": "all-MiniLM-L6-v2",
   "embedding_dim": 384,
-  "created_at": "2026-07-30T20:40:28.023125+00:00",
+  "created_at": "2026-08-01T11:45:07.477593+00:00",
   "num_intents": 35,
   "num_examples": 1225,
   "similarity_threshold": 0.75,
-  "training_time": 43.0
+  "training_time": 41.01
 }

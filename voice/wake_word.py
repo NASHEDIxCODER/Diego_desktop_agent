@@ -2,29 +2,45 @@
 WakeWordEngine — Offline wake word detection for Leo.
 
 Provides wake word detection using:
-1. Fuzzy text matching (when using cloud STT for wake word)
-2. Porcupine offline engine (if available)
-3. Simple energy-based detection as fallback
+1. openWakeWord (offline, primary) — managed by WakeModelManager
+2. Fuzzy text matching (fallback for text-based verification)
+3. Porcupine offline engine (if available)
 
 The engine never blocks startup. If no wake word engine is available,
 the assistant falls back to push-to-talk mode.
+
+Model selection (see WakeModelManager):
+  WAKE_MODEL   → custom ONNX model → models/wake/*.onnx → bundled model
+  WAKE_PHRASE  → phrase the model is expected to detect ("hello leo")
+
+The bundled hey_jarvis model is NEVER hardcoded.
+
+Google SpeechRecognition is NOT used for wake detection.
 """
 
 import difflib
 import logging
 from typing import List, Optional, Callable
 
+import numpy as np
+
 from voice.settings import voice_settings
+from voice.wake_model_manager import wake_model_manager
 
 logger = logging.getLogger(__name__)
 
-# Default wake word variants for fuzzy matching
-# Reduced set to minimize false positives
+# Default wake word variants for fuzzy matching.
+# Derived from the configured WAKE_PHRASE (default "hello leo") so the
+# loaded model always matches the phrase the assistant waits for.
+# Includes common mispronunciations (lio) and short forms (leo).
 DEFAULT_WAKE_VARIANTS = [
     "hello leo",
     "hey leo",
     "ok leo",
     "hi leo",
+    "leo",
+    "lio",
+    "hello lio",
 ]
 
 
@@ -33,7 +49,8 @@ class WakeWordEngine:
     Wake word detection engine.
 
     Supports multiple detection methods:
-    - Fuzzy text matching (default, works with any STT)
+    - openWakeWord (offline, primary, via WakeModelManager)
+    - Fuzzy text matching (fallback)
     - Porcupine (offline, if pvporcupine is installed)
     - Custom callback for user-provided detection
 
@@ -45,10 +62,13 @@ class WakeWordEngine:
         self._custom_detector: Optional[Callable[[str], bool]] = None
         self._porcupine = None
         self._porcupine_available = False
+        self._openwakeword_available = False
         self._detection_count = 0
 
         # Try to load Porcupine for offline detection
         self._init_porcupine()
+        # openWakeWord is loaded lazily via WakeModelManager (never hardcoded).
+        self._init_openwakeword()
 
     def _init_porcupine(self) -> None:
         """Try to initialize Porcupine offline wake word engine."""
@@ -62,9 +82,24 @@ class WakeWordEngine:
             logger.info("Porcupine wake word engine initialized (keyword=%s)",
                        voice_settings.wake_word)
         except ImportError:
-            logger.debug("Porcupine not available, using fuzzy matching")
+            logger.debug("Porcupine not available, using openWakeWord")
         except Exception as e:
             logger.debug("Porcupine init failed: %s", e)
+
+    def _init_openwakeword(self) -> None:
+        """
+        Initialize openWakeWord via WakeModelManager.
+
+        The manager resolves the model from WAKE_MODEL → models/wake/*.onnx
+        → bundled model matching WAKE_PHRASE. hey_jarvis is never hardcoded.
+        """
+        ok = wake_model_manager.load()
+        if ok:
+            self._openwakeword_available = True
+        else:
+            self._openwakeword_available = False
+            logger.warning("openWakeWord init failed: %s",
+                          wake_model_manager.load_error or "no model")
 
     def set_variants(self, variants: List[str]) -> None:
         """Set wake word variants for fuzzy matching."""
@@ -105,9 +140,6 @@ class WakeWordEngine:
                 self._detection_count += 1
                 return True
             # Fuzzy match for slight mispronunciations
-            # Google STT often returns slightly different text than expected
-            # (e.g. "hello leo" → "hello leo" with extra spaces/punctuation)
-            # Use 0.75 to account for STT variance while still rejecting noise
             ratio = difflib.SequenceMatcher(None, text_lower, variant_lower).ratio()
             if ratio >= 0.75 and len(text_lower) >= len(variant_lower) * 0.5:
                 self._detection_count += 1
@@ -117,7 +149,7 @@ class WakeWordEngine:
 
     def detect_audio(self, audio_frame) -> bool:
         """
-        Detect wake word from raw audio frame using Porcupine.
+        Detect wake word from raw audio frame using openWakeWord or Porcupine.
 
         Args:
             audio_frame: Raw audio data (PCM16, 16kHz, mono).
@@ -125,17 +157,34 @@ class WakeWordEngine:
         Returns:
             True if wake word was detected.
         """
-        if not self._porcupine_available or self._porcupine is None:
-            return False
+        # Try openWakeWord first (primary) — via WakeModelManager
+        if self._openwakeword_available:
+            try:
+                # Convert int16 to float32 in range [-1, 1] (manager handles both)
+                if isinstance(audio_frame, np.ndarray):
+                    audio_int16 = audio_frame
+                else:
+                    audio_int16 = np.frombuffer(audio_frame, dtype=np.int16)
+                detected = wake_model_manager.detect(audio_int16)
+                if detected:
+                    self._detection_count += 1
+                    model_name, score = wake_model_manager.highest_score()
+                    logger.info("Wake word detected via openWakeWord ('%s', score=%.3f)",
+                               model_name, score)
+                    return True
+            except Exception as e:
+                logger.warning("openWakeWord processing failed: %s", e)
 
-        try:
-            result = self._porcupine.process(audio_frame)
-            if result >= 0:
-                self._detection_count += 1
-                logger.info("Wake word detected via Porcupine")
-                return True
-        except Exception as e:
-            logger.warning("Porcupine processing failed: %s", e)
+        # Try Porcupine as fallback
+        if self._porcupine_available and self._porcupine is not None:
+            try:
+                result = self._porcupine.process(audio_frame)
+                if result >= 0:
+                    self._detection_count += 1
+                    logger.info("Wake word detected via Porcupine")
+                    return True
+            except Exception as e:
+                logger.warning("Porcupine processing failed: %s", e)
 
         return False
 
@@ -147,7 +196,7 @@ class WakeWordEngine:
     @property
     def has_offline_engine(self) -> bool:
         """Check if offline wake word engine is available."""
-        return self._porcupine_available
+        return self._openwakeword_available or self._porcupine_available
 
     def close(self) -> None:
         """Release wake word engine resources."""
@@ -157,6 +206,8 @@ class WakeWordEngine:
             except Exception:
                 pass
             self._porcupine = None
+        self._openwakeword_available = False
+        wake_model_manager.close()
         logger.debug("Wake word engine resources released")
 
 

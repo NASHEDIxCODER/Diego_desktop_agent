@@ -1,0 +1,10 @@
+{
+  "wake_phrase": "hello leo",
+  "base_model": "hey_mycroft_v0.1",
+  "verifier_path": "verifier.pkl",
+  "positive_count": 12,
+  "negative_count": 6,
+  "verifier_threshold": 0.0,
+  "detection_threshold": 0.07135276532232536,
+  "trained_at": 1785583947.993239
+}

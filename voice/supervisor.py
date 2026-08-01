@@ -321,18 +321,15 @@ class VoiceSupervisor:
     async def _on_init(self) -> None:
         """Initialize voice components. If microphone unavailable, go to VOICE_UNAVAILABLE."""
         from voice.audio_device import audio_device
-        from voice.microphone import microphone
+        from voice.audio_manager import audio_manager
         from voice.noise import noise_calibrator
 
         # Detect audio backend (cached result, no repeated probes)
         audio_device.detect_backend()
 
-        # Check microphone availability BEFORE calibration
-        mic = microphone.get_microphone()
-        mic_available = mic is not None
-
-        if not mic_available:
-            logger.warning("No microphone available — voice features disabled")
+        # Check AudioManager availability — it owns the microphone
+        if not audio_manager.is_running:
+            logger.warning("AudioManager not running — voice features disabled")
             self._voice_available = False
             await self.transition(VoiceState.VOICE_UNAVAILABLE)
             return
@@ -348,7 +345,7 @@ class VoiceSupervisor:
 
         self._voice_available = True
 
-        logger.info("Voice components initialized (audio=%s, mic=available)",
+        logger.info("Voice components initialized (audio=%s, mic=AudioManager)",
                    audio_device.backend)
 
         await self.transition(VoiceState.LOAD_MODELS)
@@ -392,12 +389,15 @@ class VoiceSupervisor:
         await self.transition(VoiceState.WAKEWORD)
 
     async def _on_wakeword(self) -> None:
-        """Wait for wake word."""
-        from voice.wake_word import wake_word_engine
-        from voice.recognizer import speech_recognizer
+        """Wait for wake word using Silero VAD + openWakeWord."""
+        from voice.stt import listen_wake
 
-        text = speech_recognizer.listen(timeout=3, phrase_time_limit=3)
-        if text and wake_word_engine.detect(text):
+        # Use the offline wake detection pipeline:
+        # Microphone → Silero VAD → openWakeWord → Whisper
+        text = await asyncio.get_running_loop().run_in_executor(
+            None, lambda: listen_wake(timeout=3)
+        )
+        if text:
             logger.info("Wake word detected: %s", text)
             await self.transition(VoiceState.LISTEN)
         else:

@@ -87,26 +87,23 @@ def main():
         print()
         sys.exit(1)
 
-    # ── 3. Import microphone ───────────────────────────
-    print("  [3/5] Import microphone")
+    # ── 3. Import AudioManager ─────────────────────────
+    print("  [3/5] Import AudioManager")
     try:
-        from voice.microphone import MicrophoneManager, SoundDeviceMic
-        mic_mgr = MicrophoneManager()
-        mic = mic_mgr.get_microphone()
-        if mic is not None:
-            check("Microphone init", True, f"backend={mic_mgr.backend}")
-            if hasattr(mic, 'device_index') and mic.device_index is not None:
-                print(f"         Device index: {mic.device_index}")
-            if hasattr(mic, 'sample_rate') and mic.sample_rate is not None:
-                print(f"         Sample rate:  {mic.sample_rate}")
+        from voice.audio_manager import audio_manager
+        am_started = audio_manager.start()
+        if am_started:
+            check("AudioManager init", True, f"backend={audio_manager.backend}")
+            print(f"         Device index: {audio_manager.device_index}")
+            print(f"         Sample rate:  {audio_manager.sample_rate}")
         else:
-            check("Microphone init", False, "No microphone available")
+            check("AudioManager init", False, "AudioManager failed to start")
             print()
             print(f"  FAILED: {FAIL}/{PASS + FAIL} tests passed")
             print()
             sys.exit(1)
     except Exception as e:
-        check("Microphone init", False, f"{type(e).__name__}: {e}")
+        check("AudioManager init", False, f"{type(e).__name__}: {e}")
         print(f"\n  Full traceback:\n  {traceback.format_exc().strip()}")
         print()
         print(f"  FAILED: {FAIL}/{PASS + FAIL} tests passed")
