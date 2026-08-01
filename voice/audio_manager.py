@@ -197,6 +197,24 @@ class AudioManager:
         self._energy_threshold: float = VAD_ENERGY_THRESHOLD
         self._initialized = False
         self._hp_zi = None  # State for lightweight high-pass filter in callback
+        # Native channel count of the selected device and the count we open
+        # the stream with (capped so multi-channel speech detection works
+        # without wasting resources on huge virtual buses).
+        self._device_max_channels: int = 1
+        self._stream_channels: int = CHANNELS
+
+        # ── Audio-capture instrumentation / channel detection ──
+        # NEVER assume channel 0 contains the microphone. Auto-detect the
+        # channel that carries speech and use it. See _detect_speech_channel.
+        self._speech_channel: Optional[int] = None
+        self._callback_count: int = 0
+        self._dropped_frames: int = 0
+        self._last_callback_time: float = 0.0
+        self._callback_intervals: deque = deque(maxlen=200)
+        self._rms_history: deque = deque(maxlen=200)
+        self._peak_history: deque = deque(maxlen=200)
+        self._channel_rms: dict = {}      # channel index -> latest RMS (float scale)
+        self._last_raw_dump: float = 0.0  # last time a raw WAV was dumped
 
         # Callback for wake word detection
         self._on_speech_detected: Optional[Callable] = None
@@ -274,8 +292,38 @@ class AudioManager:
                 except Exception:
                     pass
 
+            # ── STEP 4: prefer REAL HARDWARE capture over silent virtual buses ──
+            # If the selected device is a virtual bus (pipewire/pulse/default)
+            # AND a real hardware input device exists, prefer the hardware
+            # device — virtual buses often route to a monitor/silence source.
+            try:
+                VIRTUAL_KEYS = ("pipewire", "pulse", "default", "monitor")
+                HARDWARE_KEYS = ("hw:", "usb", "analog", "alc", "mic", "microphone")
+                cur_name = str(sd.query_devices(self._device_index)['name']).lower()
+                is_virtual = any(k in cur_name for k in VIRTUAL_KEYS)
+                hw_candidates = [
+                    d for d in input_devices
+                    if any(k in str(d['name']).lower() for k in HARDWARE_KEYS)
+                ]
+                if is_virtual and hw_candidates:
+                    # Reuse the mic selector's measured hardware preference.
+                    try:
+                        best = select_best_microphone()
+                        if best and best.get("index") in {d['index'] for d in hw_candidates}:
+                            self._device_index = best.get("index")
+                        else:
+                            self._device_index = hw_candidates[0]['index']
+                    except Exception:
+                        self._device_index = hw_candidates[0]['index']
+                    logger.info("[AUDIO] Preferring hardware mic over virtual bus: "
+                                "[%d] %s", self._device_index,
+                                sd.query_devices(self._device_index)['name'])
+            except Exception as e:
+                logger.debug("[AUDIO] hardware-preference check failed: %s", e)
+
             device_info = sd.query_devices(self._device_index)
             self._actual_sample_rate = int(device_info.get('default_samplerate', SAMPLE_RATE))
+            self._device_max_channels = int(device_info.get('max_input_channels', 1))
 
             logger.info("[AUDIO] sounddevice initialized — device[%d]: %s (%d Hz, %d ch)",
                         self._device_index, device_info['name'],
@@ -350,12 +398,62 @@ class AudioManager:
 
     def _audio_callback(self, indata, frames, time_info, status) -> None:
         """Callback for sounddevice.InputStream — called for every audio frame."""
+        # ── Callback instrumentation (STEP 1) ──
+        now = time.time()
+        if self._last_callback_time > 0:
+            self._callback_intervals.append(now - self._last_callback_time)
+        self._last_callback_time = now
+        self._callback_count += 1
         if status:
-            logger.debug("[AUDIO] Stream status: %s", status)
+            # Overflow/underflow or other stream status → dropped frames.
+            self._dropped_frames += 1
+            logger.debug("[AUDIO] Stream status (dropped): %s", status)
+
+        # ── Per-channel RMS (STEP 2) — NEVER assume channel 0 is the mic ──
+        n_channels = indata.shape[1] if indata.ndim > 1 else 1
+        chan_rms = []
+        for c in range(n_channels):
+            col = indata[:, c] if indata.ndim > 1 else indata
+            chan_rms.append(float(np.sqrt(np.mean(col.astype(np.float64) ** 2))))
+        for c, r in enumerate(chan_rms):
+            self._channel_rms[c] = r
+
+        # Auto-detect the speech channel during the first callbacks if not set.
+        if self._speech_channel is None:
+            # Pick the channel with the highest RMS; if all silent, default 0.
+            best_c = int(np.argmax(chan_rms)) if chan_rms else 0
+            # Only lock in a non-zero channel once we actually see signal.
+            if chan_rms and chan_rms[best_c] > 1e-4:
+                self._speech_channel = best_c
+                logger.info("[AUDIO] Speech channel auto-detected: ch%d "
+                            "(rms=%.4f of %d channels)",
+                            best_c, chan_rms[best_c], n_channels)
+            else:
+                self._speech_channel = 0  # silent so far — default, re-checked later
+        src_channel = self._speech_channel if (
+            self._speech_channel is not None and self._speech_channel < n_channels
+        ) else 0
+
+        mono = indata[:, src_channel] if indata.ndim > 1 else indata
+
+        # Track RMS/peak history (STEP 8 diagnostics).
+        mono_rms = float(np.sqrt(np.mean(mono.astype(np.float64) ** 2)))
+        mono_peak = float(np.max(np.abs(mono))) if mono.size else 0.0
+        self._rms_history.append(mono_rms)
+        self._peak_history.append(mono_peak)
+
+        # Periodic per-callback dump (STEP 1) — every 50th callback.
+        if self._callback_count % 50 == 0:
+            ch_summary = " ".join(
+                f"ch{c}={self._channel_rms[c] * 32768:.0f}" for c in sorted(self._channel_rms)
+            )
+            logger.info(
+                "[CALLBACK #%d] shape=%s dtype=%s ch=%d src_ch=%d rms=%.1f peak=%.1f | %s",
+                self._callback_count, indata.shape, indata.dtype, n_channels,
+                src_channel, mono_rms * 32768, mono_peak * 32768, ch_summary)
 
         # ── Peak monitoring: locate saturation at every stage ──
-        # microphone (raw float32 source, range ~[-1, 1])
-        peak_monitor.log("microphone", indata[:, 0] * 32767.0)
+        peak_monitor.log("microphone", mono * 32767.0)
 
         # Convert float32 to int16.
         # sounddevice float32 is nominally in range [-1.0, 1.0], but hot /
@@ -363,7 +461,7 @@ class AudioManager:
         # `(x * 32767).astype(int16)` OVERFLOW-WRAPS (e.g. 1.8*32767=58980
         # wraps to a NEGATIVE int16), flipping the waveform sign. Clipping
         # gives clean saturation at ±32767 instead of corrupting the signal.
-        audio_clipped = np.clip(indata[:, 0], -1.0, 1.0)
+        audio_clipped = np.clip(mono, -1.0, 1.0)
         audio_int16 = (audio_clipped * 32767.0).astype(np.int16)
         peak_monitor.log("int16_conversion", audio_int16)
 
@@ -371,6 +469,13 @@ class AudioManager:
         if self._actual_sample_rate != SAMPLE_RATE:
             audio_int16 = self._resample_to_16k(audio_int16)
             peak_monitor.log("resampling", audio_int16)
+
+        # ── Raw dump buffer (STEP 3) — capture PRE-highpass int16 audio ──
+        # so dump_raw_input() can save audio BEFORE noise suppression / VAD /
+        # Whisper / openWakeWord / normalization / gain.
+        if not hasattr(self, "_raw_dump_buffer"):
+            self._raw_dump_buffer = deque(maxlen=int(6 * SAMPLE_RATE / FRAME_SAMPLES))
+        self._raw_dump_buffer.append(audio_int16)
 
         # Lightweight high-pass only inside the callback (fast).
         # Full noise suppression is done on read (get_recent_processed).
@@ -427,13 +532,19 @@ class AudioManager:
         audio_preprocessor.reset_noise_profile()
 
         try:
+            # Open with the device's native channel count (capped at 4) so the
+            # callback can AUTO-DETECT which channel carries the microphone
+            # (never assume channel 0 — e.g. a stereo mic on the right channel,
+            # or a multichannel interface). Downmix happens per-channel in the
+            # callback via self._speech_channel.
+            self._stream_channels = max(1, min(self._device_max_channels, 4))
             # Blocksize must match the DEVICE sample rate to produce FRAME_DURATION
             # of audio. After resampling to 16 kHz, this yields FRAME_SAMPLES samples.
             device_blocksize = int(self._actual_sample_rate * FRAME_DURATION)
             self._stream = self._sd.InputStream(
                 samplerate=self._actual_sample_rate,
                 device=self._device_index,
-                channels=CHANNELS,
+                channels=self._stream_channels,
                 dtype="float32",
                 callback=self._audio_callback,
                 blocksize=device_blocksize,
@@ -442,14 +553,35 @@ class AudioManager:
             self._running = True
             self._initialized = True
 
-            logger.info("[AUDIO] InputStream started — %d Hz, %d ch, backend=%s",
-                        self._actual_sample_rate, CHANNELS, self._backend)
+            logger.info("[AUDIO] InputStream started — %d Hz, %d/%d ch (native=%d), backend=%s",
+                        self._actual_sample_rate, self._stream_channels,
+                        self._device_max_channels, self._device_max_channels, self._backend)
             return True
 
         except Exception as e:
-            logger.error("[AUDIO] Failed to start stream: %s", e, exc_info=True)
-            self._stream = None
-            return False
+            # If the native channel count fails, retry with mono.
+            logger.warning("[AUDIO] Open with %d ch failed (%s) — retrying mono",
+                           getattr(self, "_stream_channels", 1), e)
+            try:
+                self._stream_channels = 1
+                device_blocksize = int(self._actual_sample_rate * FRAME_DURATION)
+                self._stream = self._sd.InputStream(
+                    samplerate=self._actual_sample_rate,
+                    device=self._device_index,
+                    channels=1,
+                    dtype="float32",
+                    callback=self._audio_callback,
+                    blocksize=device_blocksize,
+                )
+                self._stream.start()
+                self._running = True
+                self._initialized = True
+                logger.info("[AUDIO] InputStream started (mono fallback) — %d Hz", self._actual_sample_rate)
+                return True
+            except Exception as e2:
+                logger.error("[AUDIO] Failed to start stream: %s", e2, exc_info=True)
+                self._stream = None
+                return False
 
     def stop(self) -> None:
         """Stop and close the audio stream."""
@@ -653,14 +785,16 @@ class AudioManager:
         """
         Calibrate energy threshold from ambient noise.
 
-        Captures 'duration' seconds of audio and sets the threshold
-        to 1.5x the measured RMS.
+        VALIDATION (STEP 6): calibration is INVALID if the microphone is
+        producing digital silence (RMS ≈ 0) — that means the selected device
+        has no real mic routed. In that case this returns False so the caller
+        can switch to another device. Leo must NEVER run on a silent mic.
 
         Args:
             duration: Calibration duration in seconds.
 
         Returns:
-            True if calibration succeeded.
+            True if calibration succeeded AND the mic delivers real signal.
         """
         if not self._running:
             logger.warning("[AUDIO] Cannot calibrate — stream not running")
@@ -675,10 +809,140 @@ class AudioManager:
             return False
 
         rms = float(np.sqrt(np.mean(audio.astype(float) ** 2)))
+        peak = float(np.max(np.abs(audio)))
+
+        # ── Silence validation: RMS ≈ 0 means no real mic signal ──
+        # Any real analog microphone (even in a quiet room) produces a small
+        # non-zero room-tone/electronic-noise signal. Pure 0.0 is digital
+        # silence from an unrouted/virtual device.
+        if rms < 1.0:
+            logger.error(
+                "[AUDIO] CALIBRATION INVALID: RMS=%.2f (≈ digital silence). "
+                "Selected device '%s' is NOT delivering a real microphone "
+                "signal — pick another input device.",
+                rms, self._device_index)
+            return False
+
         self._energy_threshold = max(300.0, rms * 1.5)
-        logger.info("[AUDIO] Calibration complete — RMS=%.1f, threshold=%.1f",
-                    rms, self._energy_threshold)
+        logger.info("[AUDIO] Calibration complete — RMS=%.1f peak=%.0f threshold=%.1f",
+                    rms, peak, self._energy_threshold)
         return True
+
+    # ── STEP 5: validate a capture device actually delivers speech ──
+    def validate_capture(self, duration: float = 2.0) -> dict:
+        """Record `duration` seconds from the CURRENT stream and measure
+        speech/energy metrics. Used to verify the selected device works.
+
+        Returns dict with rms, peak, max_channel_rms, speech_channel, valid.
+        """
+        if not self._running:
+            return {"valid": False, "reason": "stream_not_running"}
+        time.sleep(0.1)
+        audio = self._ring_buffer.get_recent(duration)
+        if len(audio) == 0:
+            return {"valid": False, "reason": "no_audio"}
+        rms = float(np.sqrt(np.mean(audio.astype(float) ** 2)))
+        peak = float(np.max(np.abs(audio)))
+        max_ch = max(self._channel_rms.values()) * 32768 if self._channel_rms else 0.0
+        valid = rms >= 1.0 or max_ch >= 5.0
+        return {
+            "valid": bool(valid),
+            "rms": rms,
+            "peak": peak,
+            "max_channel_rms": max_ch,
+            "speech_channel": self._speech_channel,
+            "device_index": self._device_index,
+            "sample_rate": self._actual_sample_rate,
+        }
+
+    # ── STEP 3: dump raw (pre-processing) microphone input to a WAV file ──
+    def dump_raw_input(self, duration: float = 3.0) -> Optional[str]:
+        """Save the most recent `duration` seconds of RAW (pre-highpass,
+        pre-noise-suppression, pre-VAD, pre-Whisper, pre-openWakeWord, pre-
+        normalization, pre-gain) microphone audio to debug/raw_input_<ts>.wav
+        and print duration/rate/channels/RMS/peak. If the waveform is flat,
+        the microphone stream is wrong.
+
+        Returns the saved file path, or None on failure.
+        """
+        if not hasattr(self, "_raw_dump_buffer") or not self._raw_dump_buffer:
+            logger.warning("[RAW] No raw audio captured yet")
+            return None
+        try:
+            import wave
+            from pathlib import Path as _P
+            audio = np.concatenate(list(self._raw_dump_buffer))
+            max_n = int(duration * SAMPLE_RATE)
+            if len(audio) > max_n:
+                audio = audio[-max_n:]
+            rms = float(np.sqrt(np.mean(audio.astype(float) ** 2)))
+            peak = float(np.max(np.abs(audio))) if len(audio) else 0.0
+            dbg = _P(__file__).resolve().parent.parent / "debug"
+            dbg.mkdir(parents=True, exist_ok=True)
+            ts = time.strftime("%Y%m%d_%H%M%S")
+            path = dbg / f"raw_input_{ts}.wav"
+            with wave.open(str(path), "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(SAMPLE_RATE)
+                w.writeframes(audio.astype(np.int16).tobytes())
+            dur = len(audio) / SAMPLE_RATE
+            logger.info(
+                "[RAW] Saved %s: dur=%.2fs rate=%d ch=1 RMS=%.1f peak=%.0f %s",
+                path.name, dur, SAMPLE_RATE, rms, peak,
+                "FLAT!" if rms < 1.0 else "")
+            self._last_raw_dump = time.time()
+            return str(path)
+        except Exception as e:
+            logger.debug("[RAW] dump_raw_input failed: %s", e)
+            return None
+
+    # ── STEP 8: write a full runtime audio diagnostics report ──
+    def write_audio_report(self, path: Optional[str] = None) -> dict:
+        """Write debug/audio_report.json with chosen device, all devices,
+        channel map, RMS/peak history, callback timing, dropped frames."""
+        import json
+        from pathlib import Path as _P
+        try:
+            devices = []
+            if self._sd is not None:
+                for d in self._sd.query_devices():
+                    if d['max_input_channels'] > 0:
+                        devices.append({
+                            "index": d['index'], "name": d['name'],
+                            "in_channels": d['max_input_channels'],
+                            "default_samplerate": d['default_samplerate'],
+                        })
+            intervals = list(self._callback_intervals)
+            report = {
+                "chosen_device": self._device_index,
+                "speech_channel": self._speech_channel,
+                "sample_rate": self._actual_sample_rate,
+                "backend": self._backend,
+                "running": self._running,
+                "all_devices": devices,
+                "channel_rms": {str(k): round(v, 6) for k, v in self._channel_rms.items()},
+                "rms_history": [round(x, 6) for x in list(self._rms_history)],
+                "peak_history": [round(x, 6) for x in list(self._peak_history)],
+                "callback_count": self._callback_count,
+                "dropped_frames": self._dropped_frames,
+                "callback_interval_ms": {
+                    "mean": round(float(np.mean(intervals)) * 1000, 2) if intervals else 0.0,
+                    "max": round(float(np.max(intervals)) * 1000, 2) if intervals else 0.0,
+                },
+                "peak_monitor": peak_monitor.report(),
+                "energy_threshold": self._energy_threshold,
+            }
+            if path is None:
+                path = str(_P(__file__).resolve().parent.parent / "debug" / "audio_report.json")
+            _P(path).parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(report, f, indent=2)
+            logger.info("[AUDIO] Report written: %s", path)
+            return report
+        except Exception as e:
+            logger.debug("[AUDIO] write_audio_report failed: %s", e)
+            return {}
 
     def set_speech_callback(self, callback: Callable) -> None:
         """Set a callback that is called when VAD detects speech."""
