@@ -9,3 +9,8 @@ auth/serviceAccountKey.json
 *.md
 !README.md
 auth/serviceAccountKey.json
+
+debug/real_voice_test/*
+debug/*.txt
+debug/*.wav
+debug/*.jpg
