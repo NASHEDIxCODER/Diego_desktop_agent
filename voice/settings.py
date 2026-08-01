@@ -15,6 +15,8 @@ Settings:
   TTS_STREAMING: Enable streaming playback (true/false)
   VOICE_PITCH: Voice pitch (0.5 to 2.0, default 1.0)
   WAKE_WORD: Wake word phrase
+  WAKE_PHRASE: Phrase used for wake detection ("hello leo")
+  WAKE_MODEL: Path to a local ONNX wake model (optional)
   WAKE_SENSITIVITY: Wake word detection sensitivity (0.0 to 1.0)
   LANG_CODE: Language code for STT
   STT_TIMEOUT: Max seconds to wait for speech
@@ -49,6 +51,8 @@ class VoiceSettings:
 
     # Wake word
     wake_word: str = "leo"
+    wake_phrase: str = "hello leo"
+    wake_model: Optional[str] = None  # Path to local ONNX model
     wake_sensitivity: float = 0.5  # 0.0 to 1.0
 
     # STT
@@ -111,6 +115,10 @@ class VoiceSettings:
             self.voice_id = os.getenv("VOICE_ID", "default")
         if os.getenv("WAKE_WORD"):
             self.wake_word = os.getenv("WAKE_WORD", "leo")
+        if os.getenv("WAKE_PHRASE"):
+            self.wake_phrase = os.getenv("WAKE_PHRASE", "hello leo")
+        if os.getenv("WAKE_MODEL"):
+            self.wake_model = os.getenv("WAKE_MODEL")
         if os.getenv("LANG_CODE"):
             self.lang_code = os.getenv("LANG_CODE", "en-IN")
         if os.getenv("WAKE_DEVICE_INDEX"):
@@ -134,6 +142,8 @@ class VoiceSettings:
             "voice_pitch": self.voice_pitch,
             "voice_id": self.voice_id,
             "wake_word": self.wake_word,
+            "wake_phrase": self.wake_phrase,
+            "wake_model": self.wake_model,
             "wake_sensitivity": self.wake_sensitivity,
             "lang_code": self.lang_code,
             "stt_timeout": self.stt_timeout,

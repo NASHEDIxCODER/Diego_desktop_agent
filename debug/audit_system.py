@@ -229,26 +229,26 @@ async def audit_embeddings() -> SubsystemAudit:
 async def audit_voice() -> SubsystemAudit:
     """Audit voice subsystem."""
     audit = SubsystemAudit(name="Voice")
-    audit.dependencies = ["speech_recognition", "pyaudio", "mic"]
+    audit.dependencies = ["speech_recognition", "sounddevice", "AudioManager"]
 
     try:
         t0 = time.time()
         from voice.audio_device import audio_device
         from voice.settings import voice_settings
-        from voice.microphone import microphone
+        from voice.audio_manager import audio_manager
 
         voice_settings.update_from_env()
         backend = audio_device.detect_backend()
-        mic = microphone.get_microphone()
-        mic_ok = mic is not None
+        am_started = audio_manager.start()
+        am_ok = am_started and audio_manager.is_running
 
-        audit.details = f"Audio backend: {backend}, Mic: {'OK' if mic_ok else 'NONE'}"
+        audit.details = f"Audio backend: {backend}, AudioManager: {'OK' if am_ok else 'NONE'}"
 
-        if backend != "none" and mic_ok:
+        if backend != "none" and am_ok:
             audit.status = SubsystemStatus.READY
         elif backend != "none":
             audit.status = SubsystemStatus.DEGRADED
-            audit.root_cause = "No microphone detected"
+            audit.root_cause = "AudioManager failed to start"
         else:
             audit.status = SubsystemStatus.DEGRADED
             audit.root_cause = "No audio playback backend"

@@ -157,30 +157,30 @@ async def test_nlp_classification():
 
 
 async def test_microphone_backend():
-    """Test microphone backend detection and initialization."""
+    """Test AudioManager microphone backend detection and initialization."""
     result = TestResult("microphone_backend")
     logger.info("=" * 60)
-    logger.info("TEST: Microphone Backend")
+    logger.info("TEST: Microphone Backend (AudioManager)")
     logger.info("=" * 60)
 
     try:
-        from voice.microphone import microphone
+        from voice.audio_manager import audio_manager
         from voice.audio_device import audio_device
         from voice.settings import voice_settings
 
         t0 = time.time()
         voice_settings.update_from_env()
         audio_device.detect_backend()
-        mic = microphone.get_microphone()
+        am_started = audio_manager.start()
         result.duration = time.time() - t0
 
-        if mic is None:
-            result.record_stage("mic_init", "SKIPPED", result.duration, "No microphone available")
+        if not am_started:
+            result.record_stage("mic_init", "SKIPPED", result.duration, "AudioManager failed to start")
             result.mark_passed()
             return result
 
         result.record_stage("mic_init", "PASS", result.duration,
-                          f"backend={microphone.backend}, available={microphone.available}")
+                          f"backend={audio_manager.backend}, running={audio_manager.is_running}")
 
         # Test calibration
         from voice.stt import calibrate

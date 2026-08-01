@@ -114,12 +114,21 @@ def _model_is_cached_locally() -> bool:
     """Check if the embedding model is already cached in the HuggingFace cache directory."""
     model_name = settings.MODEL_NAME
     hf_home = os.environ.get("HF_HOME") or os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache/huggingface")
-    model_path = Path(hf_home) / "hub" / f"models--{model_name.replace('/', '--')}"
-    if model_path.exists():
-        # Check for actual model files (snapshots)
-        snapshots = list(model_path.glob("snapshots/*"))
-        if snapshots:
-            return True
+
+    # Check both the plain model name and the sentence-transformers prefixed name
+    # sentence-transformers adds the "sentence-transformers/" prefix to model names
+    candidates = [
+        f"models--{model_name.replace('/', '--')}",
+        f"models--sentence-transformers--{model_name.replace('/', '--')}",
+    ]
+
+    for candidate in candidates:
+        model_path = Path(hf_home) / "hub" / candidate
+        if model_path.exists():
+            # Check for actual model files (snapshots)
+            snapshots = list(model_path.glob("snapshots/*"))
+            if snapshots:
+                return True
     return False
 
 
