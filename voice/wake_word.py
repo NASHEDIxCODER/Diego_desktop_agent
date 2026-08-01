@@ -43,6 +43,101 @@ DEFAULT_WAKE_VARIANTS = [
     "hello lio",
 ]
 
+# Minimum similarity for transcript verification. Deliberately strict:
+# the openWakeWord model is the PRIMARY authority — this check only
+# rejects transcripts that clearly do NOT contain the wake phrase
+# (e.g. "thank you very much" → no word similar to "leo"/"lio" → NEVER wakes).
+WAKE_VERIFY_MIN_RATIO = 0.80
+# Generic filler words that are NOT distinctive — never used alone to verify.
+_GENERIC_WAKE_WORDS = {"hello", "hey", "ok", "okay", "hi", "ho"}
+
+
+def _normalize_wake_text(text: str) -> str:
+    """Normalize a transcript for wake verification."""
+    import re
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9 ]+", " ", text.lower())).strip()
+
+
+def _distinctive_wake_words() -> List[str]:
+    """Return the distinctive (non-generic) words across all wake variants.
+
+    These are the words that actually identify the wake phrase — e.g.
+    'leo' and 'lio' — excluding generic greetings like 'hello'/'hey'.
+    """
+    distinctive = set()
+    for variant in DEFAULT_WAKE_VARIANTS:
+        for w in _normalize_wake_text(variant).split():
+            if w not in _GENERIC_WAKE_WORDS:
+                distinctive.add(w)
+    return sorted(distinctive)
+
+
+def verify_wake_transcript(text: Optional[str]) -> bool:
+    """
+    SECONDARY wake authority: strict transcript verification.
+
+    Passes ONLY when the normalized transcript EITHER:
+      (a) contains a full wake variant as whole words (containment), OR
+      (b) contains a word that is highly similar (ratio >= 0.80) to one
+          of the DISTINCTIVE wake words ('leo', 'lio').
+
+    Fuzzy matching of the whole phrase alone is NEVER enough — that was
+    the hole that let "hello video" (ratio 0.80 vs "hello lio") wake Leo.
+    The openWakeWord model must ALSO have fired (enforced by the caller
+    in listen_wake_continuous, which only runs this check after the
+    model's score crossed the detection threshold).
+
+    Guarantees:
+      - "thank you very much" → False (no word ≈ "leo"/"lio")
+      - "hello video"         → False ("video" ≈ 0.25 vs "leo"/"lio")
+      - "hello lido"          → True  ("lido" ≈ 0.86 vs "lio")
+      - "hello leo"           → True  (containment)
+    """
+    if not text:
+        return False
+    norm = _normalize_wake_text(text)
+    if not norm:
+        return False
+    norm_words = norm.split()
+    norm_word_set = set(norm_words)
+
+    # ── (a) Full-variant containment (whole-word) ──
+    for variant in DEFAULT_WAKE_VARIANTS:
+        v = _normalize_wake_text(variant)
+        if not v:
+            continue
+        v_words = v.split()
+        if all(w in norm_word_set for w in v_words):
+            logger.debug("[WAKE-VERIFY] containment match: variant='%s' text='%s'",
+                         v, norm)
+            return True
+
+    # ── (b) Distinctive-word similarity ──
+    # At least one transcript word must be highly similar to a distinctive
+    # wake word ("leo" / "lio"). This prevents generic-phrase false wakes
+    # like "hello video" that happen to ratio-match the full variant.
+    distinctive = _distinctive_wake_words()
+    best_ratio = 0.0
+    best_pair = ("", "")
+    for tword in norm_words:
+        if tword in _GENERIC_WAKE_WORDS:
+            continue
+        for dword in distinctive:
+            ratio = difflib.SequenceMatcher(None, tword, dword).ratio()
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best_pair = (tword, dword)
+            if ratio >= WAKE_VERIFY_MIN_RATIO:
+                logger.debug(
+                    "[WAKE-VERIFY] word-similarity match: '%s' ≈ '%s' "
+                    "(ratio=%.3f) text='%s'",
+                    tword, dword, ratio, norm)
+                return True
+
+    logger.info("[WAKE-VERIFY] REJECTED: text='%s' best='%s'≈'%s' ratio=%.3f (< %.2f)",
+                norm, best_pair[0], best_pair[1], best_ratio, WAKE_VERIFY_MIN_RATIO)
+    return False
+
 
 class WakeWordEngine:
     """

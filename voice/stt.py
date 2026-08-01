@@ -292,7 +292,18 @@ def _whisper_transcribe_detailed(audio_int16: np.ndarray) -> dict:
         from voice.audio_processing import peak_monitor as _pm
         _pm.log("whisper_input", audio_int16)
         audio_float = audio_int16.astype(np.float32) / 32768.0
-        segments, info = _whisper_model.transcribe(audio_float, language="en")
+        # Robustness settings (deterministic, no repetition loops, internal
+        # VAD filter so silence/noise never reaches the decoder — this is
+        # what previously produced no_segments / hallucinated transcripts
+        # and pushed the pipeline into the Google fallback).
+        segments, info = _whisper_model.transcribe(
+            audio_float,
+            language="en",
+            beam_size=1,
+            temperature=0.0,
+            condition_on_previous_text=False,
+            vad_filter=True,
+        )
         segs = list(segments)
         if not segs:
             return {"text": None, "confidence": 0.0, "no_speech": 0.0,
@@ -313,6 +324,7 @@ def _whisper_transcribe_detailed(audio_int16: np.ndarray) -> dict:
         return {"text": text, "confidence": confidence, "no_speech": no_speech,
                 "ok": True, "reason": "accepted"}
     except Exception as e:
+        logger.warning("[STT] Whisper exception: %s: %s", type(e).__name__, e)
         return {"text": None, "confidence": 0.0, "no_speech": 0.0,
                 "ok": False, "reason": f"exception:{type(e).__name__}:{e}"}
 
@@ -618,22 +630,42 @@ def _recognize_bytes(audio_bytes: bytes, samplerate: int) -> Optional[str]:
     - Exception type and full traceback
     """
     # ── PRIMARY: faster-whisper (offline, no internet needed) ──
-    # Google is ONLY invoked when Whisper genuinely fails (rejected transcript).
     samples = np.frombuffer(audio_bytes, dtype=np.int16)
-    if len(samples) > 0:
-        res = _whisper_transcribe_detailed(samples)
-        if res["ok"]:
-            logger.info("[STT] RECOGNIZED (whisper): '%s' (conf=%.3f)",
-                        res["text"], res["confidence"])
-            return res["text"]
-        # Whisper genuinely failed — log the exact reason before falling back.
-        logger.info("[STT] Whisper FAILED -> invoking Google fallback. "
-                    "reason=%s conf=%.3f no_speech=%.2f text=%r",
-                    res["reason"], res["confidence"], res["no_speech"], res["text"])
-    else:
-        logger.info("[STT] No audio samples -> Google fallback on empty input")
+    if len(samples) == 0:
+        logger.info("[STT] Empty audio — nothing to recognize (Google NOT invoked)")
+        return None
 
-    # Fallback: Google Web Speech API (optional)
+    res = _whisper_transcribe_detailed(samples)
+    if res["ok"]:
+        logger.info("[STT] RECOGNIZED (whisper): '%s' (avg_logprob=%.3f no_speech=%.2f)",
+                    res["text"], res["confidence"], res["no_speech"])
+        return res["text"]
+
+    # ── Google fallback policy (HARD RULE) ──
+    # Google Web Speech API may ONLY execute when Whisper itself FAILED:
+    #   - an exception during inference (reason starts with "exception:"), or
+    #   - Whisper was never initialized ("whisper_unavailable").
+    # A clean Whisper REJECTION (no_segments / empty_transcript /
+    # high_no_speech_prob / empty_audio) means the audio contains no usable
+    # speech — Google must NEVER run for those. Every rejection is logged
+    # with transcript, avg_logprob, no_speech_prob and the reject reason.
+    whisper_failed = (
+        res["reason"].startswith("exception:")
+        or res["reason"] == "whisper_unavailable"
+    )
+    if not whisper_failed:
+        logger.info(
+            "[STT] Whisper REJECTED — Google fallback SKIPPED. "
+            "transcript=%r avg_logprob=%.3f no_speech_prob=%.2f reject_reason=%s",
+            res["text"], res["confidence"], res["no_speech"], res["reason"])
+        return None
+
+    logger.warning(
+        "[STT] Whisper FAILED (%s) — invoking Google fallback. "
+        "transcript=%r avg_logprob=%.3f no_speech_prob=%.2f",
+        res["reason"], res["text"], res["confidence"], res["no_speech"])
+
+    # Fallback: Google Web Speech API (ONLY on Whisper exception/unavailable)
     sr = _import_sr()
     r = _get_recognizer()
     if sr is None or r is None:
@@ -811,6 +843,11 @@ def listen_wake_continuous(timeout: Optional[float] = None) -> Optional[str]:
     seg_max_oww_score = 0.0
     seg_max_oww_model = ""
     seg_max_vad = 0.0
+    # Only ONE wake-verification (Whisper call) per speech segment —
+    # prevents Whisper spam while the model stays above threshold.
+    seg_wake_attempted = False
+
+    from voice.wake_word import verify_wake_transcript
 
     while True:
         # Abort immediately on shutdown — no AudioManager access after this.
@@ -857,6 +894,7 @@ def listen_wake_continuous(timeout: Optional[float] = None) -> Optional[str]:
                     seg_max_oww_score = 0.0
                     seg_max_oww_model = ""
                     seg_max_vad = 0.0
+                    seg_wake_attempted = False
                     logger.debug("[WAKE] Speech started (VAD=%.2f)", vad_conf)
                 last_voice = now
                 if best_score > seg_max_oww_score:
@@ -865,28 +903,77 @@ def listen_wake_continuous(timeout: Optional[float] = None) -> Optional[str]:
                 if vad_conf > seg_max_vad:
                     seg_max_vad = vad_conf
 
-            # ── WAKE DETECTION: score >= threshold AND VAD confirms speech ──
-            if is_voice and best_score >= threshold:
-                logger.info("[WAKE] WAKE DETECTED: '%s' score=%.3f (threshold=%.2f, VAD=%.2f)",
-                            best_model, best_score, threshold, vad_conf)
-                wake_model_manager._detections += 1
+            # ── WAKE DETECTION (two-authority gate) ──
+            # PRIMARY: the wake MODEL must fire (score >= threshold) while
+            #          VAD confirms speech.
+            # SECONDARY: the Whisper transcript of the segment must VERIFY
+            #          against the wake phrase. Fuzzy matching alone is NOT
+            #          enough, and a missing/failed Whisper transcript is
+            #          NEVER substituted with the wake phrase — that was the
+            #          hole that let "Thank you very much" wake Leo.
+            if is_voice and best_score >= threshold and not seg_wake_attempted:
+                seg_wake_attempted = True
+                logger.info(
+                    "[WAKE] Model fired: '%s' score=%.3f (threshold=%.2f, VAD=%.2f)"
+                    " — verifying transcript",
+                    best_model, best_score, threshold, vad_conf)
 
                 # Grab the recent ~2.5s of audio and transcribe with Whisper.
                 full_audio = audio_manager.get_recent_processed(2.5)
-                text = _whisper_transcribe(full_audio) if len(full_audio) else None
+                if len(full_audio):
+                    whisper_res = _whisper_transcribe_detailed(full_audio)
+                else:
+                    whisper_res = {"text": None, "confidence": 0.0,
+                                   "no_speech": 0.0, "ok": False,
+                                   "reason": "empty_audio"}
+                transcript = whisper_res.get("text")
+                verified = verify_wake_transcript(transcript)
+
+                # Record the full decision for downstream logging/metrics.
+                wake_model_manager.last_detection = {
+                    "model": best_model,
+                    "score": best_score,
+                    "transcript": transcript,
+                    "verified": verified,
+                    "whisper_reason": whisper_res.get("reason"),
+                    "whisper_avg_logprob": whisper_res.get("confidence", 0.0),
+                    "whisper_no_speech": whisper_res.get("no_speech", 0.0),
+                    "vad_confidence": vad_conf,
+                    "at": time.time(),
+                }
 
                 # Continuous streaming: do NOT reset the model here — the
                 # feature window rolls off naturally and the prediction_buffer
                 # stays primed (avoiding a 5-frame blind spot next session).
                 pending = np.zeros(0, dtype=np.int16)
-                is_speaking = False
 
-                if text:
-                    logger.info("[WAKE] Wake transcript: '%s'", text)
-                    return text
-                # Wake confirmed by verifier; Whisper failed — continue pipeline.
-                logger.warning("[WAKE] Wake detected but Whisper failed — returning wake phrase")
-                return wake_model_manager.wake_phrase
+                if verified:
+                    wake_model_manager._detections += 1
+                    is_speaking = False
+                    logger.info(
+                        "[WAKE] VERIFIED WAKE: model='%s' score=%.3f "
+                        "transcript='%s' (model + transcript agree)",
+                        best_model, best_score, transcript)
+                    return transcript
+
+                # Model fired but the transcript does NOT confirm the wake
+                # phrase → FALSE WAKE. Log the full decision, save the audio,
+                # count it, and KEEP LISTENING — never return the wake phrase.
+                wake_model_manager.record_false_positive()
+                logger.warning(
+                    "[WAKE] FALSE WAKE rejected: model='%s' score=%.3f transcript=%r "
+                    "(whisper: reason=%s avg_logprob=%.3f no_speech=%.2f) "
+                    "— continuing to listen",
+                    best_model, best_score, transcript,
+                    whisper_res.get("reason"), whisper_res.get("confidence", 0.0),
+                    whisper_res.get("no_speech", 0.0))
+                if len(full_audio):
+                    try:
+                        _save_failed_audio(
+                            full_audio.astype(np.int16).tobytes(), SAMPLE_RATE,
+                            f"false_wake_{best_score:.2f}")
+                    except Exception as _e:
+                        logger.debug("[WAKE] failed-audio save error: %s", _e)
 
             # ── Segment end WITHOUT wake → failure diagnostics ──
             if is_speaking and (now - last_voice) > silence_duration:

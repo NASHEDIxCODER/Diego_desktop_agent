@@ -143,6 +143,20 @@ from voice.audio_device import audio_device
 from voice.tts.manager import tts_manager
 from voice.stt import get_backend_diagnostics, print_startup_diagnostics
 from voice.audio_manager import audio_manager
+from voice.wake_model_manager import wake_model_manager
+from voice.wake_word import verify_wake_transcript
+
+# ── Pending voice futures (wake workers / command workers / auth workers) ──
+# run_in_executor futures are tracked here so shutdown can CANCEL every
+# pending listen() before the AudioManager is destroyed. Futures that are
+# already running exit via the global shutdown_event.
+_PENDING_VOICE_FUTURES: set = set()
+
+
+def _track_voice_future(fut) -> None:
+    """Register an executor future for lifecycle management."""
+    _PENDING_VOICE_FUTURES.add(fut)
+    fut.add_done_callback(lambda f: _PENDING_VOICE_FUTURES.discard(f))
 
 # ── Embeddings: preload SentenceTransformer at startup ───
 from nlp.embeddings import preload_embedding_model
@@ -735,10 +749,12 @@ async def main_loop():
         _loop = asyncio.get_running_loop()
         try:
             logger.info("[WAKE] Wake listener active - waiting for 'hello leo'...")
-            wake_text = await _loop.run_in_executor(
-                None, 
+            _wake_fut = _loop.run_in_executor(
+                None,
                 lambda: listen_wake(phrase_time_limit=5.0)
             )
+            _track_voice_future(_wake_fut)
+            wake_text = await _wake_fut
         except Exception as e:
             logger.warning("[WAKE] Listen error: %s", e)
             # Sleep to prevent busy loop on persistent errors
@@ -760,49 +776,62 @@ async def main_loop():
         # ── STATE: WAKE_DETECTED ────────────────────────
         _set_state("WAKE_DETECTED")
 
-        # Compute similarity score for debugging
-        text_lower = wake_text.lower().strip()
-        best_ratio = 0.0
-        best_variant = ""
-        for variant in wake_word_engine._variants:
-            import difflib
-            ratio = difflib.SequenceMatcher(None, text_lower, variant.lower()).ratio()
-            if ratio > best_ratio:
-                best_ratio = ratio
-                best_variant = variant
-
-        if not wake_word_engine.detect(wake_text):
-            logger.debug("[WAKE] REJECTED: phrase='%s' best_match='%s' ratio=%.3f threshold=%.3f",
-                        wake_text, best_variant, best_ratio, 0.85)
+        # ── TWO-AUTHORITY WAKE GATE ─────────────────────
+        # The wake MODEL already fired (primary authority, enforced inside
+        # listen_wake_continuous). As defense-in-depth, the transcript must
+        # ALSO pass strict verification here. Fuzzy matching alone is never
+        # sufficient, and "thank you very much" can NEVER wake Leo.
+        _det = wake_model_manager.last_detection or {}
+        if not verify_wake_transcript(wake_text):
+            logger.warning(
+                "[WAKE] REJECTED by transcript verification: phrase=%r "
+                "model='%s' score=%.3f — NOT waking (false wake blocked)",
+                wake_text, _det.get("model", "?"), _det.get("score", 0.0))
             continue
 
         timings["wake"] = time.time() - _wake_start
-        logger.info("[WAKE] DETECTED: phrase='%s' best_match='%s' ratio=%.3f (%.0fms)",
-                   wake_text, best_variant, best_ratio, timings["wake"]*1000)
+        logger.info(
+            "[WAKE] ACCEPTED: model='%s' score=%.3f transcript='%s' "
+            "verified=True (%.0fms) — model + transcript agree",
+            _det.get("model", "?"), _det.get("score", 0.0),
+            wake_text, timings["wake"] * 1000)
 
         set_correlation_id()
 
-        # ── STATE: FACE_AUTH ────────────────────────────
+        # ── STATE: FACE_AUTH (MANDATORY) ────────────────
         _set_state("FACE_AUTH")
         t_auth = time.time()
         user_name = None
         if faceauth:
             try:
                 _loop = asyncio.get_running_loop()
-                # 5 second timeout for face auth
-                user_name = await asyncio.wait_for(
-                    _loop.run_in_executor(None, faceauth.recognize_faces),
-                    timeout=5.0
-                )
-                if not user_name:
-                    logger.info("[AUTH] Unknown or no face detected — skipping")
-                else:
+                _auth_budget = getattr(faceauth, "AUTH_TOTAL_BUDGET", 18.0)
+                _auth_fut = _loop.run_in_executor(None, faceauth.recognize_faces)
+                _track_voice_future(_auth_fut)
+                user_name = await asyncio.wait_for(_auth_fut, timeout=_auth_budget)
+                if user_name:
                     timings["face"] = time.time() - t_auth
                     logger.info("[AUTH] Authenticated: %s (%.0fms)", user_name, timings["face"]*1000)
             except asyncio.TimeoutError:
-                logger.warning("[AUTH] Timed out after 5s — skipping")
+                logger.warning("[AUTH] Timed out after %.0fs", _auth_budget)
             except Exception as e:
-                logger.warning("[AUTH] Failed: %s — skipping", e)
+                logger.warning("[AUTH] Failed: %s", e)
+
+        # Authentication is MANDATORY: no verified face → no command session.
+        if faceauth and not user_name:
+            logger.warning("[AUTH] ACCESS DENIED — no registered face authenticated. "
+                           "Returning to WAIT_WAKE.")
+            try:
+                _loop = asyncio.get_running_loop()
+                await asyncio.wait_for(
+                    _loop.run_in_executor(
+                        None, lambda: _speak_with_flag(
+                            "I could not verify your identity. Access denied.")),
+                    timeout=15.0,
+                )
+            except Exception:
+                pass
+            continue
 
         # ── STATE: GREETING ─────────────────────────────
         _set_state("GREETING")
@@ -850,8 +879,11 @@ async def main_loop():
             # Run listen in executor to avoid blocking event loop
             _loop = asyncio.get_running_loop()
             try:
+                _cmd_fut = _loop.run_in_executor(
+                    None, lambda: listen(phrase_time_limit=7))
+                _track_voice_future(_cmd_fut)
                 query = await asyncio.wait_for(
-                    _loop.run_in_executor(None, lambda: listen(phrase_time_limit=7)),
+                    _cmd_fut,
                     timeout=15.0  # 15s total timeout for listen+STT
                 )
             except asyncio.TimeoutError:
@@ -1014,10 +1046,25 @@ async def shutdown_gracefully(sig: Optional[int] = None) -> None:
     logger.info("Shutting down (signal=%s)...", sig)
 
     # ── 1. Signal all voice workers to stop ──────────────────────
+    # Every wake worker / command worker / recorder checks this event and
+    # exits WITHOUT touching the AudioManager again.
     shutdown_event.set()
     logger.info("[SHUTDOWN] shutdown_event set — voice workers exiting")
 
-    # ── 2. Cancel all pending asyncio tasks ─────────────────────
+    # ── 2. Cancel every pending voice future (wake/command/auth workers) ──
+    # Futures that have NOT started running yet are cancelled outright;
+    # running ones observe shutdown_event and return on their own.
+    try:
+        pending = [f for f in list(_PENDING_VOICE_FUTURES) if not f.done()]
+        for f in pending:
+            f.cancel()
+        if pending:
+            logger.info("[SHUTDOWN] Cancelled %d pending voice future(s) "
+                        "(wake/command/auth workers)", len(pending))
+    except Exception as e:
+        logger.debug("[SHUTDOWN] Voice future cancel error: %s", e)
+
+    # ── 3. Cancel all pending asyncio tasks ─────────────────────
     try:
         current = asyncio.current_task()
         tasks = [t for t in asyncio.all_tasks()
@@ -1030,8 +1077,9 @@ async def shutdown_gracefully(sig: Optional[int] = None) -> None:
     except Exception as e:
         logger.debug("[SHUTDOWN] Task cancel error: %s", e)
 
-    # ── 3. Join worker threads (bounded wait) ───────────────────
-    deadline = time.time() + 3.0
+    # ── 4. Join worker threads (bounded wait, stragglers logged) ──
+    deadline = time.time() + 5.0
+    alive: list = []
     while time.time() < deadline:
         alive = [t for t in _threading.enumerate()
                  if t.is_alive() and not t.daemon
@@ -1040,9 +1088,13 @@ async def shutdown_gracefully(sig: Optional[int] = None) -> None:
         if not alive:
             break
         await asyncio.sleep(0.05)
-    logger.info("[SHUTDOWN] Worker threads joined")
+    if alive:
+        logger.warning("[SHUTDOWN] %d worker thread(s) still alive after join "
+                       "deadline: %s", len(alive), [t.name for t in alive])
+    else:
+        logger.info("[SHUTDOWN] All worker threads joined")
 
-    # ── 4. NOW stop AudioManager — no component touches it after ─
+    # ── 5. NOW stop AudioManager — no component touches it after ─
     try:
         audio_manager.stop()
         logger.info("[SHUTDOWN] AudioManager stopped")

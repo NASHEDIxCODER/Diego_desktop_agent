@@ -1,10 +1,10 @@
 {
   "index": 5,
   "name": "HD-Audio Generic: ALC256 Analog (hw:2,0)",
-  "score": 0.5393463484386011,
-  "snr_db": 36.558419474899914,
-  "noise_floor": 487.0,
-  "clipping_pct": 43.662131519274375,
+  "score": 0.5293838185735846,
+  "snr_db": 35.47152574152717,
+  "noise_floor": 551.8999999999996,
+  "clipping_pct": 49.63038548752834,
   "is_hardware": true,
-  "measured_at": 1785589711.0753553
+  "measured_at": 1785594367.3510482
 }

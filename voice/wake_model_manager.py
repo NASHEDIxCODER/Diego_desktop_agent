@@ -67,6 +67,10 @@ class WakeModelManager:
         self._detections: int = 0
         self._false_positives: int = 0
         self._false_rejects: int = 0
+        # Last wake decision for downstream logging (main loop, acceptance
+        # harness). Keys: model, score, transcript, verified, whisper_reason,
+        # vad_confidence, at.
+        self.last_detection: Dict = {}
 
     # ── Public lifecycle ───────────────────────────────────────────
 
@@ -159,6 +163,7 @@ class WakeModelManager:
         self._latency_samples.clear()
         self._last_prediction = {}
         self._load_error = None
+        self.last_detection = {}
 
     # ── Verification ───────────────────────────────────────────────
 
