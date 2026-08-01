@@ -87,12 +87,11 @@ class SpeechRecognizer:
 
         samplerate = audio_manager.sample_rate
 
-        # Create AudioData from the AudioManager PCM stream
-        audio = sr.AudioData(audio_bytes, samplerate, 2)
-
-        # Recognize with fallback chain
-        text = self._recognize(sr, audio)
-        return text
+        # SINGLE STT PATH: delegate to voice.stt so the Whisper-first /
+        # Google-only-on-exception policy is enforced everywhere. The legacy
+        # whisper→google→vosk chain below is bypassed intentionally.
+        from voice.stt import _recognize_bytes
+        return _recognize_bytes(audio_bytes, samplerate)
 
     def _recognize(self, recognizer, audio) -> Optional[str]:
         """

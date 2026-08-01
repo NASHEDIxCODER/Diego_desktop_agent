@@ -197,6 +197,14 @@ class AudioManager:
         self._energy_threshold: float = VAD_ENERGY_THRESHOLD
         self._initialized = False
         self._hp_zi = None  # State for lightweight high-pass filter in callback
+        # Re-entrancy guard: only ONE command recorder may drain the ring
+        # buffer at a time. asyncio.wait_for() timeouts do NOT kill executor
+        # threads — without this lock, retried listen() calls overlap and
+        # "recording" appears to run far beyond timeout/phrase_limit.
+        self._record_lock = threading.Lock()
+        # Cache for the polyphase resampling FIR so the real-time callback
+        # does NOT redesign an 8821-tap filter every 30 ms.
+        self._resample_filter_cache: dict = {}
         # Native channel count of the selected device and the count we open
         # the stream with (capped so multi-channel speech detection works
         # without wasting resources on huge virtual buses).
@@ -354,8 +362,24 @@ class AudioManager:
             gcd = math.gcd(up, down)
             up //= gcd
             down //= gcd
+            # Design the polyphase FIR filter EXACTLY ONCE per (up, down)
+            # ratio. scipy's default designs a (2*10*max(up,down)+1)-tap
+            # Kaiser filter on EVERY call — at 44100 Hz that is an 8821-tap
+            # firwin running inside the 30 ms real-time callback, which
+            # blows the callback budget and causes input overflows.
+            key = (up, down)
+            window = self._resample_filter_cache.get(key)
+            if window is None:
+                max_rate = max(up, down)
+                half_len = 10  # scipy default
+                num_taps = 2 * half_len * max_rate + 1
+                window = scipy_signal.firwin(
+                    num_taps, 1.0 / max_rate, window=("kaiser", 5.0))
+                self._resample_filter_cache[key] = window
+                logger.info("[AUDIO] Resample filter designed: %d->%d Hz (%d taps, cached)",
+                            self._actual_sample_rate, SAMPLE_RATE, num_taps)
             resampled = scipy_signal.resample_poly(
-                audio_int16.astype(np.float64), up, down
+                audio_int16.astype(np.float64), up, down, window=window
             )
             return np.clip(resampled, -32768, 32767).astype(np.int16)
         except Exception as e:
@@ -600,6 +624,17 @@ class AudioManager:
         except Exception as e:
             logger.warning("[AUDIO] Stop error: %s", e)
 
+    def _access_forbidden(self, caller: str) -> bool:
+        """AudioManager must NEVER be accessed after shutdown begins or
+        after the stream is stopped. All public read paths gate on this."""
+        if shutdown_event.is_set():
+            logger.debug("[AUDIO] %s blocked — shutdown in progress", caller)
+            return True
+        if not self._running:
+            logger.debug("[AUDIO] %s blocked — stream not running", caller)
+            return True
+        return False
+
     def get_recent_audio(self, duration_seconds: float) -> np.ndarray:
         """
         Get recent audio from the ring buffer as numpy array.
@@ -610,6 +645,8 @@ class AudioManager:
         Returns:
             numpy array of int16 samples.
         """
+        if self._access_forbidden("get_recent_audio"):
+            return np.array([], dtype=np.int16)
         return self._ring_buffer.get_recent(duration_seconds)
 
     @property
@@ -623,6 +660,8 @@ class AudioManager:
         NON-OVERLAPPING: each sample is returned exactly once across calls.
         Used by the continuous wake loop to feed openWakeWord streaming frames.
         """
+        if self._access_forbidden("read_since"):
+            return np.array([], dtype=np.int16), last_total
         return self._ring_buffer.get_since(last_total)
 
     def get_recent_processed(self, duration_seconds: float) -> np.ndarray:
@@ -641,6 +680,8 @@ class AudioManager:
         Returns:
             Fully processed int16 numpy array.
         """
+        if self._access_forbidden("get_recent_processed"):
+            return np.array([], dtype=np.int16)
         raw = self._ring_buffer.get_recent(duration_seconds)
         if len(raw) == 0:
             return raw
@@ -656,6 +697,8 @@ class AudioManager:
         Returns:
             Raw bytes (PCM16, mono).
         """
+        if self._access_forbidden("get_recent_bytes"):
+            return b""
         return self._ring_buffer.get_bytes(duration_seconds)
 
     def record_command(self, timeout: float = 8.0, phrase_limit: float = 7.0) -> Optional[bytes]:
@@ -682,30 +725,70 @@ class AudioManager:
             logger.debug("[AUDIO] Shutdown in progress — record_command aborted")
             return None
 
-        start_time = time.time()
-        record_start: Optional[float] = None  # when speech actually started
-        command_buffer: list = []
-        speech_detected = False
-        silence_start = 0.0
+        # ── Re-entrancy guard ──────────────────────────────────────
+        # asyncio.wait_for() does NOT kill executor threads: a timed-out
+        # listen() keeps running while the main loop retries, and the retry
+        # would start a SECOND recorder draining the same ring buffer.
+        # Overlapping recorders are why "recording" appeared to run for
+        # 39.6s with timeout=8s / phrase_limit=7s. Refuse overlaps.
+        if not self._record_lock.acquire(blocking=False):
+            logger.warning("[AUDIO] record_command already active — "
+                           "refusing overlapping recording")
+            return None
+        try:
+            return self._record_command_inner(timeout, phrase_limit)
+        finally:
+            self._record_lock.release()
+
+    def _record_command_inner(self, timeout: float, phrase_limit: float) -> Optional[bytes]:
+        """Instrumented command recorder. HARD guarantees:
+          - wall-clock never exceeds `timeout` (hard deadline)
+          - returned audio never exceeds `phrase_limit`
+          - every exit logs its stop reason
+        """
+        t_record_start = time.time()
+        record_deadline = t_record_start + timeout  # HARD wall-clock limit
         max_samples = int(phrase_limit * SAMPLE_RATE)
+
+        command_buffer: list = []
+        buffered_samples = 0
+        speech_detected = False
+        speech_start: Optional[float] = None   # wall time speech started
+        speech_end: Optional[float] = None     # wall time speech ended
+        silence_start = 0.0
+        stop_reason = "timeout"                # refined as we exit
 
         # Read only NEW audio from this point forward (non-overlapping).
         last_total = self._ring_buffer.total_samples
 
-        logger.info("[AUDIO] Recording command (timeout=%.1fs, phrase_limit=%.1fs)",
-                    timeout, phrase_limit)
+        logger.info(
+            "[AUDIO] record START t=%.3f timeout=%.1fs phrase_limit=%.1fs "
+            "deadline=%.3f energy_threshold=%.1f",
+            t_record_start, timeout, phrase_limit,
+            record_deadline, self._energy_threshold)
 
-        while time.time() - start_time < timeout:
-            # Abort immediately if shutdown was requested.
+        while True:
             if shutdown_event.is_set():
-                logger.debug("[AUDIO] Shutdown requested — aborting command recording")
+                logger.info("[AUDIO] record STOP reason=shutdown")
                 return None
+
             now = time.time()
 
-            # phrase_limit expiry (measured from when speech actually started)
-            if speech_detected and record_start is not None \
-                    and (now - record_start) > phrase_limit:
-                logger.debug("[AUDIO] phrase_limit reached (%.1fs)", phrase_limit)
+            # ── HARD timeout: the loop can NEVER pass the deadline ──
+            if now >= record_deadline:
+                stop_reason = "timeout"
+                logger.info(
+                    "[AUDIO] TIMEOUT at +%.2fs (limit=%.1fs, speech_detected=%s)",
+                    now - t_record_start, timeout, speech_detected)
+                break
+
+            # ── phrase_limit: measured from actual speech start ──
+            if speech_start is not None and (now - speech_start) >= phrase_limit:
+                speech_end = now
+                stop_reason = "phrase_limit"
+                logger.info(
+                    "[AUDIO] PHRASE_LIMIT at +%.2fs: %.2fs of speech (limit=%.1fs)",
+                    now - t_record_start, now - speech_start, phrase_limit)
                 break
 
             # Non-overlapping read of new audio
@@ -719,41 +802,73 @@ class AudioManager:
             if rms > self._energy_threshold:
                 if not speech_detected:
                     speech_detected = True
-                    record_start = now
-                    logger.debug("[AUDIO] Command speech started (RMS=%.1f)", rms)
+                    speech_start = now
+                    logger.info(
+                        "[AUDIO] SPEECH START at +%.2fs (RMS=%.1f > threshold=%.1f)",
+                        now - t_record_start, rms, self._energy_threshold)
                 command_buffer.append(new_audio.copy())
+                buffered_samples += len(new_audio)
                 silence_start = 0.0
             elif speech_detected:
                 # silence: stop when it exceeds the configured threshold
                 if silence_start == 0.0:
                     silence_start = now
                 elif now - silence_start > VAD_SILENCE_DURATION:
-                    logger.debug("[AUDIO] Command speech ended (silence=%.2fs)",
-                                 now - silence_start)
+                    speech_end = now
+                    stop_reason = "silence"
+                    logger.info(
+                        "[AUDIO] SPEECH END at +%.2fs (silence=%.2fs >= %.2fs)",
+                        now - t_record_start,
+                        now - silence_start, VAD_SILENCE_DURATION)
                     break
                 command_buffer.append(new_audio.copy())
+                buffered_samples += len(new_audio)
 
             time.sleep(0.01)  # 10ms polling
 
+        t_record_stop = time.time()
+        wall_duration = t_record_stop - t_record_start
+
+        logger.info(
+            "[AUDIO] record STOP reason=%s wall=%.2fs buffered=%.2fs (%d samples) "
+            "speech_start=%s speech_end=%s",
+            stop_reason, wall_duration, buffered_samples / SAMPLE_RATE,
+            buffered_samples,
+            ("+%.2fs" % (speech_start - t_record_start)) if speech_start else "none",
+            ("+%.2fs" % (speech_end - t_record_start)) if speech_end else "none")
+
         if not speech_detected or not command_buffer:
-            logger.debug("[AUDIO] No speech detected during command recording")
+            logger.info("[AUDIO] No speech detected (reason=%s) — returning None",
+                        stop_reason)
             return None
 
         audio = np.concatenate(command_buffer)
 
         # NEVER return audio longer than phrase_limit.
         if len(audio) > max_samples:
-            logger.debug("[AUDIO] Trimming command %.1fs -> %.1fs (phrase_limit)",
-                         len(audio) / SAMPLE_RATE, phrase_limit)
+            logger.warning("[AUDIO] Trimming %.2fs -> %.2fs (phrase_limit invariant)",
+                           len(audio) / SAMPLE_RATE, phrase_limit)
             audio = audio[:max_samples]
 
         audio_bytes = audio.tobytes()
         if len(audio_bytes) < 512:
-            logger.debug("[AUDIO] Command too short (%d bytes)", len(audio_bytes))
+            logger.info("[AUDIO] Command too short (%d bytes) — returning None",
+                        len(audio_bytes))
             return None
 
         duration = len(audio_bytes) / SAMPLE_RATE / 2
-        logger.info("[AUDIO] Command recorded: %d bytes (%.2fs)", len(audio_bytes), duration)
+
+        # ── HARD INVARIANT: recorded duration must NEVER exceed phrase_limit ──
+        if duration > phrase_limit + 1e-6:
+            logger.error(
+                "[AUDIO] INVARIANT VIOLATION: duration=%.3fs > phrase_limit=%.3fs "
+                "— forcing trim", duration, phrase_limit)
+            audio_bytes = audio_bytes[: int(phrase_limit * SAMPLE_RATE) * 2]
+            duration = len(audio_bytes) / SAMPLE_RATE / 2
+
+        logger.info(
+            "[AUDIO] Command recorded: %d bytes (%.2fs) stop_reason=%s wall=%.2fs",
+            len(audio_bytes), duration, stop_reason, wall_duration)
         return audio_bytes
 
     def capture_duration(self, duration: float) -> Optional[bytes]:
@@ -768,7 +883,7 @@ class AudioManager:
         Returns:
             Raw PCM16 bytes, or None if buffer is empty.
         """
-        if not self._running:
+        if not self._running or shutdown_event.is_set():
             return None
 
         audio_bytes = self._ring_buffer.get_bytes(duration)

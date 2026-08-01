@@ -484,18 +484,86 @@ class VoiceSupervisor:
         logger.info("Voice supervisor reset to BOOT")
 
     async def shutdown(self) -> None:
-        """Shutdown all voice components."""
+        """
+        Shutdown all voice components.
+
+        Order is critical — a worker thread must NEVER touch the
+        AudioManager after it is stopped:
+
+          1. Set the global shutdown_event so every voice worker (wake
+             loop, command recorder, STT) exits its loop WITHOUT
+             accessing AudioManager.
+          2. Cancel every pending listen() / wake worker / command worker
+             tracked by main.py's _PENDING_VOICE_FUTURES.
+          3. Join worker threads (bounded wait).
+          4. ONLY THEN close synthesizer, microphone, wake_word_engine.
+        """
+        import threading as _threading
+        from voice.audio_manager import shutdown_event
+
         logger.info("Shutting down voice components...")
+
+        # ── 1. Set shutdown_event FIRST ──
+        # Every voice worker checks this and exits without touching
+        # the AudioManager again.
+        shutdown_event.set()
+        logger.info("[SHUTDOWN] shutdown_event set — voice workers exiting")
+
         await self.transition(VoiceState.SHUTDOWN)
         self._running = False
 
+        # ── 2. Cancel pending voice futures (wake/command/auth workers) ──
+        # These are tracked by main.py; cancel them so they don't start.
+        try:
+            # Import the global set of pending futures from main
+            import main as _main_mod
+            pending = set(_main_mod._PENDING_VOICE_FUTURES)
+            _main_mod._PENDING_VOICE_FUTURES.clear()
+            for f in pending:
+                f.cancel()
+            if pending:
+                logger.info("[SHUTDOWN] Cancelled %d pending voice future(s)", len(pending))
+        except Exception as e:
+            logger.debug("[SHUTDOWN] Voice future cancel error: %s", e)
+
+        # ── 3. Join worker threads (bounded wait, stragglers logged) ──
+        deadline = time.time() + 5.0
+        while time.time() < deadline:
+            alive = [t for t in _threading.enumerate()
+                     if t.is_alive() and not t.daemon
+                     and t is not _threading.current_thread()
+                     and "MainThread" not in t.name]
+            if not alive:
+                break
+            await asyncio.sleep(0.1)
+
+        alive = [t for t in _threading.enumerate()
+                 if t.is_alive() and not t.daemon
+                 and t is not _threading.current_thread()
+                 and "MainThread" not in t.name]
+        if alive:
+            logger.warning("[SHUTDOWN] %d worker thread(s) still alive after join "
+                           "deadline: %s", len(alive), [t.name for t in alive])
+        else:
+            logger.info("[SHUTDOWN] All worker threads joined")
+
+        # ── 4. ONLY NOW close voice components (AudioManager already stopped) ──
         from voice.synthesizer import speech_synthesizer
         from voice.microphone import microphone
         from voice.wake_word import wake_word_engine
 
-        speech_synthesizer.close()
-        microphone.close()
-        wake_word_engine.close()
+        try:
+            speech_synthesizer.close()
+        except Exception as e:
+            logger.warning("Synthesizer close error: %s", e)
+        try:
+            microphone.close()
+        except Exception as e:
+            logger.warning("Microphone close error: %s", e)
+        try:
+            wake_word_engine.close()
+        except Exception as e:
+            logger.warning("Wake word engine close error: %s", e)
         logger.info("Voice components shut down")
 
 

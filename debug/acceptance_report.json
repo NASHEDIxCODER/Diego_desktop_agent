@@ -1,0 +1,25 @@
+{
+  "timestamp": "2026-08-01T14:23:43.091420+00:00",
+  "wake": {
+    "attempts": 100,
+    "successes": 0,
+    "success_rate": 0.0,
+    "false_wakes": 0,
+    "false_wake_rate": 0.0,
+    "avg_latency_s": 0.020484299659729005
+  },
+  "face_auth": {
+    "attempts": 50,
+    "successes": 34,
+    "success_rate": 68.0,
+    "avg_latency_s": 6.936988587379456
+  },
+  "command": {
+    "attempts": 50,
+    "successes": 0,
+    "success_rate": 0.0,
+    "avg_duration_s": 8.00580063343048,
+    "avg_latency_s": 0
+  },
+  "errors": []
+}

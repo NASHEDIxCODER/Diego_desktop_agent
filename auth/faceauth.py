@@ -60,12 +60,20 @@ FACE_TOLERANCE = float(os.environ.get("FACE_TOLERANCE", "0.55"))
 CAM_WIDTH = 640
 CAM_HEIGHT = 480
 CAM_FPS = 30
-MAX_CAPTURE_DURATION = 5.0  # seconds
+MAX_CAPTURE_DURATION = 5.0  # seconds (legacy single-shot budget)
+# Intelligent retry: several capture rounds per authentication session.
+AUTH_ROUNDS = 3
+ROUND_DURATION = 4.0        # seconds per capture round
 WARMUP_FRAMES = 5
 
 # ── Tracking quality gates ─────────────────────────────────────
 TRACKING_MIN_BLUR = 35.0
 TRACKING_MIN_BRIGHTNESS = 90.0
+# Lenient gates used in later retry rounds (rounds are 0-indexed).
+RELAXED_MIN_FACE_WIDTH = 80
+RELAXED_TRACKING_MIN_BLUR = 25.0
+# Total auth budget exposed to main.py for its wait_for timeout.
+AUTH_TOTAL_BUDGET = AUTH_ROUNDS * ROUND_DURATION + 6.0
 
 # ── Debug overlay ──────────────────────────────────────────────
 _debug_overlay_enabled = False
@@ -165,6 +173,92 @@ def _release_camera():
                 logger.warning("[CAMERA] Release error: %s", e)
             _camera = None
             _camera_refcount = 0
+
+
+def _get_exposure_props(cam) -> Dict[str, Optional[float]]:
+    """Read camera exposure-related properties for diagnostics."""
+    props: Dict[str, Optional[float]] = {}
+    for name, prop in (("exposure", cv.CAP_PROP_EXPOSURE),
+                       ("auto_exposure", cv.CAP_PROP_AUTO_EXPOSURE),
+                       ("gain", cv.CAP_PROP_GAIN),
+                       ("brightness", cv.CAP_PROP_BRIGHTNESS),
+                       ("contrast", cv.CAP_PROP_CONTRAST),
+                       ("gamma", cv.CAP_PROP_GAMMA),
+                       ("backlight", cv.CAP_PROP_BACKLIGHT)):
+        try:
+            props[name] = round(float(cam.get(prop)), 3)
+        except Exception:
+            props[name] = None
+    return props
+
+
+def _auto_adjust_exposure(cam, current_brightness: float) -> float:
+    """
+    If the scene is too dark, brighten it via CAMERA controls (not just
+    software preprocessing) BEFORE the capture round starts.
+
+    Returns the measured brightness after adjustment.
+    """
+    logger.warning(
+        "[CAMERA] Scene too dark (brightness=%.1f < %.1f) — auto-adjusting exposure",
+        current_brightness, BRIGHTNESS_THRESHOLD)
+    before = _get_exposure_props(cam)
+    logger.info("[CAMERA] Exposure props BEFORE: %s", before)
+
+    adjusted = False
+    # 1) Ensure AUTO exposure is enabled (V4L2: 0.75 = auto, 0.25 = manual).
+    try:
+        if cam.set(cv.CAP_PROP_AUTO_EXPOSURE, 0.75):
+            adjusted = True
+    except Exception:
+        pass
+    # 2) Raise gain / brightness / backlight compensation moderately.
+    for prop, values in ((cv.CAP_PROP_BACKLIGHT, (1,)),
+                         (cv.CAP_PROP_GAIN, (32, 64, 128)),
+                         (cv.CAP_PROP_BRIGHTNESS, (0.6, 0.8, 1.0)),
+                         (cv.CAP_PROP_CONTRAST, (0.6, 0.8))):
+        for v in values:
+            try:
+                if cam.set(prop, v):
+                    adjusted = True
+                    break
+            except Exception:
+                continue
+    # 3) Manual exposure bump when auto-exposure is unavailable.
+    try:
+        cur = cam.get(cv.CAP_PROP_EXPOSURE)
+        if cur is not None and cur > 0:
+            for mult in (2.0, 4.0):
+                if cam.set(cv.CAP_PROP_EXPOSURE, cur * mult):
+                    adjusted = True
+                    break
+    except Exception:
+        pass
+
+    # Let the sensor settle (auto-exposure needs several frames).
+    for _ in range(10):
+        cam.read()
+
+    after = _get_exposure_props(cam)
+    logger.info("[CAMERA] Exposure props AFTER: %s (adjusted=%s)", after, adjusted)
+
+    ret, frame = cam.read()
+    if ret and frame is not None:
+        new_b = measure_brightness(frame)
+        logger.info("[CAMERA] Brightness after exposure adjust: %.1f → %.1f",
+                    current_brightness, new_b)
+        return new_b
+    return current_brightness
+
+
+def _measure_ambient_brightness(cam, frames: int = 5) -> float:
+    """Average brightness over a few frames (camera already warmed up)."""
+    vals = []
+    for _ in range(frames):
+        ret, frame = cam.read()
+        if ret and frame is not None:
+            vals.append(measure_brightness(frame))
+    return float(np.mean(vals)) if vals else 0.0
 
 
 def _validate_encodings(data) -> bool:
@@ -317,37 +411,102 @@ def _draw_debug_overlay(frame: np.ndarray, faces: List[FaceBox],
     return frame
 
 
-def _is_face_stable(face: FaceBox, quality: FrameQuality) -> bool:
-    """Check if a face meets the quality gates for encoding."""
-    if face.w < MIN_FACE_WIDTH:
-        logger.debug("[TRACKING] Face too small: %dpx < %dpx", face.w, MIN_FACE_WIDTH)
-        return False
-    if quality.blur < TRACKING_MIN_BLUR:
-        logger.debug("[TRACKING] Face too blurry: %.2f < %.2f", quality.blur, TRACKING_MIN_BLUR)
-        return False
+def _is_face_stable(face: FaceBox, quality: FrameQuality,
+                    min_width: float = MIN_FACE_WIDTH,
+                    min_blur: float = TRACKING_MIN_BLUR) -> Tuple[bool, str]:
+    """Check if a face meets the quality gates for encoding.
+
+    Gates on POST-preprocessing brightness (quality.brightness is already
+    the enhanced value when preprocessing ran) and processed-frame blur —
+    this is what previously failed: gates used RAW brightness, so a dark
+    room NEVER produced a stable frame even though detection ran on the
+    brightened image.
+
+    Returns (stable, reject_reason).
+    """
+    if face.w < min_width:
+        return False, f"face_too_small({face.w}px<{min_width}px)"
+    blur = getattr(quality, "proc_blur", None) or quality.blur
+    if blur < min_blur:
+        return False, f"too_blurry({blur:.1f}<{min_blur})"
     if quality.brightness < TRACKING_MIN_BRIGHTNESS:
-        logger.debug("[TRACKING] Face too dark: %.1f < %.1f", quality.brightness, TRACKING_MIN_BRIGHTNESS)
-        return False
-    return True
+        return False, f"too_dark({quality.brightness:.1f}<{TRACKING_MIN_BRIGHTNESS})"
+    return True, "ok"
+
+
+def _compare_and_decide(best_frame: np.ndarray, best_face: FaceBox, t0: float) -> Optional[str]:
+    """Encode the stable face and compare against known encodings."""
+    t6 = time.time()
+    rgb_frame = cv.cvtColor(best_frame, cv.COLOR_BGR2RGB)
+    face_loc = best_face.to_face_recognition_format()
+    face_encodings = face_recognition.face_encodings(rgb_frame, [face_loc])
+    encode_time = time.time() - t6
+
+    logger.info("[AUTH] Face encoding: %d encoding(s) generated (%.2fs)",
+                len(face_encodings), encode_time)
+
+    if not face_encodings:
+        logger.warning("[AUTH] No encodings generated despite face detection")
+        return None
+    if not _known_encodings:
+        logger.warning("[AUTH] No known encodings to compare against")
+        return None
+
+    tolerance = FACE_TOLERANCE
+    encode_face = face_encodings[0]
+    distances = face_recognition.face_distance(_known_encodings, encode_face)
+    face_distances = list(zip(_known_names, distances))
+
+    if len(distances) == 0:
+        logger.warning("[AUTH] No distances computed")
+        return None
+
+    best_match_idx = int(np.argmin(distances))
+    best_distance = float(distances[best_match_idx])
+    best_name = _known_names[best_match_idx]
+
+    logger.info("[AUTH] Comparison: best match='%s' dist=%.4f tolerance=%.2f",
+                best_name, best_distance, tolerance)
+    for uname in sorted(set(_known_names)):
+        name_distances = [d for n, d in face_distances if n == uname]
+        if name_distances:
+            logger.info("[AUTH]   vs '%s': min=%.4f, avg=%.4f, samples=%d",
+                        uname, min(name_distances),
+                        sum(name_distances) / len(name_distances),
+                        len(name_distances))
+
+    elapsed = time.time() - t0
+    if best_distance < tolerance:
+        logger.info("[AUTH] ✅ AUTHENTICATED: '%s' (dist=%.4f < tolerance=%.2f, total=%.2fs)",
+                    best_name, best_distance, tolerance, elapsed)
+        return best_name
+
+    logger.info("[AUTH] ❌ REJECTED: '%s' (dist=%.4f >= tolerance=%.2f, total=%.2fs)",
+                best_name, best_distance, tolerance, elapsed)
+    face_distances.sort(key=lambda x: x[1])
+    for i, (name, dist) in enumerate(face_distances[:5]):
+        logger.info("[AUTH]   %d. '%s' (dist=%.4f)", i + 1, name, dist)
+    return None
 
 
 def recognize_faces() -> Optional[str]:
     """
-    Recognize a face from the camera using continuous capture.
+    Recognize a face from the camera — MANDATORY authentication.
 
-    PIPELINE:
-      1. Load encodings
-      2. Open camera (V4L2, 640x480, 30 FPS, MJPEG)
-      3. Warmup (discard 5 frames for auto-exposure)
-      4. Continuous capture at 30 FPS (max 5 seconds)
-      5. For each frame:
-         a. Measure brightness and blur
-         b. Preprocess (CLAHE + gamma + auto-contrast if dark)
-         c. Detect faces (YuNet → HOG → CNN)
-         d. Track face (require 5 stable frames)
-         e. Encode face (128D embedding)
-         f. Compare against known encodings
-         g. Decision
+    Session structure (intelligent retry):
+      ROUND 0: strict gates (face ≥120px, blur ≥35)
+      ROUND 1: re-warm + exposure re-check, strict gates
+      ROUND 2: relaxed gates (face ≥80px, blur ≥25)
+
+    Each round:
+      - auto-adjusts camera exposure if the scene is too dark
+      - captures at up to 30 FPS with CONTINUOUS diagnostics
+        (fps / brightness / blur / face confidence / face size / backend /
+        camera exposure) logged every 10 frames
+      - tracks the largest face for TRACKING_STABLE_FRAMES stable frames
+      - encodes + compares on stability, or on the best face seen when
+        the round ends with ≥2 stable frames (intelligent retry)
+      - saves failed frames automatically for offline analysis
 
     Returns:
         Name of recognized person, or None if not recognized.
@@ -356,217 +515,195 @@ def recognize_faces() -> Optional[str]:
 
     t0 = time.time()
     logger.info("[AUTH] ════════════════════════════════════════════════════")
-    logger.info("[AUTH] Face recognition started (backend=%s)", face_detector.backend)
+    logger.info("[AUTH] Face recognition started (backend=%s, rounds=%d × %.1fs)",
+                face_detector.backend, AUTH_ROUNDS, ROUND_DURATION)
 
     # Step 1: Load encodings
-    t1 = time.time()
     if not _load_encodings():
-        logger.warning("[AUTH] No encodings loaded (%.2fs)", time.time() - t1)
+        logger.warning("[AUTH] No encodings loaded")
         return None
-    logger.info("[AUTH] Encodings loaded: %d samples, %d users (%.2fs)",
-                len(_known_encodings), len(set(_known_names)), time.time() - t1)
+    logger.info("[AUTH] Encodings loaded: %d samples, %d users",
+                len(_known_encodings), len(set(_known_names)))
 
     # Step 2: Get camera
-    t2 = time.time()
     cam = _get_camera()
     if cam is None:
-        logger.error("[AUTH] Camera not available (%.2fs)", time.time() - t2)
+        logger.error("[AUTH] Camera not available")
         return None
-    logger.info("[AUTH] Camera opened (%.2fs)", time.time() - t2)
 
-    # Step 3: Warmup
-    logger.info("[AUTH] Warming up camera (discarding %d frames)...", WARMUP_FRAMES)
-    for i in range(WARMUP_FRAMES):
-        ret, _ = cam.read()
-        if not ret:
-            logger.warning("[AUTH] Warmup frame %d failed", i + 1)
-    logger.info("[AUTH] Warmup complete (%.2fs)", time.time() - t2)
+    last_frame: Optional[np.ndarray] = None
+    saved_fail_frames = 0
+    final_reject_reason = "no_face"
 
-    # Step 4: Continuous capture
-    stable_count = 0
-    best_face: Optional[FaceBox] = None
-    best_frame: Optional[np.ndarray] = None
-    best_quality: Optional[FrameQuality] = None
-    frame_count = 0
-    fps_counter = 0
-    fps_start = time.time()
-    current_fps = 0.0
+    for round_idx in range(AUTH_ROUNDS):
+        relaxed = round_idx >= AUTH_ROUNDS - 1
+        min_width = RELAXED_MIN_FACE_WIDTH if relaxed else MIN_FACE_WIDTH
+        min_blur = RELAXED_TRACKING_MIN_BLUR if relaxed else TRACKING_MIN_BLUR
+        logger.info("[AUTH] ── Round %d/%d (gates: width≥%d, blur≥%.0f) ──",
+                    round_idx + 1, AUTH_ROUNDS, min_width, min_blur)
 
-    logger.info("[AUTH] Continuous capture started (max %.1fs)...", MAX_CAPTURE_DURATION)
+        # Step 3: Warmup (let auto-exposure settle) — every round.
+        for i in range(WARMUP_FRAMES):
+            ret, f = cam.read()
+            if ret and f is not None:
+                last_frame = f
 
-    while time.time() - t0 < MAX_CAPTURE_DURATION:
-        ret, frame = cam.read()
-        if not ret or frame is None:
-            logger.warning("[AUTH] Frame %d capture failed", frame_count)
-            continue
+        # Step 3b: Exposure auto-adjust BEFORE capture if too dark.
+        ambient = _measure_ambient_brightness(cam)
+        logger.info("[AUTH] Ambient brightness: %.1f (threshold=%.1f) exposure=%s",
+                    ambient, BRIGHTNESS_THRESHOLD, _get_exposure_props(cam))
+        if ambient < BRIGHTNESS_THRESHOLD:
+            ambient = _auto_adjust_exposure(cam, ambient)
 
-        frame_count += 1
-        fps_counter += 1
+        # Step 4: Continuous capture for this round
+        stable_count = 0
+        best_face: Optional[FaceBox] = None
+        best_frame: Optional[np.ndarray] = None
+        best_stable = 0
+        frame_count = 0
+        fps_counter = 0
+        fps_start = time.time()
+        current_fps = 0.0
+        exposure_props = _get_exposure_props(cam)
+        round_start = time.time()
 
-        # Calculate FPS
-        fps_elapsed = time.time() - fps_start
-        if fps_elapsed >= 1.0:
-            current_fps = fps_counter / fps_elapsed
-            fps_counter = 0
-            fps_start = time.time()
+        while time.time() - round_start < ROUND_DURATION:
+            ret, frame = cam.read()
+            if not ret or frame is None:
+                logger.warning("[AUTH] Round %d frame %d capture failed",
+                               round_idx + 1, frame_count)
+                continue
 
-        # Measure quality
-        quality = measure_quality(frame)
+            frame_count += 1
+            fps_counter += 1
+            last_frame = frame
 
-        # Check if frame is too blurry
-        if quality.blur < BLUR_THRESHOLD:
-            logger.debug("[AUTH] Frame %d too blurry (blur=%.2f < %.2f) — capturing another",
-                         frame_count, quality.blur, BLUR_THRESHOLD)
+            fps_elapsed = time.time() - fps_start
+            if fps_elapsed >= 1.0:
+                current_fps = fps_counter / fps_elapsed
+                fps_counter = 0
+                fps_start = time.time()
+
+            # Detect faces — get POST-preprocess quality for gating.
+            faces, quality = face_detector.detect(frame, return_quality=True)
+            if quality is None:
+                continue
+
+            largest_face = max(faces, key=lambda f: f.w * f.h) if faces else None
+
+            # ── CONTINUOUS DIAGNOSTICS (every 10 frames) ──
+            if frame_count % 10 == 0:
+                if frame_count % 50 == 0:
+                    exposure_props = _get_exposure_props(cam)
+                logger.info(
+                    "[AUTH-DIAG] r%d f%d: fps=%.1f brightness=%.1f blur=%.1f "
+                    "proc_blur=%.1f faces=%d conf=%.2f size=%s backend=%s "
+                    "exposure=%s stable=%d/%d",
+                    round_idx + 1, frame_count, current_fps,
+                    quality.brightness, quality.blur,
+                    getattr(quality, "proc_blur", quality.blur),
+                    len(faces),
+                    largest_face.confidence if largest_face else 0.0,
+                    f"{largest_face.w}x{largest_face.h}" if largest_face else "0x0",
+                    largest_face.backend if largest_face else face_detector.backend,
+                    exposure_props, stable_count, TRACKING_STABLE_FRAMES)
+
             if _debug_overlay_enabled:
-                display = _draw_debug_overlay(frame, [], quality, current_fps, "BLURRY")
+                display = _draw_debug_overlay(frame, faces, quality, current_fps)
                 cv.imshow("Leo Face Auth", display)
-                if cv.waitKey(1) & 0xFF == ord('d'):
+                key = cv.waitKey(1) & 0xFF
+                if key == ord('d'):
                     _debug_overlay_enabled = not _debug_overlay_enabled
-            continue
+                elif key == 27:
+                    break
 
-        # Detect faces
-        faces = face_detector.detect(frame)
+            if not faces:
+                if stable_count > 0:
+                    logger.debug("[AUTH] Lost face after %d stable frames", stable_count)
+                stable_count = 0
+                continue
 
-        # Debug overlay
-        if _debug_overlay_enabled:
-            display = _draw_debug_overlay(frame, faces, quality, current_fps)
-            cv.imshow("Leo Face Auth", display)
-            key = cv.waitKey(1) & 0xFF
-            if key == ord('d'):
-                _debug_overlay_enabled = not _debug_overlay_enabled
-            elif key == 27:  # ESC
-                break
+            stable, reason = _is_face_stable(largest_face, quality,
+                                             min_width=min_width, min_blur=min_blur)
+            if not stable:
+                final_reject_reason = reason
+                stable_count = 0
+                # Save the FIRST few gate-rejected frames automatically.
+                if saved_fail_frames < 3:
+                    saved_fail_frames += 1
+                    _save_debug_frame(
+                        frame, f"auth_reject_r{round_idx + 1}",
+                        f"reason={reason} conf={largest_face.confidence:.2f} "
+                        f"size={largest_face.w}x{largest_face.h} "
+                        f"brightness={quality.brightness:.1f} blur={quality.blur:.1f}")
+                continue
 
-        if not faces:
-            stable_count = 0
-            best_face = None
-            best_frame = None
-            logger.debug("[AUTH] Frame %d: 0 faces (brightness=%.1f, blur=%.2f, fps=%.1f)",
-                         frame_count, quality.brightness, quality.blur, current_fps)
-            continue
+            stable_count += 1
+            if stable_count > best_stable:
+                best_stable = stable_count
+                best_face = largest_face
+                best_frame = frame.copy()
 
-        # Get the largest face
-        largest_face = max(faces, key=lambda f: f.w * f.h)
+            if stable_count < TRACKING_STABLE_FRAMES:
+                continue
 
-        logger.debug("[AUTH] Frame %d: %d face(s), largest=%dx%d conf=%.3f backend=%s "
-                     "(brightness=%.1f, blur=%.2f, fps=%.1f, stable=%d/%d)",
-                     frame_count, len(faces), largest_face.w, largest_face.h,
-                     largest_face.confidence, largest_face.backend,
-                     quality.brightness, quality.blur, current_fps,
-                     stable_count, TRACKING_STABLE_FRAMES)
-
-        # Check quality gates
-        if not _is_face_stable(largest_face, quality):
-            stable_count = 0
-            continue
-
-        # Face is stable enough — increment tracking counter
-        stable_count += 1
-        best_face = largest_face
-        best_frame = frame.copy()
-        best_quality = quality
-
-        if stable_count < TRACKING_STABLE_FRAMES:
-            logger.debug("[AUTH] Tracking: %d/%d stable frames", stable_count, TRACKING_STABLE_FRAMES)
-            continue
-
-        # Face has been stable for 5 consecutive frames — encode it
-        logger.info("[AUTH] Face stable for %d frames — encoding (backend=%s, %dx%d, conf=%.3f)",
-                    stable_count, best_face.backend, best_face.w, best_face.h, best_face.confidence)
-
-        # Save debug frame
-        _save_debug_frame(best_frame, "auth_stable",
-                          f"stable={stable_count}, backend={best_face.backend}")
-
-        # Step 5: Generate 128D embedding
-        t6 = time.time()
-        rgb_frame = cv.cvtColor(best_frame, cv.COLOR_BGR2RGB)
-        face_loc = best_face.to_face_recognition_format()
-        face_encodings = face_recognition.face_encodings(rgb_frame, [face_loc])
-        encode_time = time.time() - t6
-
-        logger.info("[AUTH] Face encoding: %d encoding(s) generated (%.2fs)",
-                    len(face_encodings), encode_time)
-
-        if not face_encodings:
-            logger.warning("[AUTH] No encodings generated despite face detection")
-            stable_count = 0
-            continue
-
-        if not _known_encodings:
-            logger.warning("[AUTH] No known encodings to compare against")
-            break
-
-        # Step 6: Compare against all known encodings
-        t7 = time.time()
-        tolerance = FACE_TOLERANCE
-        encode_face = face_encodings[0]
-        distances = face_recognition.face_distance(_known_encodings, encode_face)
-        face_distances = list(zip(_known_names, distances))
-
-        if len(distances) == 0:
-            logger.warning("[AUTH] No distances computed")
-            break
-
-        best_match_idx = int(np.argmin(distances))
-        best_distance = float(distances[best_match_idx])
-        best_name = _known_names[best_match_idx]
-
-        compare_time = time.time() - t7
-        logger.info("[AUTH] Comparison: best match='%s' dist=%.4f tolerance=%.2f (%.2fs)",
-                    best_name, best_distance, tolerance, compare_time)
-
-        # Log all distances
-        unique_names = sorted(set(_known_names))
-        for uname in unique_names:
-            name_distances = [d for n, d in face_distances if n == uname]
-            if name_distances:
-                min_dist = min(name_distances)
-                avg_dist = sum(name_distances) / len(name_distances)
-                logger.info("[AUTH]   vs '%s': min=%.4f, avg=%.4f, samples=%d",
-                            uname, min_dist, avg_dist, len(name_distances))
-
-        # Step 7: Decision
-        elapsed = time.time() - t0
-        if best_distance < tolerance:
-            logger.info("[AUTH] ✅ AUTHENTICATED: '%s' (dist=%.4f < tolerance=%.2f, total=%.2fs)",
-                        best_name, best_distance, tolerance, elapsed)
-            logger.info("[AUTH] ════════════════════════════════════════════════════")
-
+            # ── Face stable for N consecutive frames → encode + compare ──
+            logger.info("[AUTH] Face stable %d frames — encoding "
+                        "(backend=%s, %dx%d, conf=%.3f)",
+                        stable_count, best_face.backend, best_face.w,
+                        best_face.h, best_face.confidence)
+            _save_debug_frame(best_frame, "auth_stable",
+                              f"stable={stable_count}, backend={best_face.backend}")
+            name = _compare_and_decide(best_frame, best_face, t0)
+            if name:
+                if _debug_overlay_enabled:
+                    cv.destroyAllWindows()
+                _release_camera()
+                logger.info("[AUTH] ════════════════════════════════════════════════════")
+                return name
+            # Face recognized as someone unknown — no point retrying rounds.
+            logger.info("[AUTH] Face found but NOT a registered user — ending session")
+            final_reject_reason = "unknown_face"
+            if best_frame is not None:
+                _save_debug_frame(best_frame, "auth_unknown_face",
+                                  f"backend={best_face.backend}")
             if _debug_overlay_enabled:
-                display = _draw_debug_overlay(best_frame, [best_face], best_quality,
-                                               current_fps, f"AUTH: {best_name}")
-                cv.imshow("Leo Face Auth", display)
-                cv.waitKey(1000)
-
+                cv.destroyAllWindows()
             _release_camera()
-            return best_name
+            logger.info("[AUTH] ════════════════════════════════════════════════════")
+            return None
 
-        logger.info("[AUTH] ❌ REJECTED: '%s' (dist=%.4f >= tolerance=%.2f, total=%.2fs)",
-                    best_name, best_distance, tolerance, elapsed)
+        # ── Round ended. Intelligent retry: if we had a decent face for
+        # ≥2 (non-consecutive-end) stable frames, try encoding it anyway
+        # instead of throwing the round away.
+        if best_face is not None and best_frame is not None and best_stable >= 2:
+            logger.info("[AUTH] Round %d ended with %d stable frames — "
+                        "attempting best-effort encoding", round_idx + 1, best_stable)
+            name = _compare_and_decide(best_frame, best_face, t0)
+            if name:
+                if _debug_overlay_enabled:
+                    cv.destroyAllWindows()
+                _release_camera()
+                logger.info("[AUTH] ════════════════════════════════════════════════════")
+                return name
+            logger.info("[AUTH] Best-effort encoding rejected — next round")
+        else:
+            logger.info("[AUTH] Round %d complete: no stable face "
+                        "(%d frames, best_stable=%d)",
+                        round_idx + 1, frame_count, best_stable)
 
-        # Log top 5 closest matches
-        face_distances.sort(key=lambda x: x[1])
-        logger.info("[AUTH] Top 5 closest matches:")
-        for i, (name, dist) in enumerate(face_distances[:5]):
-            logger.info("[AUTH]   %d. '%s' (dist=%.4f)", i + 1, name, dist)
-
-        break
-
-    # Timeout or no face detected
+    # ── All rounds exhausted ──
     elapsed = time.time() - t0
-    if best_face is None:
-        logger.info("[AUTH] No face detected within %.1fs (%d frames captured)", elapsed, frame_count)
-        if frame is not None:
-            _save_debug_frame(frame, "auth_no_face", f"frames={frame_count}, backend={face_detector.backend}")
-    else:
-        logger.info("[AUTH] Face detected but not recognized within %.1fs", elapsed)
-
+    logger.warning("[AUTH] No face authenticated within %.1fs (%d rounds, reason=%s)",
+                   elapsed, AUTH_ROUNDS, final_reject_reason)
+    if last_frame is not None:
+        _save_debug_frame(last_frame, "auth_no_face",
+                          f"rounds={AUTH_ROUNDS} reason={final_reject_reason} "
+                          f"backend={face_detector.backend}")
     logger.info("[AUTH] ════════════════════════════════════════════════════")
 
     if _debug_overlay_enabled:
         cv.destroyAllWindows()
-
     _release_camera()
     return None
 

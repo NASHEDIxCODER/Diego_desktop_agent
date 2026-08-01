@@ -267,7 +267,7 @@ class FaceDetector:
         if self._yunet_detector is not None:
             self._yunet_detector.setInputSize((width, height))
 
-    def detect(self, frame: np.ndarray) -> List[FaceBox]:
+    def detect(self, frame: np.ndarray, return_quality: bool = False):
         """
         Detect faces in a frame.
 
@@ -275,42 +275,47 @@ class FaceDetector:
 
         Args:
             frame: BGR frame from camera.
+            return_quality: If True, return (faces, quality) where quality
+                carries the POST-preprocessing brightness (enhanced) and the
+                RAW blur score — so callers can gate on the same signal the
+                detector actually saw.
 
         Returns:
-            List of FaceBox objects.
+            List of FaceBox objects, or (faces, quality) if return_quality.
         """
         if not self.is_available:
             logger.warning("[DETECTOR] No backend available")
-            return []
+            return ([], None) if return_quality else []
 
         # Preprocess frame
         processed, quality = preprocess_frame(frame)
+        # Blur of the PROCESSED frame (CLAHE/gamma can change local variance)
+        proc_blur = measure_blur(processed)
+        quality.proc_blur = proc_blur
 
         if not quality.is_acceptable:
             logger.debug("[DETECTOR] Frame too blurry (blur=%.2f < %.2f) — skipping",
                          quality.blur, BLUR_THRESHOLD)
-            return []
+            return ([], quality) if return_quality else []
+
+        faces: List[FaceBox] = []
 
         # Try YuNet first
         if self._yunet_available:
             faces = self._detect_yunet(processed)
-            if faces:
-                return faces
-            # If YuNet finds nothing, try HOG as fallback
-            logger.debug("[DETECTOR] YuNet found 0 faces, trying HOG fallback")
+            if not faces:
+                # If YuNet finds nothing, try HOG as fallback
+                logger.debug("[DETECTOR] YuNet found 0 faces, trying HOG fallback")
 
         # Fallback to face_recognition HOG
-        if self._face_recognition_available:
+        if not faces and self._face_recognition_available:
             faces = self._detect_hog(processed)
-            if faces:
-                return faces
+            if not faces:
+                # Last resort: CNN (slow but more sensitive)
+                logger.debug("[DETECTOR] HOG found 0 faces, trying CNN fallback")
+                faces = self._detect_cnn(processed)
 
-            # Last resort: CNN (slow but more sensitive)
-            logger.debug("[DETECTOR] HOG found 0 faces, trying CNN fallback")
-            faces = self._detect_cnn(processed)
-            return faces
-
-        return []
+        return (faces, quality) if return_quality else faces
 
     def _detect_yunet(self, frame: np.ndarray) -> List[FaceBox]:
         """Detect faces using OpenCV YuNet (FaceDetectorYN)."""
