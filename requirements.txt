@@ -193,3 +193,11 @@ Werkzeug==3.1.3
 wrapt==2.0.1
 wsproto==1.3.2
 yarl==1.22.0
+
+# ── Conversational voice stack (streaming pipeline) ──
+faster-whisper>=1.0.0     # streaming STT (partial + final transcription)
+silero-vad>=5.1           # streaming voice activity detection / endpointing
+kokoro>=0.7.16            # primary streaming TTS engine (Kokoro-82M)
+misaki[en]>=0.7.4         # Kokoro English G2P
+piper-tts>=1.6.0          # fallback streaming TTS engine
+sounddevice>=0.4.6        # full-duplex audio I/O (interruptible playback)

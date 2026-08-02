@@ -1117,7 +1117,18 @@ async def shutdown_gracefully(sig: Optional[int] = None) -> None:
     logger.info("Leo shutdown complete.")
 
 
-async def main():
+async def run_conversational_mode(no_auth: bool = False) -> None:
+    """Run Leo as a full-duplex conversational agent (the new default).
+
+    Delegates to the conversational runtime in leo.py:
+      face auth → wake → streaming VAD → streaming Whisper → streaming LLM
+      → streaming TTS (interruptible), with continuous conversation.
+    """
+    from leo import run_leo
+    await run_leo(no_auth=no_auth)
+
+
+async def main(conversational: bool = True, no_auth: bool = False):
     """Entry point."""
     _shutdown_requested = False
 
@@ -1136,7 +1147,10 @@ async def main():
         )
 
     try:
-        await main_loop()
+        if conversational:
+            await run_conversational_mode(no_auth=no_auth)
+        else:
+            await main_loop()
     except asyncio.CancelledError:
         logger.info("Main loop cancelled")
     except KeyboardInterrupt:
@@ -1146,6 +1160,7 @@ async def main():
     finally:
         if not _shutdown_requested:
             await shutdown_gracefully()
+
 
 
 def cmd_train(args):
@@ -1383,6 +1398,10 @@ if __name__ == "__main__":
                         help="Real-time audio level visualizer")
     parser.add_argument("--train-wake", action="store_true",
                         help="Record 100 wake phrases + train custom verifier")
+    parser.add_argument("--legacy", action="store_true",
+                        help="Run the legacy command-executor loop instead of conversational mode")
+    parser.add_argument("--no-auth", action="store_true",
+                        help="Skip face authentication (development only)")
 
     args = parser.parse_args()
 
@@ -1414,4 +1433,4 @@ if __name__ == "__main__":
         ok = run_calibration()
         sys.exit(0 if ok else 1)
 
-    asyncio.run(main())
+    asyncio.run(main(conversational=not args.legacy, no_auth=args.no_auth))
