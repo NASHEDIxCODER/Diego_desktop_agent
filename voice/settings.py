@@ -63,9 +63,19 @@ class VoiceSettings:
     # Audio backend (auto-detected)
     tts_backend: str = "auto"  # auto, alsa, pulseaudio, pipewire, jack
 
+    # Streaming TTS engines
+    kokoro_voice: str = "af_heart"   # Kokoro voice id
+    piper_model: Optional[str] = None  # Path to Piper .onnx voice model
+
     # Microphone
     device_index: Optional[int] = None
     calibration_duration: float = 1.5
+
+    # Conversational endpointing (milliseconds)
+    conv_min_pause_ms: int = 600       # pauses shorter than this don't end a turn
+    conv_endpoint_ms: int = 900        # trailing silence that finalizes a turn
+    conv_timeout_s: float = 45.0       # idle time before returning to wake mode
+    conv_interrupt_min_ms: int = 90    # sustained speech to trigger interruption
 
     def update_from_env(self) -> None:
         """Update settings from environment variables (called once at startup)."""

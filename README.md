@@ -1,12 +1,73 @@
 # 🦁 Leo Desktop Assistant
 
-Leo is a **modular, production-grade AI desktop assistant** for Linux with wake-word activation, face authentication, local NLP engine, plugin architecture, and optional LLM integration.
+Leo is a **conversational desktop companion** for Linux — like Siri, ChatGPT Voice, or Gemini Live — with wake-word activation, mandatory face authentication, full-duplex streaming voice, rolling memory, vision, and automatic desktop control.
 
-> Talk to your machine, let it talk back, send Telegrams, control YouTube, and tweak your desktop — all hands-free.
+> Talk naturally. Interrupt any time. Change topics mid-sentence. Leo listens, thinks, speaks, and acts — all at once.
 
 ---
 
-## Architecture
+## 🚀 Conversational Mode (default)
+
+Leo now runs as a **real conversational agent**, not a command executor.
+
+```bash
+python leo.py            # conversational Leo (recommended)
+python leo.py --status   # subsystem status check
+python leo.py --no-auth  # skip face auth (dev only)
+
+python main.py           # same conversational mode (default)
+python main.py --legacy  # old command-executor loop
+```
+
+### The streaming pipeline
+
+Everything streams, concurrently — no blocking between stages:
+
+```
+Wake ("leo" / "hey leo" / "hello leo")
+  ↓
+Streaming audio (shared ring buffer)
+  ↓
+Streaming VAD (Silero) ────────────────┐
+  ↓                                    │
+Streaming Whisper (faster-whisper)     │  FULL DUPLEX
+  ↓                                    │  speak while Leo talks
+Streaming LLM (Ollama, token stream)   │  → instant TTS interrupt
+  ↓                                    │  → resume listening
+Sentence-by-sentence generation        │
+  ↓                                    │
+Streaming TTS (Kokoro → XTTS → Piper) ─┘
+  ↓
+Interruptible audio playback (sounddevice)
+```
+
+### What this feels like
+
+- **Interrupt Leo mid-sentence** — just start talking. TTS aborts instantly and Leo listens.
+- **Natural pauses** — pausing < 600 ms doesn't cut you off.
+- **Filler words** — "umm", "wait", "hold on", "actually" keep your turn open.
+- **Stay awake** — after the wake word, Leo stays in conversation. No need to repeat "hey leo" every time. It sleeps only after a goodbye or ~45 s of silence.
+- **Memory** — "remember my project is Leo" … later "what was my project called?" → answered instantly from long-term memory.
+- **Alive personality** — varied greetings ("Hey.", "Welcome back.", "Good morning."), never "How may I assist you?".
+- **Acts on its own** — "open VS Code", "search GitHub", "read the screen", "play Spotify" just happen, no confirmation prompts.
+
+### Key components (new)
+
+| Module | Role |
+|--------|------|
+| `core/conversation_engine.py` | Full-duplex orchestrator (wake/conversation lifecycle, interruption) |
+| `voice/streaming_stt.py` | Streaming Silero VAD + faster-whisper with endpointing + interruption detection |
+| `voice/streaming_tts.py` | Interruptible sentence-streamed TTS (Kokoro/XTTS/Piper/pyttsx3) |
+| `agent/streaming_llm.py` | Token-streaming LLM → sentence segmentation → ACTION extraction |
+| `agent/conversation_memory.py` | Rolling context + long-term facts + auto-summarization |
+| `agent/personality.py` | Varied, alive conversational phrasing |
+| `agent/action_dispatcher.py` | Maps LLM actions → real desktop operations + screen context |
+| `auth/robust_auth.py` | Multi-frame voting, confidence averaging, head-pose, anti-spoofing |
+| `leo.py` | Conversational entry point |
+
+---
+
+## Legacy Architecture (command-executor)
 
 ```
 Speech → STT → Preprocessor → Intent Classifier → Entity Extractor
