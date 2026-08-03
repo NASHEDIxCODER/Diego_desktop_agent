@@ -41,7 +41,7 @@ import numpy as np
 
 from config.settings import settings
 from voice.audio_manager import audio_manager, SAMPLE_RATE, shutdown_event
-from voice.audio_processing import audio_preprocessor
+from voice.audio_processing import audio_preprocessor, float32_to_int16
 from voice.settings import voice_settings
 from voice.wake_model_manager import wake_model_manager, WARMUP_FRAME_SAMPLES
 
@@ -210,19 +210,25 @@ def _init_whisper() -> bool:
 _VAD_WINDOW = 512
 
 
-def _silero_vad_confidence(audio_int16: np.ndarray) -> float:
+def _silero_vad_confidence(audio: np.ndarray) -> float:
     """Return max Silero VAD speech probability across 512-sample windows.
 
     Accepts any input length; internally slices into 512-sample windows
     (the only size Silero VAD 6.x accepts) and returns the maximum
-    probability found. Returns 0.0 on error or when VAD is unavailable.
+    probability found. float32 [-1, 1] input is used AS-IS (NO
+    renormalization — VAD preprocessing applies no gain); legacy int16
+    is decoded once via /32768 at this model boundary.
+    Returns 0.0 on error or when VAD is unavailable.
     """
     global _last_vad_confidence
     if not _silero_vad_available:
         return 0.0
     try:
         import torch
-        audio_float = audio_int16.astype(np.float32) / 32768.0
+        if audio.dtype != np.float32:
+            audio_float = audio.astype(np.float32) / 32768.0
+        else:
+            audio_float = audio
         if len(audio_float) < _VAD_WINDOW:
             audio_float = np.pad(audio_float, (0, _VAD_WINDOW - len(audio_float)))
         max_prob = 0.0
@@ -239,9 +245,9 @@ def _silero_vad_confidence(audio_int16: np.ndarray) -> float:
         return 0.0
 
 
-def _silero_vad_detect(audio_int16: np.ndarray) -> bool:
+def _silero_vad_detect(audio: np.ndarray) -> bool:
     """Detect voice activity using Silero VAD (512-sample windows)."""
-    return _silero_vad_confidence(audio_int16) > 0.5
+    return _silero_vad_confidence(audio) > 0.5
 
 
 def _openwakeword_detect(audio_int16: np.ndarray) -> bool:
@@ -270,9 +276,13 @@ def _openwakeword_detect(audio_int16: np.ndarray) -> bool:
         return False
 
 
-def _whisper_transcribe_detailed(audio_int16: np.ndarray) -> dict:
+def _whisper_transcribe_detailed(audio: np.ndarray) -> dict:
     """
     Transcribe audio with faster-whisper and report the FULL decision.
+
+    Whisper preprocessing applies NO gain and NO renormalization:
+    float32 [-1, 1] input is handed to the model AS-IS; legacy int16 is
+    decoded ONCE via /32768 at this model boundary.
 
     Returns a dict:
       text       — transcript (or None)
@@ -284,14 +294,17 @@ def _whisper_transcribe_detailed(audio_int16: np.ndarray) -> dict:
     if not _whisper_available:
         return {"text": None, "confidence": 0.0, "no_speech": 0.0,
                 "ok": False, "reason": "whisper_unavailable"}
-    if audio_int16 is None or len(audio_int16) == 0:
+    if audio is None or len(audio) == 0:
         return {"text": None, "confidence": 0.0, "no_speech": 0.0,
                 "ok": False, "reason": "empty_audio"}
 
     try:
         from voice.audio_processing import peak_monitor as _pm
-        _pm.log("whisper_input", audio_int16)
-        audio_float = audio_int16.astype(np.float32) / 32768.0
+        _pm.log("whisper_input", audio)
+        if audio.dtype != np.float32:
+            audio_float = audio.astype(np.float32) / 32768.0
+        else:
+            audio_float = audio  # already normalized — do NOT renormalize
         # Robustness settings (deterministic, no repetition loops, internal
         # VAD filter so silence/noise never reaches the decoder — this is
         # what previously produced no_segments / hallucinated transcripts
@@ -329,14 +342,14 @@ def _whisper_transcribe_detailed(audio_int16: np.ndarray) -> dict:
                 "ok": False, "reason": f"exception:{type(e).__name__}:{e}"}
 
 
-def _whisper_transcribe(audio_int16: np.ndarray) -> Optional[str]:
+def _whisper_transcribe(audio: np.ndarray) -> Optional[str]:
     """
     Transcribe audio using faster-whisper (offline).
 
     Returns the accepted transcript, or None if Whisper genuinely failed.
     Logs the full decision tree (transcript, confidence, accept/reject reason).
     """
-    res = _whisper_transcribe_detailed(audio_int16)
+    res = _whisper_transcribe_detailed(audio)
     if res["ok"]:
         logger.info("[STT] Whisper ACCEPTED: '%s' (conf=%.3f)",
                     res["text"], res["confidence"])
@@ -833,8 +846,9 @@ def listen_wake_continuous(timeout: Optional[float] = None) -> Optional[str]:
 
     # Non-overlapping streaming state. openWakeWord's preprocessor keeps a
     # rolling feature buffer, so every sample must be fed EXACTLY ONCE.
+    # Audio is float32 [-1, 1] end-to-end (single-normalization rule).
     last_total = audio_manager.total_samples
-    pending = np.zeros(0, dtype=np.int16)
+    pending = np.zeros(0, dtype=np.float32)
 
     # Per-speech-segment diagnostics (reset at each new segment).
     is_speaking = False
@@ -945,7 +959,7 @@ def listen_wake_continuous(timeout: Optional[float] = None) -> Optional[str]:
                 # Continuous streaming: do NOT reset the model here — the
                 # feature window rolls off naturally and the prediction_buffer
                 # stays primed (avoiding a 5-frame blind spot next session).
-                pending = np.zeros(0, dtype=np.int16)
+                pending = np.zeros(0, dtype=np.float32)
 
                 if verified:
                     wake_model_manager._detections += 1
@@ -969,8 +983,9 @@ def listen_wake_continuous(timeout: Optional[float] = None) -> Optional[str]:
                     whisper_res.get("no_speech", 0.0))
                 if len(full_audio):
                     try:
+                        # WAV EXPORT sink: float32 → int16, here only.
                         _save_failed_audio(
-                            full_audio.astype(np.int16).tobytes(), SAMPLE_RATE,
+                            float32_to_int16(full_audio).tobytes(), SAMPLE_RATE,
                             f"false_wake_{best_score:.2f}")
                     except Exception as _e:
                         logger.debug("[WAKE] failed-audio save error: %s", _e)
@@ -1044,11 +1059,12 @@ def listen(timeout: Optional[float] = None,
 
     samplerate = audio_manager.sample_rate
 
-    # Apply noise suppression (NO AGC — unity gain only)
+    # Apply noise suppression (NO AGC — unity gain only). process()
+    # returns float32 [-1, 1]; convert to PCM16 ONCE at this STT sink.
     samples = np.frombuffer(audio_bytes, dtype=np.int16)
     if len(samples) > 0:
         processed = audio_preprocessor.process(samples)
-        audio_bytes = processed.tobytes()
+        audio_bytes = float32_to_int16(processed).tobytes()
 
     # Check audio quality
     samples = np.frombuffer(audio_bytes, dtype=np.int16)

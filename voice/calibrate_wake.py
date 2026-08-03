@@ -29,14 +29,19 @@ def _ensure_dirs() -> None:
     NEGATIVES_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def _write_wav(path, audio_int16, samplerate):
-    """Write int16 PCM audio to a mono 16-bit WAV file."""
+def _write_wav(path, audio, samplerate):
+    """Write audio to a mono 16-bit WAV file.
+
+    WAV EXPORT sink: float32 [-1, 1] input is converted to int16 here
+    (and only here); int16 input passes through unchanged.
+    """
     import wave
+    from voice.audio_processing import float32_to_int16
     with wave.open(str(path), "wb") as wav:
         wav.setnchannels(1)
         wav.setsampwidth(2)
         wav.setframerate(samplerate)
-        wav.writeframes(audio_int16.astype(np.int16).tobytes())
+        wav.writeframes(float32_to_int16(audio).tobytes())
 
 
 def _record_clip(audio_manager, timeout=MAX_RECORD_WAIT):
@@ -51,7 +56,8 @@ def _record_clip(audio_manager, timeout=MAX_RECORD_WAIT):
         if len(recent) == 0:
             time.sleep(0.02)
             continue
-        rms = float(np.sqrt(np.mean(recent.astype(float) ** 2)))
+        # float32 [-1, 1] → int16-scale RMS for the threshold comparison.
+        rms = float(np.sqrt(np.mean(recent.astype(float) ** 2))) * 32768.0
         if rms > audio_manager.energy_threshold:
             if not speech_detected:
                 speech_detected = True
@@ -332,7 +338,8 @@ def run_calibration(wake_phrase=None):
         clip = _record_clip(audio_manager)
         if clip is None:
             continue
-        rms = float(np.sqrt(np.mean(clip.astype(float) ** 2)))
+        # clip is float32 [-1, 1] → int16-scale RMS for the loudness check.
+        rms = float(np.sqrt(np.mean(clip.astype(float) ** 2))) * 32768.0
         if rms < 100:
             continue
 
@@ -355,7 +362,7 @@ def run_calibration(wake_phrase=None):
         time.sleep(0.2)
         bg = audio_manager.get_recent_audio(CLIP_SECONDS)
         if len(bg) < SAMPLE_RATE:
-            bg = np.concatenate([bg, np.zeros(SAMPLE_RATE - len(bg), dtype=np.int16)])
+            bg = np.concatenate([bg, np.zeros(SAMPLE_RATE - len(bg), dtype=bg.dtype)])
         _write_wav(NEGATIVES_DIR / f"negative_{i + 1:03d}.wav",
                    bg[: int(CLIP_SECONDS * SAMPLE_RATE)], SAMPLE_RATE)
         if i % 5 == 0 or i == NEGATIVE_CLIP_COUNT - 1:

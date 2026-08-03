@@ -201,3 +201,8 @@ kokoro>=0.7.16            # primary streaming TTS engine (Kokoro-82M)
 misaki[en]>=0.7.4         # Kokoro English G2P
 piper-tts>=1.6.0          # fallback streaming TTS engine
 sounddevice>=0.4.6        # full-duplex audio I/O (interruptible playback)
+
+# ── Wake word stack (REQUIRED — Leo is deaf without these) ──
+openwakeword>=0.4.0       # offline wake-word detection ("hello leo")
+onnxruntime>=1.17.0       # ONNX inference backend for openWakeWord models
+

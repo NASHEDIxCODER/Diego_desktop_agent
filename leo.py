@@ -28,6 +28,7 @@ import signal
 import subprocess
 import sys
 import time
+from typing import Optional
 
 # ═══════════════════════════════════════════════════════════════
 # ENVIRONMENT FIXES (before any heavy imports)
@@ -65,55 +66,34 @@ logger = logging.getLogger("leo")
 
 
 # ═══════════════════════════════════════════════════════════════
-# Face authentication (mandatory)
+# Face authentication — runs ONLY after the wake word, NEVER at startup.
 # ═══════════════════════════════════════════════════════════════
 
-async def authenticate() -> tuple:
+async def authenticate_on_wake() -> Optional[str]:
     """
-    Run mandatory face authentication.
+    Run live face authentication in the popup window.
 
-    Uses the robust pipeline (multi-frame voting, confidence averaging,
-    head pose estimation, anti-spoofing). Falls back to the standard
-    recognizer if the robust one is unavailable.
+    This is the engine's auth provider. It is called ONLY after the wake
+    word is detected (and only when the previous session has expired).
 
-    Returns (ok: bool, name: Optional[str]).
-    Runs the blocking camera pipeline in an executor thread.
+    Returns the verified user's name, or None if denied/cancelled.
+    NEVER raises, NEVER terminates Leo.
     """
-    logger.info("[AUTH] Starting face authentication (mandatory)...")
     loop = asyncio.get_event_loop()
-
-    # Prefer the robust recognizer (voting + pose + anti-spoofing)
-    recog_fn = None
     try:
-        from auth.robust_auth import recognize_faces_robust
-        recog_fn = recognize_faces_robust
-        logger.info("[AUTH] Using robust face authentication")
+        from auth.live_auth import authenticate_live
     except Exception as e:
-        logger.debug("[AUTH] Robust auth unavailable (%s); using standard", e)
-        try:
-            from auth.faceauth import recognize_faces
-            recog_fn = recognize_faces
-        except Exception as e2:
-            logger.error("[AUTH] Face auth module unavailable: %s", e2)
-            return False, None
-
+        logger.error("[AUTH] live_auth unavailable: %s", e)
+        return None
     try:
-        name = await asyncio.wait_for(
-            loop.run_in_executor(None, recog_fn),
-            timeout=60.0,
-        )
-    except asyncio.TimeoutError:
-        logger.error("[AUTH] Face authentication timed out")
-        return False, None
+        # authenticate_live blocks on the camera → run in an executor thread.
+        # No timeout here: the popup waits forever for a face; the user can
+        # close the popup to cancel (which returns None → deny → wake).
+        name = await loop.run_in_executor(None, authenticate_live)
+        return name
     except Exception as e:
-        logger.error("[AUTH] Face authentication error: %s", e)
-        return False, None
-
-    if name:
-        logger.info("[AUTH] Authenticated as: %s", name)
-        return True, name
-    logger.error("[AUTH] Face authentication FAILED — access denied")
-    return False, None
+        logger.warning("[AUTH] live authentication error: %s", e)
+        return None
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -121,34 +101,35 @@ async def authenticate() -> tuple:
 # ═══════════════════════════════════════════════════════════════
 
 async def run_leo(no_auth: bool = False) -> None:
-    """Initialize subsystems and run the conversation engine."""
+    """
+    BOOT → LOAD MODELS → INIT AUDIO → WAIT_WAKE.
+
+    Leo ALWAYS boots successfully and stays alive forever. Face auth is
+    deferred until the wake word. There is NO startup authentication.
+    """
     from core.conversation_engine import conversation_engine
     from agent.action_dispatcher import action_dispatcher
 
-    # ── Face auth (mandatory unless --no-auth) ────────────
-    if not no_auth:
-        ok, name = await authenticate()
-        if not ok:
-            print("\n  Face authentication failed. Leo cannot start.\n")
-            return
-        conversation_engine.set_authenticated(name)
-    else:
-        logger.warning("[AUTH] --no-auth: skipping face authentication (dev mode)")
-        conversation_engine.set_authenticated(None)
+    logger.info("BOOT")
+    logger.info("Models loaded")
+    logger.info("Audio initialized")
 
-    # ── Wire vision context + action executor ─────────────
+    # ── Wire subsystems ───────────────────────────────────
     conversation_engine.set_action_executor(action_dispatcher.execute)
     conversation_engine.set_vision_context(action_dispatcher._screen_context_sync)
+
+    # ── Face auth provider (deferred to wake) ─────────────
+    if no_auth:
+        logger.warning("[AUTH] --no-auth: face authentication disabled (dev mode)")
+        conversation_engine.set_authenticated(None)   # dev session, no camera
+    else:
+        conversation_engine.set_auth_provider(authenticate_on_wake)
 
     # ── Run engine + watchdog concurrently ────────────────
     engine_task = asyncio.create_task(conversation_engine.run())
     watchdog_task = asyncio.create_task(conversation_engine.timeout_watchdog())
 
-    logger.info("[LEO] Conversational engine running. Say 'hey leo' to start.")
-    print("\n  ═══════════════════════════════════════════════")
-    print("  Leo is listening. Say 'hey leo' to start talking.")
-    print("  Interrupt any time by speaking. Say 'bye' to sleep.")
-    print("  ═══════════════════════════════════════════════\n")
+    logger.info("Listening for wake word...")
 
     try:
         await asyncio.gather(engine_task, watchdog_task)

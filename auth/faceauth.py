@@ -78,6 +78,17 @@ AUTH_TOTAL_BUDGET = AUTH_ROUNDS * ROUND_DURATION + 6.0
 # ── Debug overlay ──────────────────────────────────────────────
 _debug_overlay_enabled = False
 
+
+def _overlay_allowed() -> bool:
+    """OpenCV GUI calls (imshow / waitKey / destroyAllWindows) may ONLY ever
+    execute on the MAIN thread. Face auth normally runs on an executor
+    worker thread — calling them there violates Qt/Tcl thread affinity and
+    crashes the process. On any non-main thread the overlay is forced OFF."""
+    import threading
+    return _debug_overlay_enabled and (
+        threading.current_thread() is threading.main_thread())
+
+
 # ── CameraManager Singleton ────────────────────────────────────
 _camera: Optional[cv.VideoCapture] = None
 _camera_refcount = 0
@@ -608,8 +619,9 @@ def recognize_faces() -> Optional[str]:
                     largest_face.backend if largest_face else face_detector.backend,
                     exposure_props, stable_count, TRACKING_STABLE_FRAMES)
 
-            if _debug_overlay_enabled:
+            if _overlay_allowed():
                 display = _draw_debug_overlay(frame, faces, quality, current_fps)
+
                 cv.imshow("Leo Face Auth", display)
                 key = cv.waitKey(1) & 0xFF
                 if key == ord('d'):
@@ -656,22 +668,24 @@ def recognize_faces() -> Optional[str]:
                               f"stable={stable_count}, backend={best_face.backend}")
             name = _compare_and_decide(best_frame, best_face, t0)
             if name:
-                if _debug_overlay_enabled:
+                if _overlay_allowed():
                     cv.destroyAllWindows()
                 _release_camera()
                 logger.info("[AUTH] ════════════════════════════════════════════════════")
                 return name
             # Face recognized as someone unknown — no point retrying rounds.
+
             logger.info("[AUTH] Face found but NOT a registered user — ending session")
             final_reject_reason = "unknown_face"
             if best_frame is not None:
                 _save_debug_frame(best_frame, "auth_unknown_face",
                                   f"backend={best_face.backend}")
-            if _debug_overlay_enabled:
+            if _overlay_allowed():
                 cv.destroyAllWindows()
             _release_camera()
             logger.info("[AUTH] ════════════════════════════════════════════════════")
             return None
+
 
         # ── Round ended. Intelligent retry: if we had a decent face for
         # ≥2 (non-consecutive-end) stable frames, try encoding it anyway
@@ -681,12 +695,13 @@ def recognize_faces() -> Optional[str]:
                         "attempting best-effort encoding", round_idx + 1, best_stable)
             name = _compare_and_decide(best_frame, best_face, t0)
             if name:
-                if _debug_overlay_enabled:
+                if _overlay_allowed():
                     cv.destroyAllWindows()
                 _release_camera()
                 logger.info("[AUTH] ════════════════════════════════════════════════════")
                 return name
             logger.info("[AUTH] Best-effort encoding rejected — next round")
+
         else:
             logger.info("[AUTH] Round %d complete: no stable face "
                         "(%d frames, best_stable=%d)",
@@ -702,10 +717,11 @@ def recognize_faces() -> Optional[str]:
                           f"backend={face_detector.backend}")
     logger.info("[AUTH] ════════════════════════════════════════════════════")
 
-    if _debug_overlay_enabled:
+    if _overlay_allowed():
         cv.destroyAllWindows()
     _release_camera()
     return None
+
 
 
 def Unknown_Face() -> bool:

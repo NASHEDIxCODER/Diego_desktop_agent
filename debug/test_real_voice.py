@@ -192,10 +192,11 @@ def main():
             results.append({"trial": trial, "success": False, "reason": "no_speech"})
             continue
 
-        # Process with noise suppression
+        # Process with noise suppression (float32 out; PCM16 at the WAV/STT sink)
+        from voice.audio_processing import float32_to_int16
         samples = np.frombuffer(audio_bytes, dtype=np.int16)
         processed = audio_preprocessor.process(samples)
-        proc_bytes = processed.tobytes()
+        proc_bytes = float32_to_int16(processed).tobytes()
 
         # Save WAV
         wav_path = OUTPUT_DIR / f"trial_{trial:02d}.wav"

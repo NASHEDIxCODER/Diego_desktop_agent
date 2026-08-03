@@ -112,9 +112,9 @@ def main():
                 time.sleep(0.02)
                 continue
 
-            # Compute metrics
-            rms = float(np.sqrt(np.mean(recent.astype(float) ** 2)))
-            peak = float(np.max(np.abs(recent)))
+            # Compute metrics (ring-buffer audio is float32 [-1, 1])
+            rms = float(np.sqrt(np.mean(recent.astype(float) ** 2))) * 32768.0
+            peak = float(np.max(np.abs(recent))) * 32768.0
             norm_rms = rms / 32768.0
             now = time.time()
 
@@ -146,10 +146,13 @@ def main():
                             if duration > max_speech_duration:
                                 audio = audio[:int(max_speech_duration * samplerate)]
 
-                            # Apply full noise suppression + AGC
+                            # Apply full noise suppression (NO AGC — unity gain).
+                            # process() returns float32 [-1, 1]; PCM16 only at the STT sink.
+                            from voice.audio_processing import float32_to_int16
                             processed = audio_preprocessor.process(audio)
-                            audio_bytes = processed.tobytes()
-                            speech_rms = float(np.sqrt(np.mean(processed.astype(float) ** 2)))
+                            processed16 = float32_to_int16(processed)
+                            audio_bytes = processed16.tobytes()
+                            speech_rms = float(np.sqrt(np.mean(processed16.astype(float) ** 2)))
 
                             # STT
                             t0 = time.time()
