@@ -14,3 +14,5 @@ debug/real_voice_test/*
 debug/*.txt
 debug/*.wav
 debug/*.jpg
+models/wake/negatives/*.wav
+models/wake/positives/*.wav
