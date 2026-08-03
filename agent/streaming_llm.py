@@ -54,7 +54,9 @@ ACTION FORMAT (only when a desktop action is needed):
 ACTION: {"action": "<action_name>", "params": {...}}
 
 Available actions:
-- desktop_open(app) — open an application (e.g. "code", "spotify", "firefox")
+- desktop_open(app) — open an application (e.g. "code", "google-chrome", "firefox",
+  "gnome-terminal", "nautilus"). Use for "open VS Code/Chrome/Terminal/Files".
+- open_folder(path) — open a folder in the file manager (path optional, default home)
 - browser_navigate(url) — open a website
 - browser_search(query) — google search
 - read_screen() — describe what is on screen
@@ -63,6 +65,12 @@ Available actions:
 - key_press(key) — press a key
 - type_text(text) — type text
 - play_media(query) — play music/video on YouTube or Spotify
+- volume_up() / volume_down() / volume_set(percent) / volume_mute() — sound volume
+- brightness_up() / brightness_down() / brightness_set(percent) — screen brightness
+- lock_screen() — lock the desktop session
+- shutdown() — power off the computer (only when the user explicitly asks)
+- restart() — reboot the computer (only when the user explicitly asks)
+
 
 RESPONSE STYLE:
 - Simple chat: just answer, no ACTION line.

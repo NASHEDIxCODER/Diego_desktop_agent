@@ -299,11 +299,14 @@ def test_command(results: AcceptanceResults, n_attempts: int = 50):
                 print(f" ✗ INVARIANT VIOLATION ({audio_duration:.2f}s > 7.0s)")
                 continue
 
-            # Preprocess + recognize
+            # Preprocess + recognize (process() returns float32 [-1, 1];
+            # convert to PCM16 once at the STT sink).
+            import numpy as _np
+            from voice.audio_processing import float32_to_int16
             samples = audio_preprocessor.process(
-                audio_bytes, SAMPLE_RATE, SAMPLE_RATE
+                _np.frombuffer(audio_bytes, dtype=_np.int16)
             )
-            text = _recognize_bytes(samples.tobytes() if hasattr(samples, 'tobytes') else audio_bytes, SAMPLE_RATE)
+            text = _recognize_bytes(float32_to_int16(samples).tobytes(), SAMPLE_RATE)
             latency = time.time() - t_start
             results.command_latencies.append(latency)
 

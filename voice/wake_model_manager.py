@@ -531,6 +531,15 @@ class WakeModelManager:
             except Exception as e:
                 logger.debug("[WAKE] Warmup predict error: %s", e)
                 break
+        # The wake-detector stage tracer measures RUNTIME audio only —
+        # discard any peak recorded before the model was warm so the first
+        # real "Wake score" trace starts from a clean baseline.
+        try:
+            from voice.audio_processing import peak_monitor
+            peak_monitor.reset("wake_detector")
+        except Exception:
+            pass
+
 
 
 # Global singleton

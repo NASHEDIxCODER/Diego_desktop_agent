@@ -96,8 +96,8 @@ def main():
                 time.sleep(0.02)
                 continue
 
-            # Compute metrics
-            rms = float(np.sqrt(np.mean(recent.astype(float) ** 2)))
+            # Compute metrics (processed audio is float32 [-1, 1])
+            rms = float(np.sqrt(np.mean(recent.astype(float) ** 2))) * 32768.0
             norm_rms = rms / 32768.0
             now = time.time()
 
@@ -122,8 +122,11 @@ def main():
                             if duration > max_speech_duration:
                                 audio = audio[:int(max_speech_duration * samplerate)]
 
-                            audio_bytes = audio.tobytes()
-                            speech_rms = float(np.sqrt(np.mean(audio.astype(float) ** 2)))
+                            # STT sink: float32 → PCM16, here only.
+                            from voice.audio_processing import float32_to_int16
+                            audio16 = float32_to_int16(audio)
+                            audio_bytes = audio16.tobytes()
+                            speech_rms = float(np.sqrt(np.mean(audio16.astype(float) ** 2)))
 
                             print(f"\n  ═════ SPEECH #{phrase_count} ({duration:.1f}s, RMS={speech_rms:.1f}) ═════")
 

@@ -377,20 +377,47 @@ async def _init_voice(status: dict) -> None:
         voice_settings.update_from_env()
         audio_device.detect_backend()
 
-        # Start the unified AudioManager (opens ONE InputStream for the entire session)
+        # Start the unified AudioManager (opens ONE InputStream for the entire session).
+        # start() runs the hardware detector (STEPS 1–6): it enumerates every
+        # input device, rejects virtual buses, probes every candidate with a
+        # 2s recording and returns True ONLY when a verified working
+        # microphone is streaming real signal.
         loop = asyncio.get_running_loop()
         am_started = await loop.run_in_executor(None, audio_manager.start)
 
         if not am_started:
             status["voice"] = False
             startup_health.set_state("voice", SubsystemState.DISABLED,
-                                     "AudioManager failed to start")
+                                     "No working microphone detected")
+            return
+
+        # ── STEP 9: AI models initialize ONLY after microphone validation ──
+        # Silero / Whisper / openWakeWord / the conversation engine must
+        # NEVER be initialized before a verified microphone is delivering
+        # real samples. Double-guard on the verified flag.
+        if not audio_manager.mic_verified:
+            status["voice"] = False
+            startup_health.set_state(
+                "voice", SubsystemState.DISABLED,
+                "Microphone not verified — AI models NOT initialized")
+            logger.error("[VOICE] Microphone validation failed — "
+                         "Silero/Whisper/openWakeWord will NOT be initialized")
             return
 
         # Calibrate ambient noise — EXACTLY ONCE after stream has stabilized.
         # Wait for the ring buffer to fill with stable audio before measuring.
+        # Calibration re-validates the live stream: digital silence here means
+        # the verified device died — voice is disabled and no AI models load.
         await asyncio.sleep(0.5)  # Let the stream stabilize
-        await loop.run_in_executor(None, audio_manager.calibrate, 1.5)
+        cal_ok = await loop.run_in_executor(None, audio_manager.calibrate, 1.5)
+        if not cal_ok:
+            status["voice"] = False
+            startup_health.set_state(
+                "voice", SubsystemState.DISABLED,
+                "Microphone went silent after verification — AI models NOT initialized")
+            logger.error("[VOICE] Post-verification calibration detected digital "
+                         "silence — Silero/Whisper/openWakeWord will NOT be initialized")
+            return
 
         # Pre-seed the noise suppression profile by processing ambient audio.
         # This ensures spectral gating has a noise reference BEFORE any
@@ -1218,7 +1245,7 @@ def cmd_calibrate():
     """Auto-calibrate wake detection with 10 repetitions of 'hello leo'."""
     import numpy as _np
     from voice.audio_manager import audio_manager
-    from voice.audio_processing import audio_preprocessor
+    from voice.audio_processing import audio_preprocessor, float32_to_int16
     from voice.stt import _recognize_bytes
     from voice.wake_word import wake_word_engine
 
@@ -1248,10 +1275,10 @@ def cmd_calibrate():
             print("    No speech detected, try again")
             continue
 
-        # Process with noise suppression
+        # Process with noise suppression (float32 out; PCM16 only at the STT sink)
         samples = _np.frombuffer(audio_bytes, dtype=_np.int16)
         processed = audio_preprocessor.process(samples)
-        proc_bytes = processed.tobytes()
+        proc_bytes = float32_to_int16(processed).tobytes()
 
         # STT
         text = _recognize_bytes(proc_bytes, audio_manager.sample_rate)
@@ -1350,8 +1377,9 @@ def cmd_audio_debug():
             if len(audio) == 0:
                 continue
 
-            rms = float(_np.sqrt(_np.mean(audio.astype(float) ** 2)))
-            peak = float(_np.max(_np.abs(audio)))
+            # Ring-buffer audio is float32 [-1, 1]; show int16-scale levels.
+            rms = float(_np.sqrt(_np.mean(audio.astype(float) ** 2))) * 32768.0
+            peak = float(_np.max(_np.abs(audio))) * 32768.0
             norm_rms = rms / 32768.0
 
             preproc = audio_preprocessor.get_metrics()

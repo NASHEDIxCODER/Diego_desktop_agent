@@ -1,4 +1,4 @@
-# 🦁 Leo Desktop Assistant
+# 🦁 Leo Desktop Agent
 
 Leo is a **conversational desktop companion** for Linux — like Siri, ChatGPT Voice, or Gemini Live — with wake-word activation, mandatory face authentication, full-duplex streaming voice, rolling memory, vision, and automatic desktop control.
 
@@ -146,8 +146,8 @@ See [docs/architecture.md](docs/architecture.md) for full details, including Mer
 
 ### Clone & Setup
 ```bash
-git clone https://github.com/NASHEDIxCODER/leo_desktop_assistant.git
-cd leo_desktop_assistant
+git clone https://github.com/NASHEDIxCODER/leo_desktop_agent.git
+cd leo_desktop_agent
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt

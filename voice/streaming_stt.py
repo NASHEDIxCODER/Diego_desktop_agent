@@ -86,12 +86,21 @@ class UtteranceEvent:
 
 
 class _SileroVAD:
-    """Silero VAD wrapper for streaming 30ms frames."""
+    """Silero VAD wrapper for streaming frames.
+
+    silero-vad 6.x accepts ONLY 256/512/768-sample windows at 16 kHz —
+    the legacy 480-sample (30 ms) frame raises "Input audio chunk is too
+    short", which the old fallback path swallowed, silently degrading the
+    VAD to an energy heuristic. Frames are padded to 512 samples here.
+    """
+
+    FRAME = 512  # 32 ms @ 16 kHz (valid silero-vad 6.x window)
 
     def __init__(self):
         self._model = None
         self._ready = False
         self._threshold = 0.5
+
 
     def load(self) -> bool:
         if self._ready:
@@ -123,22 +132,41 @@ class _SileroVAD:
             logger.warning("[STREAM-STT] Silero VAD unavailable: %s", e)
             return False
 
-    def speech_prob(self, frame_int16: np.ndarray) -> float:
-        """Return speech probability for a 30ms 16kHz frame."""
+    def speech_prob(self, frame: np.ndarray) -> float:
+        """Return speech probability for a 30ms 16kHz frame.
+
+        VAD preprocessing applies NO gain: float32 [-1, 1] frames are
+        used AS-IS (no renormalization); legacy int16 frames are decoded
+        once via /32768 at this model boundary.
+        """
         if not self._ready:
-            # Energy fallback
-            rms = float(np.sqrt(np.mean(frame_int16.astype(np.float64) ** 2)))
+            # Energy fallback (threshold stays on the int16 scale)
+            rms = float(np.sqrt(np.mean(frame.astype(np.float64) ** 2)))
+            if np.issubdtype(frame.dtype, np.floating):
+                rms *= 32768.0
             return 0.9 if rms > 300.0 else 0.05
         try:
             import torch
-            audio = frame_int16.astype(np.float32) / 32768.0
+            if frame.dtype != np.float32:
+                audio = frame.astype(np.float32) / 32768.0
+            else:
+                audio = frame
+            # silero-vad 6.x requires 256/512/768-sample windows; the
+            # pipeline's 480-sample frames are zero-padded to 512.
+            if len(audio) < self.FRAME:
+                audio = np.pad(audio, (0, self.FRAME - len(audio)))
+            elif len(audio) > self.FRAME:
+                audio = audio[: self.FRAME]
             tensor = torch.from_numpy(audio)
             with torch.no_grad():
                 prob = self._model(tensor, 16000).item()
             return float(prob)
         except Exception:
-            rms = float(np.sqrt(np.mean(frame_int16.astype(np.float64) ** 2)))
+            rms = float(np.sqrt(np.mean(frame.astype(np.float64) ** 2)))
+            if np.issubdtype(frame.dtype, np.floating):
+                rms *= 32768.0
             return 0.9 if rms > 300.0 else 0.05
+
 
 
 class _WhisperTranscriber:
@@ -150,42 +178,85 @@ class _WhisperTranscriber:
         self._lock = asyncio.Lock()
 
     def load(self) -> bool:
+        """Load faster-whisper with a PROVEN backend.
+
+        CUDA libraries (libcublas) load lazily at FIRST INFERENCE, so a
+        model that "loaded" on cuda can still fail every transcribe call
+        and silently return ''. Each candidate backend must pass a real
+        warmup inference before it is accepted; otherwise we fall back
+        to the next candidate (cuda → cpu).
+        """
         if self._ready:
             return True
         try:
             from faster_whisper import WhisperModel
             import torch
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-            compute = "float16" if device == "cuda" else "int8"
-            # tiny/base gives the best latency for partials
-            self._model = WhisperModel("base", device=device, compute_type=compute)
-            self._ready = True
-            logger.info("[STREAM-STT] faster-whisper loaded (device=%s)", device)
-            return True
+            candidates = []
+            if torch.cuda.is_available():
+                candidates.append(("cuda", "float16"))
+            candidates.append(("cpu", "int8"))
+            for device, compute in candidates:
+                try:
+                    # tiny/base gives the best latency for partials
+                    model = WhisperModel("base", device=device, compute_type=compute)
+                    # Warmup inference: forces the backend libraries to
+                    # load NOW. A backend that can't infer (missing
+                    # libcublas, OOM) raises here and is rejected.
+                    warmup = np.zeros(16000, dtype=np.float32)
+                    segments, _ = model.transcribe(
+                        warmup, beam_size=1, without_timestamps=True)
+                    list(segments)  # consume the generator (runs inference)
+                    self._model = model
+                    self._ready = True
+                    logger.info("[STREAM-STT] faster-whisper loaded "
+                                "(device=%s, compute=%s, warmup OK)",
+                                device, compute)
+                    return True
+                except Exception as e:
+                    logger.warning("[STREAM-STT] faster-whisper %s/%s "
+                                   "unusable (%s) — trying next backend",
+                                   device, compute, e)
+            logger.error("[STREAM-STT] faster-whisper: no working backend")
+            return False
         except Exception as e:
             logger.warning("[STREAM-STT] faster-whisper unavailable: %s", e)
             return False
 
-    def transcribe(self, pcm_int16: bytes, sample_rate: int = SAMPLE_RATE) -> str:
-        """Transcribe int16 PCM to text. Returns '' on failure."""
+
+    def transcribe(self, pcm_int16: bytes, sample_rate: int = SAMPLE_RATE,
+                   use_vad_filter: bool = True) -> str:
+        """Transcribe int16 PCM to text. Returns '' on failure.
+
+        use_vad_filter: faster-whisper's internal VAD. Disable it when the
+        caller ALREADY gates speech upstream (wake confirmation): the
+        internal filter aggressively drops quiet-but-real speech
+        ("VAD filter removed 00:02.500 of audio" on a played wake phrase).
+        """
         if not self._ready or not pcm_int16:
             return ""
         try:
+            # Stage trace: peak/RMS of the exact audio handed to Whisper.
+            from voice.audio_processing import peak_monitor
+            peak_monitor.log("whisper", np.frombuffer(pcm_int16, dtype=np.int16))
             audio = np.frombuffer(pcm_int16, dtype=np.int16).astype(np.float32) / 32768.0
+
             if len(audio) < sample_rate * 0.2:
                 return ""
             segments, _info = self._model.transcribe(
                 audio,
                 beam_size=1,
                 language="en",
-                vad_filter=True,
+                vad_filter=use_vad_filter,
                 without_timestamps=True,
             )
             text = " ".join(seg.text.strip() for seg in segments).strip()
             return text
         except Exception as e:
-            logger.debug("[STREAM-STT] transcribe error: %s", e)
+            # No hidden exceptions: a failing backend must be visible.
+            logger.warning("[STREAM-STT] transcribe error: %s", e)
             return ""
+
+
 
 
 class StreamingSTT:
@@ -228,8 +299,20 @@ class StreamingSTT:
         """Cancel any in-flight streaming loop."""
         self._cancel.set()
 
+    def stop_streaming(self) -> None:
+        """DESTROY the active streaming session (called when leaving
+        COMMAND_LISTEN).
+
+        The state machine guarantees streaming Whisper exists ONLY while a
+        stream_utterances() consumer is active. Setting the cancel flag makes
+        the in-flight generator exit immediately; the NEXT session re-arms
+        itself via reset_cancel() at the top of stream_utterances().
+        """
+        self._cancel.set()
+
     def reset_cancel(self) -> None:
         self._cancel.clear()
+
 
     # ── Main streaming loop ───────────────────────────────
 
@@ -366,9 +449,16 @@ class StreamingSTT:
 
     @staticmethod
     def _frames_to_bytes(frames: List[np.ndarray]) -> bytes:
+        """Pack frames into PCM16 bytes for Whisper.
+
+        SINK BOUNDARY: frames are float32 [-1, 1]; the single int16
+        conversion happens HERE, immediately before Whisper, and nowhere
+        upstream in the pipeline.
+        """
         if not frames:
             return b""
-        return np.concatenate(frames).astype(np.int16).tobytes()
+        from voice.audio_processing import float32_to_int16
+        return float32_to_int16(np.concatenate(frames)).tobytes()
 
     @staticmethod
     def _iter_frames(audio: np.ndarray):

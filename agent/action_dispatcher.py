@@ -29,9 +29,11 @@ Usage:
 
 import asyncio
 import logging
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
+
 
 
 class ActionDispatcher:
@@ -90,7 +92,9 @@ class ActionDispatcher:
                 url = "https://" + url
             if ex:
                 ok, msg = ex.browser_navigate(url)
-                return msg if ok else f"Couldn't open {url}"
+                if ok:
+                    return msg
+            # Selenium path unavailable/failed → native xdg-open fallback.
             return self._open_url_fallback(url)
 
         if name == "browser_search":
@@ -98,8 +102,10 @@ class ActionDispatcher:
             url = "https://www.google.com/search?q=" + query.replace(" ", "+")
             if ex:
                 ok, msg = ex.browser_navigate(url)
-                return f"Searched for {query}" if ok else f"Couldn't search"
+                if ok:
+                    return f"Searched for {query}"
             return self._open_url_fallback(url)
+
 
         # ── Screen reading ────────────────────────────────
         if name == "read_screen":
@@ -137,8 +143,144 @@ class ActionDispatcher:
             query = params.get("query", "")
             return self._play_media(query)
 
+        # ── Folder opening (TASK 9) ───────────────────────
+        if name == "open_folder":
+            path = params.get("path") or str(Path.home())
+            return self._open_folder(path)
+
+        # ── Volume (TASK 9, native PipeWire/ALSA APIs) ────
+        if name == "volume_up":
+            return self._volume_change("+10%")
+        if name == "volume_down":
+            return self._volume_change("-10%")
+        if name == "volume_set":
+            pct = int(params.get("percent", params.get("level", 50)))
+            return self._volume_set(pct)
+        if name == "volume_mute":
+            return self._volume_mute()
+
+        # ── Brightness (TASK 9, native brightnessctl) ─────
+        if name == "brightness_up":
+            return self._brightness_change("+10%")
+        if name == "brightness_down":
+            return self._brightness_change("10%-")
+        if name == "brightness_set":
+            pct = int(params.get("percent", params.get("level", 70)))
+            return self._brightness_set(pct)
+
+        # ── Session / power (TASK 9, native logind) ───────
+        if name == "lock_screen":
+            return self._lock_screen()
+        if name == "shutdown":
+            return self._power("poweroff")
+        if name == "restart":
+            return self._power("reboot")
+
         logger.warning("[ACTIONS] Unknown action: %s", name)
         return None
+
+    # ── TASK 9: native desktop operations ─────────────────
+
+    @staticmethod
+    def _run_cmd(argv: list, timeout: float = 5.0) -> bool:
+        """Run a desktop command detached; True on spawn success."""
+        import subprocess
+        try:
+            subprocess.Popen(
+                argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                start_new_session=True)
+            logger.info("[ACTIONS] ran: %s", " ".join(argv))
+            return True
+        except Exception as e:
+            logger.warning("[ACTIONS] command failed %s: %s", argv, e)
+            return False
+
+    def _open_folder(self, path: str) -> str:
+        """Open a folder in the desktop file manager (xdg-open / gio)."""
+        import shutil
+        p = Path(path).expanduser()
+        if not p.exists():
+            p = Path.home()
+        for opener in ("xdg-open", "gio"):
+            exe = shutil.which(opener)
+            if exe:
+                argv = [exe, "open", str(p)] if opener == "gio" else [exe, str(p)]
+                if self._run_cmd(argv):
+                    return f"Opened {p}"
+        return "Couldn't open the folder"
+
+    def _volume_change(self, delta: str) -> str:
+        """Adjust output volume via pactl (PipeWire/Pulse) or amixer."""
+        import shutil
+        if shutil.which("pactl"):
+            if self._run_cmd(["pactl", "set-sink-volume", "@DEFAULT_SINK@", delta]):
+                return f"Volume {'up' if delta.startswith('+') else 'down'}"
+        if shutil.which("amixer"):
+            if self._run_cmd(["amixer", "-q", "sset", "Master", f"{delta}%"]):
+                return "Volume adjusted"
+        return "Volume control unavailable"
+
+    def _volume_set(self, percent: int) -> str:
+        import shutil
+        percent = max(0, min(100, percent))
+        if shutil.which("pactl"):
+            if self._run_cmd(["pactl", "set-sink-volume", "@DEFAULT_SINK@", f"{percent}%"]):
+                return f"Volume set to {percent} percent"
+        if shutil.which("amixer"):
+            if self._run_cmd(["amixer", "-q", "sset", "Master", f"{percent}%"]):
+                return f"Volume set to {percent} percent"
+        return "Volume control unavailable"
+
+    def _volume_mute(self) -> str:
+        import shutil
+        if shutil.which("pactl"):
+            if self._run_cmd(["pactl", "set-sink-mute", "@DEFAULT_SINK@", "toggle"]):
+                return "Toggled mute"
+        if shutil.which("amixer"):
+            if self._run_cmd(["amixer", "-q", "sset", "Master", "toggle"]):
+                return "Toggled mute"
+        return "Volume control unavailable"
+
+    def _brightness_change(self, delta: str) -> str:
+        import shutil
+        if shutil.which("brightnessctl"):
+            if self._run_cmd(["brightnessctl", "s", delta]):
+                return "Brightness adjusted"
+        if shutil.which("light"):
+            if self._run_cmd(["light", "-A" if delta.startswith("+") else "-U", delta.lstrip("+%-")]):
+                return "Brightness adjusted"
+        return "Brightness control unavailable"
+
+    def _brightness_set(self, percent: int) -> str:
+        import shutil
+        percent = max(0, min(100, percent))
+        if shutil.which("brightnessctl"):
+            if self._run_cmd(["brightnessctl", "s", f"{percent}%"]):
+                return f"Brightness set to {percent} percent"
+        if shutil.which("light"):
+            if self._run_cmd(["light", "-S", str(percent)]):
+                return f"Brightness set to {percent} percent"
+        return "Brightness control unavailable"
+
+    def _lock_screen(self) -> str:
+        import shutil
+        # logind first (works on Wayland + X11), then common lockers.
+        for argv in (
+            ["loginctl", "lock-session"],
+            ["xdg-screensaver", "lock"],
+            ["dm-tool", "lock"],
+            ["gnome-screensaver-command", "--lock"],
+        ):
+            if shutil.which(argv[0]) and self._run_cmd(argv):
+                return "Screen locked"
+        return "Couldn't lock the screen"
+
+    def _power(self, action: str) -> str:
+        import shutil
+        if shutil.which("systemctl") and self._run_cmd(["systemctl", action]):
+            return "Shutting down" if action == "poweroff" else "Restarting"
+        return "Power control unavailable"
+
 
     # ── App / URL launching ───────────────────────────────
 
