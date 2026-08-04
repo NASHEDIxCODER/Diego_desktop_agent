@@ -31,6 +31,7 @@ from typing import Dict, List, Optional
 import numpy as np
 
 from config.settings import settings
+from voice.audio_processing import float32_to_int16
 from voice.settings import voice_settings
 
 logger = logging.getLogger(__name__)
@@ -179,52 +180,63 @@ class WakeModelManager:
               f" ({'custom verifier attached' if self._verifier_path else 'no verifier'})")
 
     # ── Inference ──────────────────────────────────────────────────
+    #
+    # OPENWAKEWORD INPUT CONTRACT (verified against the installed package):
+    #   * dtype:       int16 PCM. AudioPreprocessor casts input via
+    #                  np.array(x).astype(np.int16) — feeding float32 [-1, 1]
+    #                  TRUNCATES every sample to {-1, 0, 1} (1-bit garbage).
+    #                  float input is therefore converted to int16 HERE, at
+    #                  the model boundary, via float32_to_int16().
+    #   * sample rate: 16000 Hz, mono.
+    #   * frame size:  exactly 1280 samples (80 ms) per predict() call in
+    #                  streaming mode; frames must be non-overlapping and
+    #                  sequential (the internal feature buffer persists).
+    #   * minimum:     a predict() call needs >= 400 samples.
 
-    def predict(self, audio_int16: np.ndarray) -> Dict[str, float]:
+    @staticmethod
+    def _to_model_input(frame: np.ndarray) -> np.ndarray:
+        """Convert any pipeline audio (float32 [-1, 1] or int16) to the
+        int16 PCM openWakeWord requires. THE single conversion point."""
+        if frame.dtype == np.int16:
+            return frame
+        return float32_to_int16(frame)
+
+    def predict(self, audio: np.ndarray) -> Dict[str, float]:
         """
-        Run the wake model on int16 PCM audio using STREAMING prediction.
+        Run the wake model on an audio clip using STREAMING prediction.
 
-        openWakeWord's feature buffer holds at most ~10s (120 frames); feeding
-        a long clip in a single predict() call overflows it and raises an
-        ONNX dimension error. Production wake detection therefore streams
-        audio in chunks of 1280 samples (80 ms) and keeps the MAX score
-        across all frames — identical to real-time usage.
+        The clip is fed in non-overlapping 1280-sample (80 ms) int16 frames
+        and the MAX score across all frames is returned — identical to
+        real-time usage.
 
         Args:
-            audio_int16: int16 samples @ 16 kHz (any length ≥ 1 sample).
+            audio: int16 PCM or float32 [-1, 1] samples @ 16 kHz.
 
         Returns:
             Dict mapping model/class name → max score (0..1). Empty on failure.
         """
         if not self._loaded or self._model is None:
             return {}
-
-        if audio_int16.dtype != np.float32:
-            audio_float = audio_int16.astype(np.float32) / 32768.0
-        else:
-            audio_float = audio_int16
-
-        if len(audio_float) == 0:
+        pcm = self._to_model_input(np.asarray(audio))
+        if len(pcm) == 0:
             return {}
 
         # Pad to a multiple of 1280 samples (openWakeWord frame size).
-        remainder = len(audio_float) % WARMUP_FRAME_SAMPLES
+        remainder = len(pcm) % WARMUP_FRAME_SAMPLES
         if remainder:
-            pad = WARMUP_FRAME_SAMPLES - remainder
-            audio_float = np.pad(audio_float, (0, pad))
+            pcm = np.pad(pcm, (0, WARMUP_FRAME_SAMPLES - remainder))
 
         t0 = time.perf_counter()
         try:
             best: Dict[str, float] = {}
-            for i in range(0, len(audio_float), WARMUP_FRAME_SAMPLES):
-                frame = audio_float[i:i + WARMUP_FRAME_SAMPLES]
-                preds = self._model.predict(frame)
+            for i in range(0, len(pcm), WARMUP_FRAME_SAMPLES):
+                preds = self._model.predict(pcm[i:i + WARMUP_FRAME_SAMPLES])
                 for name, score in preds.items():
                     s = float(score)
                     if s > best.get(name, 0.0):
                         best[name] = s
         except Exception as e:
-            logger.debug("[WAKE] predict error: %s", e)
+            logger.warning("[WAKE] predict error: %s", e)
             self._latency_samples.append(time.perf_counter() - t0)
             return {}
         latency = time.perf_counter() - t0
@@ -236,33 +248,30 @@ class WakeModelManager:
         """Feed ONE 1280-sample frame to openWakeWord in continuous streaming
         mode. The model's internal feature/prediction buffers persist across
         calls, so this must be called with non-overlapping sequential frames
-        (see AudioManager.read_since).
+        (the WakeListener's frame accumulator guarantees exactly-1280-sample
+        frames; shorter/longer input is padded/truncated as a safety net).
 
         Args:
-            frame: int16 or float32 audio frame (exactly 1280 samples is ideal;
-                   shorter/longer frames are padded/truncated to 1280).
+            frame: int16 or float32 [-1, 1] audio frame @ 16 kHz.
 
         Returns:
             Dict mapping model/class name → score for this frame.
         """
         if not self._loaded or self._model is None:
             return {}
-        if frame.dtype != np.float32:
-            audio_float = frame.astype(np.float32) / 32768.0
-        else:
-            audio_float = frame
-        if len(audio_float) == 0:
+        pcm = self._to_model_input(np.asarray(frame))
+        if len(pcm) == 0:
             return {}
         # Normalize to exactly 1280 samples (openWakeWord frame size).
-        if len(audio_float) < WARMUP_FRAME_SAMPLES:
-            audio_float = np.pad(audio_float, (0, WARMUP_FRAME_SAMPLES - len(audio_float)))
-        elif len(audio_float) > WARMUP_FRAME_SAMPLES:
-            audio_float = audio_float[:WARMUP_FRAME_SAMPLES]
+        if len(pcm) < WARMUP_FRAME_SAMPLES:
+            pcm = np.pad(pcm, (0, WARMUP_FRAME_SAMPLES - len(pcm)))
+        elif len(pcm) > WARMUP_FRAME_SAMPLES:
+            pcm = pcm[:WARMUP_FRAME_SAMPLES]
         t0 = time.perf_counter()
         try:
-            preds = self._model.predict(audio_float)
+            preds = self._model.predict(pcm)
         except Exception as e:
-            logger.debug("[WAKE] predict_stream error: %s", e)
+            logger.warning("[WAKE] predict_stream error: %s", e)
             self._latency_samples.append(time.perf_counter() - t0)
             return {}
         self._latency_samples.append(time.perf_counter() - t0)
@@ -270,14 +279,11 @@ class WakeModelManager:
         return self._last_prediction
 
     def reset_stream(self) -> None:
-        """Reset openWakeWord's prediction buffer.
+        """Light reset: clear openWakeWord's prediction buffer only.
 
-        openWakeWord is designed for CONTINUOUS streaming: the preprocessor's
-        rolling feature window naturally drops audio older than ~1.5s, so the
-        production wake loop never resets between speech segments. This light
-        reset (prediction_buffer only) is provided for external/rare use
-        (e.g. after a reload). NOTE: after reset, the next 5 frames score 0
-        (openWakeWord's init behavior), so prefer continuous streaming.
+        NOTE: after reset, the next 5 frames score 0 (openWakeWord's init
+        behavior). For a deterministic clean state (WAKE_LISTEN entry) use
+        hard_reset(), which also rebuilds the preprocessor buffers.
         """
         if self._model is None:
             return
@@ -285,6 +291,44 @@ class WakeModelManager:
             self._model.reset()
         except Exception as e:
             logger.debug("[WAKE] reset_stream model.reset error: %s", e)
+
+    def hard_reset(self) -> None:
+        """FULL deterministic reset of the streaming detector state.
+
+        Rebuilds every openWakeWord internal buffer FROM SCRATCH — the
+        exact state of a freshly constructed + warmed-up model — then
+        re-primes the 5-frame zeroed prediction window. Called on EVERY
+        WAKE_LISTEN entry so leftover features from the wake phrase /
+        conversation / TTS can never re-trigger the detector (the
+        "multiple wake loops" bug).
+
+        This intentionally recomputes the initial feature buffer instead
+        of restoring a snapshot: only a from-scratch rebuild is bit-exact
+        with the regime used for verifier training and threshold
+        calibration, so runtime scores match the calibrated margins.
+        """
+        if self._model is None:
+            return
+        try:
+            pre = self._model.preprocessor
+            pre.raw_data_buffer.clear()
+            pre.melspectrogram_buffer = np.ones((76, 32))
+            pre.accumulated_samples = 0
+            pre.feature_buffer = pre._get_embeddings(
+                np.zeros(160000).astype(np.int16))
+            self._model.reset()  # prediction_buffer → 5-frame zero window
+            self._reprime()
+        except Exception as e:
+            logger.debug("[WAKE] hard_reset error: %s", e)
+
+    def _reprime(self) -> None:
+        """Feed silence frames until the prediction buffer is primed."""
+        silence = np.zeros(WARMUP_FRAME_SAMPLES, dtype=np.int16)
+        for _ in range(WARMUP_FRAMES + 1):
+            try:
+                self._model.predict(silence)
+            except Exception:
+                break
 
     def detect(self,
                audio_int16: np.ndarray,
@@ -524,7 +568,7 @@ class WakeModelManager:
         """
         if self._model is None:
             return
-        silence = np.zeros(WARMUP_FRAME_SAMPLES, dtype=np.float32)
+        silence = np.zeros(WARMUP_FRAME_SAMPLES, dtype=np.int16)
         for _ in range(WARMUP_FRAMES + 1):
             try:
                 self._model.predict(silence)

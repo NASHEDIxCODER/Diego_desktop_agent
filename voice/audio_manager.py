@@ -26,29 +26,41 @@ After selection the InputStream callback prints real signal levels:
 
 AUDIO FORMAT CONTRACT (gain pipeline):
   The ring buffer carries float32 samples in [-1, 1], 16 kHz, mono.
-  The signal is normalized EXACTLY ONCE (the input clip at capture).
-  int16 conversion happens ONLY at sink boundaries (openWakeWord /
-  Whisper / WAV export / PCM bytes) via float32_to_int16(). NO stage
-  may apply gain, AGC, or re-normalization.
+  The signal is normalized EXACTLY ONCE at capture. EXACTLY ONE
+  instrumented gain stage exists — the capture-side AutomaticGainControl
+  (leveler target RMS 0.10, limiter ceiling 0.95, NEVER a hard clip) —
+  which replaces the old destructive np.clip at capture. Additionally the
+  OS/hardware capture gain is CALIBRATED at startup (mixer volume is
+  stepped down while the raw ADC signal saturates) so the AGC receives a
+  waveform it can actually repair. int16 conversion happens ONLY at sink
+  boundaries (openWakeWord / Whisper / WAV export / PCM bytes) via
+  float32_to_int16(). No other stage may apply gain or re-normalization.
 """
+
 
 import json
 import logging
+import re
+import shutil
+import subprocess
 import threading
 import time
 from collections import deque
 from pathlib import Path
 from typing import Optional, Callable
 
+
 import numpy as np
 
 from voice.audio_processing import (
+    AutomaticGainControl,
     GainError,
     audio_preprocessor,
     float32_to_int16,
     peak_monitor,
 )
 from voice.settings import voice_settings
+
 
 logger = logging.getLogger(__name__)
 
@@ -653,8 +665,19 @@ class AudioManager:
         self._zero_streak: int = 0        # consecutive all-zero RAW frames
         self._digital_silence: bool = False  # latched once abort threshold hit
 
+        # ── STEP 6: capture-side AGC (the SINGLE gain stage) ──
+        # Leveler (target RMS 0.10, band 0.08–0.12) + limiter (0.95),
+        # NEVER a hard clip. Replaces the old np.clip at capture that
+        # destroyed over-driven waveforms before inference.
+        self._agc = AutomaticGainControl()
+        # Raw-source saturation accounting for the startup mixer
+        # calibration: samples at the ±1.0 rail / total samples seen.
+        self._sat_rail_samples: int = 0
+        self._sat_total_samples: int = 0
+
         # Callback for wake word detection
         self._on_speech_detected: Optional[Callable] = None
+
 
 
     # ──────────────────────────────────────────────────────────
@@ -983,29 +1006,41 @@ class AudioManager:
                     "the signal is clipped ONCE at capture (single normalization)",
                     mono_peak, c)
 
-        # ── THE single normalization in the entire pipeline ──
-        # Clip the raw float32 to [-1, 1] EXACTLY ONCE at capture. Every
-        # downstream stage preserves float32 [-1, 1]; int16 is produced
-        # ONLY at sink boundaries (openWakeWord / Whisper / WAV export).
-        # There is NO int16 conversion, NO AGC, NO re-normalization here.
+        # ── THE single normalization + SINGLE gain stage in the pipeline ──
+        # ROOT-CAUSE FIX (do NOT revert to np.clip): the verified failure
+        # was an OS/hardware-overdriven microphone (+50 dB analog gain →
+        # ADC saturation, 22.9 % of raw samples at the rail). Hard-clipping
+        # here destroyed the waveform BEFORE inference — openWakeWord still
+        # fired (log-mel is clip-robust) but Whisper hallucinated and every
+        # wake verification was rejected. The AGC repairs what is
+        # repairable: leveler steers RMS to 0.08–0.12, limiter guarantees
+        # peak ≤ 0.95, and the signal is NEVER clipped.
         try:
-            audio_float = np.clip(
-                np.asarray(mono, dtype=np.float32), -1.0, 1.0)
-            peak_monitor.log("microphone", audio_float)
+            mono_f = np.asarray(mono, dtype=np.float32)
+            # Raw-source measurement (NO assertion — overdriven input is
+            # legal here; it is exactly what the AGC repairs). This trace
+            # answers "where does clipping first appear?" at runtime.
+            peak_monitor.observe("mic_raw", mono_f)
+            # Saturation accounting for the startup mixer calibration.
+            if mono_f.size:
+                self._sat_rail_samples += int(
+                    np.count_nonzero(np.abs(mono_f) >= 1.0 - 1.0 / 32768.0))
+                self._sat_total_samples += int(mono_f.size)
+
+            audio_float, agc_gain = self._agc.process(mono_f)
+            peak_monitor.log("microphone", audio_float, gain=agc_gain)
 
             # Resample to 16 kHz in the FLOAT domain (no int16 round-trip).
             if self._actual_sample_rate != SAMPLE_RATE:
                 audio_float = self._resample_to_16k(audio_float)
-                # The polyphase FIR rings PAST the capture clip on hot
-                # signals (Gibbs overshoot, up to ~1.2 on clipped input).
-                # Contain the overshoot to ±1.0 — this is NOT a second
-                # normalization (the signal was normalized once, above);
-                # without it the stage tracer aborts EVERY loud frame and
-                # the wake detector starves exactly when someone speaks.
+                # The polyphase FIR rings on hot signals (Gibbs overshoot).
+                # The AGC limits input to ≤0.95 so this containment now
+                # engages only on benign filter ringing, never on speech.
                 audio_float = np.clip(audio_float, -1.0, 1.0, out=audio_float)
                 peak_monitor.log("resampling", audio_float)
 
         except GainError:
+
             # GAIN ERROR already logged (stage, caller, stack trace).
             # ABORT this frame — corrupt audio never reaches the buffer.
             logger.critical("[GAIN] Audio frame aborted due to gain error")
@@ -1100,7 +1135,11 @@ class AudioManager:
             logger.info("[AUDIO] InputStream started — device=[%d] %s, %d Hz, %d ch, backend=%s",
                         self._device_index, self._device_name,
                         self._actual_sample_rate, self._stream_channels, self._backend)
-            return self._finish_start()
+            ok = self._finish_start()
+            if ok:
+                self._calibrate_capture_gain()
+            return ok
+
 
         except Exception as e:
             # If the probed channel count fails, retry with mono.
@@ -1121,7 +1160,11 @@ class AudioManager:
                 self._running = True
                 self._initialized = True
                 logger.info("[AUDIO] InputStream started (mono fallback) — %d Hz", self._actual_sample_rate)
-                return self._finish_start()
+                ok = self._finish_start()
+                if ok:
+                    self._calibrate_capture_gain()
+                return ok
+
             except Exception as e2:
                 logger.error("[AUDIO] Failed to start stream: %s", e2, exc_info=True)
                 self._stream = None
@@ -1179,8 +1222,229 @@ class AudioManager:
             self._callback_count, self._zero_streak, self._speech_channel)
         return True
 
+    # ──────────────────────────────────────────────────────────
+    # STEP 6b — OS/hardware capture-gain calibration (ROOT FIX)
+    # ──────────────────────────────────────────────────────────
+    #
+    # Forensically verified failure: ALSA 'Capture' at 100 % (+30 dB) with
+    # 'Internal Mic Boost' at +20 dB over-drives the ADC — 22.9 % of RAW
+    # probe samples were nailed to the rail (crest factor 1.95). Audio
+    # clipped at the ADC CANNOT be repaired by any software stage, so the
+    # capture gain is stepped DOWN here until the raw signal has healthy
+    # headroom. The runtime AGC then handles normal loudness variation.
+    #
+    # This is NOT "lowering a threshold" — it is removing destructive
+    # analog overdrive so the waveform reaching openWakeWord / Whisper is
+    # the waveform the user actually produced.
+
+    MIXER_CAL_MAX_STEPS = 5        # at most this many volume reductions
+    MIXER_CAL_MEASURE_S = 1.0      # seconds measured per step
+    MIXER_CAL_REDUCE_FACTOR = 0.55 # each step keeps 55 % of current volume
+    MIXER_CAL_MIN_VOLUME = 0.05    # never drive the source to zero
+    MIXER_CAL_HEALTHY_RAIL_PCT = 0.2   # ≤0.2 % of raw samples at the rail
+    MIXER_CAL_HEALTHY_RMS = 0.35       # raw RMS ceiling (float scale)
+
+    def _measure_raw_saturation(self, seconds: float):
+        """Measure the RAW (pre-AGC) signal for `seconds`.
+
+        Returns (rail_pct, rms): percentage of samples at the ±1.0 rail
+        and mean raw RMS over the window.
+        """
+        self._sat_rail_samples = 0
+        self._sat_total_samples = 0
+        base_count = self._callback_count
+        deadline = time.time() + seconds
+        while time.time() < deadline and not shutdown_event.is_set():
+            time.sleep(0.02)
+        frames = max(1, self._callback_count - base_count)
+        rail_pct = 0.0
+        if self._sat_total_samples > 0:
+            rail_pct = (self._sat_rail_samples / self._sat_total_samples) * 100.0
+        recent = list(self._rms_history)[-frames:] or [0.0]
+        rms = float(np.mean(recent))
+        return rail_pct, rms
+
+    def _alsa_card_for_device(self) -> Optional[int]:
+        """Resolve the ALSA card number for the verified device.
+
+        Capture-by-name devices carry "hw:C,D" in their name; otherwise the
+        first card exposing a 'Capture' simple control wins.
+        """
+        m = re.search(r"hw:(\d+),\d+", self._device_name or "")
+        if m:
+            return int(m.group(1))
+        try:
+            with open("/proc/asound/cards", "r", encoding="utf-8") as f:
+                cards = [int(line.split()[0]) for line in f
+                         if line.strip() and line.strip()[0].isdigit()]
+        except Exception:
+            cards = []
+        amixer = shutil.which("amixer")
+        if not amixer:
+            return None
+        for card in cards:
+            try:
+                out = subprocess.run(
+                    [amixer, "-c", str(card), "scontrols"],
+                    capture_output=True, text=True, timeout=5).stdout
+                if "'Capture'" in out:
+                    return card
+            except Exception:
+                continue
+        return None
+
+    def _get_capture_volume(self) -> Optional[float]:
+        """Current source volume as a fraction (1.0 = 100 %). None if
+        no mixer backend is available."""
+        wpctl = shutil.which("wpctl")
+        if wpctl:
+            try:
+                out = subprocess.run(
+                    [wpctl, "get-volume", "@DEFAULT_AUDIO_SOURCE@"],
+                    capture_output=True, text=True, timeout=5).stdout
+                m = re.search(r"Volume:\s*([\d.]+)", out)
+                if m:
+                    return float(m.group(1))
+            except Exception:
+                pass
+        pactl = shutil.which("pactl")
+        if pactl:
+            try:
+                out = subprocess.run(
+                    [pactl, "get-source-volume", "@DEFAULT_SOURCE@"],
+                    capture_output=True, text=True, timeout=5).stdout
+                m = re.search(r"/\s*(\d+)%", out)
+                if m:
+                    return float(m.group(1)) / 100.0
+            except Exception:
+                pass
+        amixer = shutil.which("amixer")
+        card = self._alsa_card_for_device()
+        if amixer and card is not None:
+            try:
+                out = subprocess.run(
+                    [amixer, "-c", str(card), "sget", "Capture"],
+                    capture_output=True, text=True, timeout=5).stdout
+                m = re.search(r"\[(\d+)%\]", out)
+                if m:
+                    return float(m.group(1)) / 100.0
+            except Exception:
+                pass
+        return None
+
+    def _set_capture_volume(self, fraction: float) -> bool:
+        """Set the source volume (0.05–1.0) via wpctl → pactl → amixer.
+        Returns True when a backend accepted the change."""
+        fraction = min(max(fraction, 0.0), 1.0)
+        pct = int(round(fraction * 100))
+        wpctl = shutil.which("wpctl")
+        if wpctl:
+            try:
+                r = subprocess.run(
+                    [wpctl, "set-volume", "@DEFAULT_AUDIO_SOURCE@",
+                     f"{fraction:.2f}"],
+                    capture_output=True, text=True, timeout=5)
+                if r.returncode == 0:
+                    logger.info("[MIXER] wpctl: source volume → %.2f (%d%%)",
+                                fraction, pct)
+                    return True
+            except Exception:
+                pass
+        pactl = shutil.which("pactl")
+        if pactl:
+            try:
+                r = subprocess.run(
+                    [pactl, "set-source-volume", "@DEFAULT_SOURCE@", f"{pct}%"],
+                    capture_output=True, text=True, timeout=5)
+                if r.returncode == 0:
+                    logger.info("[MIXER] pactl: source volume → %d%%", pct)
+                    return True
+            except Exception:
+                pass
+        amixer = shutil.which("amixer")
+        card = self._alsa_card_for_device()
+        if amixer and card is not None:
+            try:
+                r = subprocess.run(
+                    [amixer, "-c", str(card), "sset", "Capture", f"{pct}%"],
+                    capture_output=True, text=True, timeout=5)
+                if r.returncode == 0:
+                    logger.info("[MIXER] amixer card %d: Capture → %d%%",
+                                card, pct)
+                    return True
+            except Exception:
+                pass
+        return False
+
+    def _calibrate_capture_gain(self) -> None:
+        """Step the OS/hardware capture volume DOWN until the RAW signal
+        stops saturating the ADC.
+
+        Runs ONCE at startup, after the stream is verified. Every step is
+        logged; if no mixer backend exists (or saturation persists at the
+        volume floor) a loud manual instruction is printed. The pipeline
+        continues either way — the AGC still guarantees peak ≤ 0.95 — but
+        only a non-saturated ADC delivers a repairable waveform.
+        """
+        rail_pct, rms = self._measure_raw_saturation(self.MIXER_CAL_MEASURE_S)
+        logger.info("[MIXER] Capture-gain calibration: raw RMS=%.3f "
+                    "rail=%.2f%% (targets: RMS≤%.2f, rail≤%.1f%%)",
+                    rms, rail_pct, self.MIXER_CAL_HEALTHY_RMS,
+                    self.MIXER_CAL_HEALTHY_RAIL_PCT)
+
+        for step in range(1, self.MIXER_CAL_MAX_STEPS + 1):
+            if (rail_pct <= self.MIXER_CAL_HEALTHY_RAIL_PCT
+                    and rms <= self.MIXER_CAL_HEALTHY_RMS):
+                if step > 1:
+                    logger.info("[MIXER] ✓ Capture gain healthy after %d "
+                                "reduction(s): raw RMS=%.3f rail=%.2f%%",
+                                step - 1, rms, rail_pct)
+                return
+            if shutdown_event.is_set():
+                return
+            vol = self._get_capture_volume()
+            if vol is None:
+                logger.warning(
+                    "[MIXER] No mixer backend (wpctl/pactl/amixer) — "
+                    "CANNOT reduce capture gain automatically. Raw signal "
+                    "SATURATES the ADC (rail=%.1f%%). Fix manually, e.g.: "
+                    "wpctl set-volume @DEFAULT_AUDIO_SOURCE@ 0.4",
+                    rail_pct)
+                return
+            new_vol = max(self.MIXER_CAL_MIN_VOLUME,
+                          vol * self.MIXER_CAL_REDUCE_FACTOR)
+            logger.warning(
+                "[MIXER] RAW SIGNAL CLIPS AT SOURCE (rail=%.1f%%, RMS=%.2f) "
+                "— ADC overdrive. Reducing capture volume %.0f%% → %.0f%% "
+                "(step %d/%d)",
+                rail_pct, rms, vol * 100, new_vol * 100,
+                step, self.MIXER_CAL_MAX_STEPS)
+            if not self._set_capture_volume(new_vol):
+                logger.warning("[MIXER] Volume reduction failed — keeping "
+                               "current gain (AGC limiter still active)")
+                return
+            time.sleep(0.4)  # let the mixer settle before re-measuring
+            rail_pct, rms = self._measure_raw_saturation(
+                self.MIXER_CAL_MEASURE_S)
+
+        if (rail_pct > self.MIXER_CAL_HEALTHY_RAIL_PCT
+                or rms > self.MIXER_CAL_HEALTHY_RMS):
+            logger.error(
+                "[MIXER] Capture STILL saturates after %d reductions "
+                "(rail=%.1f%%, RMS=%.2f). The hardware mic BOOST is too "
+                "high — reduce it manually: "
+                "amixer -c %s sset 'Internal Mic Boost' 0 && "
+                "amixer -c %s sset Capture 40%%",
+                self.MIXER_CAL_MAX_STEPS, rail_pct, rms,
+                self._alsa_card_for_device() or "?",
+                self._alsa_card_for_device() or "?")
+        else:
+            logger.info("[MIXER] ✓ Capture gain healthy: raw RMS=%.3f "
+                        "rail=%.2f%%", rms, rail_pct)
+
 
     def stop(self) -> None:
+
         """Stop and close the audio stream."""
         if not self._running:
             return

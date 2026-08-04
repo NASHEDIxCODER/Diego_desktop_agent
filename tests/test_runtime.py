@@ -183,9 +183,8 @@ async def test_microphone_backend():
                           f"backend={audio_manager.backend}, running={audio_manager.is_running}")
 
         # Test calibration
-        from voice.stt import calibrate
         tt = time.time()
-        calibrate(duration=1.0)
+        audio_manager.calibrate(duration=1.0)
         cal_time = time.time() - tt
         result.record_stage("calibration", "PASS", cal_time, "Calibration complete")
 
@@ -206,10 +205,16 @@ async def test_audio_capture():
     logger.info("=" * 60)
 
     try:
-        from voice.stt import _capture_audio_sounddevice
+        from voice.audio_manager import audio_manager as _am
+
+        def _capture(duration=1.0):
+            audio_bytes = _am.capture_duration(duration)
+            if audio_bytes is None:
+                return None
+            return audio_bytes, _am.sample_rate
 
         t0 = time.time()
-        capture_result = _capture_audio_sounddevice(duration=1.0)
+        capture_result = _capture(duration=1.0)
         result.duration = time.time() - t0
 
         if capture_result is None:
@@ -264,11 +269,18 @@ async def test_stt():
     logger.info("=" * 60)
 
     try:
-        from voice.stt import listen, _recognize_bytes, _capture_audio_sounddevice
+        from voice.audio_manager import audio_manager as _am
+        from voice.streaming_stt import streaming_stt as _stt
+
+        def _capture(duration=1.0):
+            audio_bytes = _am.capture_duration(duration)
+            if audio_bytes is None:
+                return None
+            return audio_bytes, _am.sample_rate
 
         # Test 1: Capture silence and verify it returns None
         t0 = time.time()
-        capture_result = _capture_audio_sounddevice(duration=1.0)
+        capture_result = _capture(duration=1.0)
         cap_time = time.time() - t0
 
         if capture_result is None:
@@ -280,19 +292,20 @@ async def test_stt():
         result.record_stage("silence_capture", "PASS", cap_time,
                           f"bytes={len(audio_bytes)}, rate={samplerate}")
 
-        # Test 2: Recognize silence bytes
+        # Test 2: Recognize silence bytes with the single Whisper instance
+        _stt.initialize()
         t0 = time.time()
-        text = _recognize_bytes(audio_bytes, samplerate)
+        text = _stt._whisper.transcribe(audio_bytes, samplerate) or None
         rec_time = time.time() - t0
         result.record_stage("silence_recognition", "PASS" if text is None else "WARN", rec_time,
                           f"text={text} (expected None for silence)")
 
-        # Test 3: Verify listen() returns None for silence
+        # Test 3: Verify record_command returns None for silence
         t0 = time.time()
-        listen_result = listen(phrase_time_limit=1.0)
+        listen_result = _am.record_command(timeout=2.0, phrase_limit=1.0)
         listen_time = time.time() - t0
         result.record_stage("listen_silence", "PASS" if listen_result is None else "WARN", listen_time,
-                          f"result={listen_result}")
+                          f"result={'bytes' if listen_result else None}")
 
         result.duration = cap_time + rec_time + listen_time
         result.mark_passed()
@@ -561,7 +574,7 @@ async def test_wake_word_detection():
     logger.info("=" * 60)
 
     try:
-        from voice.wake_word import wake_word_engine
+        from voice.wake_word import verify_wake_transcript
 
         test_phrases = [
             ("hello leo", True),
@@ -575,7 +588,7 @@ async def test_wake_word_detection():
         t0 = time.time()
         for phrase, expected in test_phrases:
             tt = time.time()
-            detected = wake_word_engine.detect(phrase)
+            detected = verify_wake_transcript(phrase)
             dt = time.time() - tt
 
             status = "PASS" if detected == expected else "FAIL"

@@ -1,97 +1,144 @@
 """
-WakeWordEngine — Offline wake word detection for Leo.
+Wake transcript verification — THE single wake-verification implementation.
 
-Provides wake word detection using:
-1. openWakeWord (offline, primary) — managed by WakeModelManager
-2. Fuzzy text matching (fallback for text-based verification)
-3. Porcupine offline engine (if available)
+This module is the SECOND (and final) wake authority. It runs ONLY after
+openWakeWord triggers (see voice/wake_listener.py) and decides whether the
+Whisper transcript of the trigger window actually contains the wake phrase.
 
-The engine never blocks startup. If no wake word engine is available,
-the assistant falls back to push-to-talk mode.
+Matching: RapidFuzz fuzzy ratio + metaphone phonetic equality, blended into
+a per-word confidence against the DISTINCTIVE wake words. Whole-word
+containment of a known variant accepts immediately.
 
-Model selection (see WakeModelManager):
-  WAKE_MODEL   → custom ONNX model → models/wake/*.onnx → bundled model
-  WAKE_PHRASE  → phrase the model is expected to detect ("hello leo")
+Accept:  "hello leo"  "hey leo"  "hello lio"  "hello leyo"  "hello lido"
+         "hi leo"  "ok leo"  "hello leo!"  "hello, leo"  (phonetic near-misses)
+Reject:  "hello"  "hello everyone"  "thank you"  "good morning"
+         "hello video"  "yellow meow"  "<no speech>"
 
-The bundled hey_jarvis model is NEVER hardcoded.
-
-Google SpeechRecognition is NOT used for wake detection.
+Both backends are OPTIONAL and degrade gracefully (difflib fallback).
 """
 
 import difflib
 import logging
-from typing import List, Optional, Callable
-
-import numpy as np
+import re
+from typing import List, Optional, Tuple
 
 from voice.settings import voice_settings
-from voice.wake_model_manager import wake_model_manager
 
 logger = logging.getLogger(__name__)
 
-# Default wake word variants for fuzzy matching.
-# Derived from the configured WAKE_PHRASE (default "hello leo") so the
-# loaded model always matches the phrase the assistant waits for.
-# Includes common mispronunciations (lio) and short forms (leo).
+# ── Matching backends ──────────────────────────────────────────
+# RapidFuzz: fast Levenshtein-based fuzzy ratios (preferred over difflib).
+# jellyfish: metaphone phonetic encoding (offline).
+try:
+    from rapidfuzz import fuzz as _rf_fuzz
+    _HAS_RAPIDFUZZ = True
+except ImportError:
+    _rf_fuzz = None
+    _HAS_RAPIDFUZZ = False
+    logger.debug("[WAKE-VERIFY] rapidfuzz not installed — using difflib fallback")
+
+try:
+    from jellyfish import metaphone as _metaphone
+    _HAS_METAPHONE = True
+except ImportError:
+    _metaphone = None
+    _HAS_METAPHONE = False
+    logger.debug("[WAKE-VERIFY] jellyfish not installed — phonetic matching off")
+
+
+# Accepted wake variants (whole-word containment). The distinctive words
+# are derived from these: every word that is not a generic greeting.
 DEFAULT_WAKE_VARIANTS = [
     "hello leo",
     "hey leo",
-    "ok leo",
     "hi leo",
+    "ok leo",
+    "okay leo",
+    "hello lio",
+    "hello leyo",
+    "hello lido",
     "leo",
     "lio",
-    "hello lio",
 ]
 
-# Minimum similarity for transcript verification. Deliberately strict:
-# the openWakeWord model is the PRIMARY authority — this check only
-# rejects transcripts that clearly do NOT contain the wake phrase
-# (e.g. "thank you very much" → no word similar to "leo"/"lio" → NEVER wakes).
+# Minimum combined confidence for a distinctive-word match. Deliberately
+# strict: the openWakeWord trigger already fired, so this check only needs
+# to reject transcripts that clearly do NOT contain the wake phrase.
 WAKE_VERIFY_MIN_RATIO = 0.80
-# Generic filler words that are NOT distinctive — never used alone to verify.
+
+# Generic greeting words — never distinctive enough to verify on their own.
 _GENERIC_WAKE_WORDS = {"hello", "hey", "ok", "okay", "hi", "ho"}
 
 
 def _normalize_wake_text(text: str) -> str:
     """Normalize a transcript for wake verification."""
-    import re
     return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9 ]+", " ", text.lower())).strip()
 
 
 def _distinctive_wake_words() -> List[str]:
-    """Return the distinctive (non-generic) words across all wake variants.
-
-    These are the words that actually identify the wake phrase — e.g.
-    'leo' and 'lio' — excluding generic greetings like 'hello'/'hey'.
-    """
+    """Return the distinctive (non-generic) words across all wake variants
+    AND the configured WAKE_PHRASE — e.g. 'leo', 'lio', 'leyo', 'lido'."""
     distinctive = set()
-    for variant in DEFAULT_WAKE_VARIANTS:
+    sources = list(DEFAULT_WAKE_VARIANTS) + [voice_settings.wake_phrase or ""]
+    for variant in sources:
         for w in _normalize_wake_text(variant).split():
-            if w not in _GENERIC_WAKE_WORDS:
+            if w and w not in _GENERIC_WAKE_WORDS:
                 distinctive.add(w)
     return sorted(distinctive)
 
 
+def _fuzzy_ratio(a: str, b: str) -> float:
+    """Fuzzy similarity 0..1 (RapidFuzz when available, difflib fallback)."""
+    if _HAS_RAPIDFUZZ:
+        return _rf_fuzz.ratio(a, b) / 100.0
+    return difflib.SequenceMatcher(None, a, b).ratio()
+
+
+def _phonetic_match(a: str, b: str) -> bool:
+    """True when both words share a metaphone phonetic encoding.
+
+    Catches Whisper's phonetically-plausible mishearings of the wake word
+    ('leo', 'lea', 'lio' → metaphone 'L') that edit-distance alone would
+    miss, while staying immune to unrelated words ('please' → 'PLS').
+    """
+    if not _HAS_METAPHONE or len(a) < 2 or len(b) < 2:
+        return False
+    try:
+        ma, mb = _metaphone(a), _metaphone(b)
+        return bool(ma) and ma == mb
+    except Exception:
+        return False
+
+
+def _wake_word_confidence(word: str, distinctive: str) -> Tuple[float, str]:
+    """Combined confidence that `word` IS the distinctive wake word.
+
+    Returns (confidence 0..1, evidence tag). Blends fuzzy edit-distance
+    similarity with phonetic equality; a phonetic hit is strong evidence:
+    0.85 base + 0.15 × fuzzy.
+    """
+    fuzzy = _fuzzy_ratio(word, distinctive)
+    if _phonetic_match(word, distinctive):
+        return max(fuzzy, 0.85 + 0.15 * fuzzy), "phonetic+fuzzy"
+    return fuzzy, "fuzzy"
+
+
 def verify_wake_transcript(text: Optional[str]) -> bool:
     """
-    SECONDARY wake authority: strict transcript verification.
+    THE wake transcript verifier (RapidFuzz + phonetic matching).
 
     Passes ONLY when the normalized transcript EITHER:
       (a) contains a full wake variant as whole words (containment), OR
-      (b) contains a word that is highly similar (ratio >= 0.80) to one
-          of the DISTINCTIVE wake words ('leo', 'lio').
+      (b) contains a word whose combined phonetic+fuzzy CONFIDENCE ≥ 0.80
+          against one of the DISTINCTIVE wake words.
 
-    Fuzzy matching of the whole phrase alone is NEVER enough — that was
-    the hole that let "hello video" (ratio 0.80 vs "hello lio") wake Leo.
-    The openWakeWord model must ALSO have fired (enforced by the caller
-    in listen_wake_continuous, which only runs this check after the
-    model's score crossed the detection threshold).
+    Exact transcript equality is NEVER required — Whisper's phonetically
+    plausible mishearings of the wake word pass, while unrelated speech
+    fails even when it shares the greeting.
 
-    Guarantees:
-      - "thank you very much" → False (no word ≈ "leo"/"lio")
-      - "hello video"         → False ("video" ≈ 0.25 vs "leo"/"lio")
-      - "hello lido"          → True  ("lido" ≈ 0.86 vs "lio")
-      - "hello leo"           → True  (containment)
+    The openWakeWord model must ALSO have fired (enforced by the caller —
+    this function only runs after the model crossed its threshold), so a
+    phonetic near-match cannot wake Leo on its own.
     """
     if not text:
         return False
@@ -108,203 +155,37 @@ def verify_wake_transcript(text: Optional[str]) -> bool:
             continue
         v_words = v.split()
         if all(w in norm_word_set for w in v_words):
-            logger.debug("[WAKE-VERIFY] containment match: variant='%s' text='%s'",
-                         v, norm)
+            logger.debug("[WAKE-VERIFY] ACCEPTED (containment): "
+                         "variant='%s' text='%s'", v, norm)
             return True
 
-    # ── (b) Distinctive-word similarity ──
-    # At least one transcript word must be highly similar to a distinctive
-    # wake word ("leo" / "lio"). This prevents generic-phrase false wakes
-    # like "hello video" that happen to ratio-match the full variant.
+    # ── (b) Distinctive-word confidence (phonetic + fuzzy) ──
+    # At least one transcript word must confidently match a distinctive
+    # wake word. This prevents generic-phrase false accepts like
+    # "hello video" that happen to ratio-match a full variant.
     distinctive = _distinctive_wake_words()
-    best_ratio = 0.0
+    best_conf = 0.0
     best_pair = ("", "")
+    best_evidence = ""
     for tword in norm_words:
         if tword in _GENERIC_WAKE_WORDS:
             continue
         for dword in distinctive:
-            ratio = difflib.SequenceMatcher(None, tword, dword).ratio()
-            if ratio > best_ratio:
-                best_ratio = ratio
+            conf, evidence = _wake_word_confidence(tword, dword)
+            if conf > best_conf:
+                best_conf = conf
                 best_pair = (tword, dword)
-            if ratio >= WAKE_VERIFY_MIN_RATIO:
-                logger.debug(
-                    "[WAKE-VERIFY] word-similarity match: '%s' ≈ '%s' "
-                    "(ratio=%.3f) text='%s'",
-                    tword, dword, ratio, norm)
+                best_evidence = evidence
+            if conf >= WAKE_VERIFY_MIN_RATIO:
+                logger.info(
+                    "[WAKE-VERIFY] ACCEPTED (%s): '%s' ≈ '%s' "
+                    "confidence=%.3f ≥ %.2f text='%s'",
+                    evidence, tword, dword, conf,
+                    WAKE_VERIFY_MIN_RATIO, norm)
                 return True
 
-    logger.info("[WAKE-VERIFY] REJECTED: text='%s' best='%s'≈'%s' ratio=%.3f (< %.2f)",
-                norm, best_pair[0], best_pair[1], best_ratio, WAKE_VERIFY_MIN_RATIO)
+    logger.info("[WAKE-VERIFY] REJECTED: text='%s' best='%s'≈'%s' "
+                "confidence=%.3f (< %.2f) evidence=%s",
+                norm, best_pair[0], best_pair[1], best_conf,
+                WAKE_VERIFY_MIN_RATIO, best_evidence or "none")
     return False
-
-
-class WakeWordEngine:
-    """
-    Wake word detection engine.
-
-    Supports multiple detection methods:
-    - openWakeWord (offline, primary, via WakeModelManager)
-    - Fuzzy text matching (fallback)
-    - Porcupine (offline, if pvporcupine is installed)
-    - Custom callback for user-provided detection
-
-    The engine is stateless and thread-safe.
-    """
-
-    def __init__(self):
-        self._variants: List[str] = list(DEFAULT_WAKE_VARIANTS)
-        self._custom_detector: Optional[Callable[[str], bool]] = None
-        self._porcupine = None
-        self._porcupine_available = False
-        self._openwakeword_available = False
-        self._detection_count = 0
-
-        # Try to load Porcupine for offline detection
-        self._init_porcupine()
-        # openWakeWord is loaded lazily via WakeModelManager (never hardcoded).
-        self._init_openwakeword()
-
-    def _init_porcupine(self) -> None:
-        """Try to initialize Porcupine offline wake word engine."""
-        try:
-            import pvporcupine
-            self._porcupine = pvporcupine.create(
-                keywords=[voice_settings.wake_word],
-                sensitivities=[voice_settings.wake_sensitivity]
-            )
-            self._porcupine_available = True
-            logger.info("Porcupine wake word engine initialized (keyword=%s)",
-                       voice_settings.wake_word)
-        except ImportError:
-            logger.debug("Porcupine not available, using openWakeWord")
-        except Exception as e:
-            logger.debug("Porcupine init failed: %s", e)
-
-    def _init_openwakeword(self) -> None:
-        """
-        Initialize openWakeWord via WakeModelManager.
-
-        The manager resolves the model from WAKE_MODEL → models/wake/*.onnx
-        → bundled model matching WAKE_PHRASE. hey_jarvis is never hardcoded.
-        """
-        ok = wake_model_manager.load()
-        if ok:
-            self._openwakeword_available = True
-        else:
-            self._openwakeword_available = False
-            logger.warning("openWakeWord init failed: %s",
-                          wake_model_manager.load_error or "no model")
-
-    def set_variants(self, variants: List[str]) -> None:
-        """Set wake word variants for fuzzy matching."""
-        self._variants = variants
-
-    def set_custom_detector(self, detector: Callable[[str], bool]) -> None:
-        """Set a custom detection callback."""
-        self._custom_detector = detector
-
-    def detect(self, text: str) -> bool:
-        """
-        Detect if the given text contains the wake word.
-
-        Args:
-            text: Input text to check.
-
-        Returns:
-            True if wake word was detected.
-        """
-        if not text:
-            return False
-
-        # Custom detector
-        if self._custom_detector:
-            try:
-                if self._custom_detector(text):
-                    self._detection_count += 1
-                    return True
-            except Exception as e:
-                logger.warning("Custom wake word detector failed: %s", e)
-
-        # Fuzzy matching
-        text_lower = text.lower().strip()
-        for variant in self._variants:
-            variant_lower = variant.lower().strip()
-            # Exact substring match
-            if variant_lower in text_lower:
-                self._detection_count += 1
-                return True
-            # Fuzzy match for slight mispronunciations
-            ratio = difflib.SequenceMatcher(None, text_lower, variant_lower).ratio()
-            if ratio >= 0.75 and len(text_lower) >= len(variant_lower) * 0.5:
-                self._detection_count += 1
-                return True
-
-        return False
-
-    def detect_audio(self, audio_frame) -> bool:
-        """
-        Detect wake word from raw audio frame using openWakeWord or Porcupine.
-
-        Args:
-            audio_frame: Raw audio data (PCM16, 16kHz, mono).
-
-        Returns:
-            True if wake word was detected.
-        """
-        # Try openWakeWord first (primary) — via WakeModelManager
-        if self._openwakeword_available:
-            try:
-                # Convert int16 to float32 in range [-1, 1] (manager handles both)
-                if isinstance(audio_frame, np.ndarray):
-                    audio_int16 = audio_frame
-                else:
-                    audio_int16 = np.frombuffer(audio_frame, dtype=np.int16)
-                detected = wake_model_manager.detect(audio_int16)
-                if detected:
-                    self._detection_count += 1
-                    model_name, score = wake_model_manager.highest_score()
-                    logger.info("Wake word detected via openWakeWord ('%s', score=%.3f)",
-                               model_name, score)
-                    return True
-            except Exception as e:
-                logger.warning("openWakeWord processing failed: %s", e)
-
-        # Try Porcupine as fallback
-        if self._porcupine_available and self._porcupine is not None:
-            try:
-                result = self._porcupine.process(audio_frame)
-                if result >= 0:
-                    self._detection_count += 1
-                    logger.info("Wake word detected via Porcupine")
-                    return True
-            except Exception as e:
-                logger.warning("Porcupine processing failed: %s", e)
-
-        return False
-
-    @property
-    def detection_count(self) -> int:
-        """Get total number of wake word detections."""
-        return self._detection_count
-
-    @property
-    def has_offline_engine(self) -> bool:
-        """Check if offline wake word engine is available."""
-        return self._openwakeword_available or self._porcupine_available
-
-    def close(self) -> None:
-        """Release wake word engine resources."""
-        if self._porcupine is not None:
-            try:
-                self._porcupine.delete()
-            except Exception:
-                pass
-            self._porcupine = None
-        self._openwakeword_available = False
-        wake_model_manager.close()
-        logger.debug("Wake word engine resources released")
-
-
-# Global singleton
-wake_word_engine = WakeWordEngine()

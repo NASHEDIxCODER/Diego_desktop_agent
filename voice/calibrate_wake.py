@@ -108,11 +108,11 @@ def _select_base_model(wake_phrase):
 def _train_verifier(wake_phrase, base_model_path):
     """Train the openWakeWord custom speaker verifier.
 
-    The bundled openWakeWord base model (e.g. hey_mycroft) does not recognize
-    "hello leo", so train_custom_verifier's default threshold=0.5 for
-    positives yields ZERO features and training fails. This function extracts
-    audio features with threshold=0.0 for ALL clips (positives and
-    negatives), then trains the logistic-regression verifier directly.
+    Feature windows are harvested with the EXACT runtime regime (cold
+    buffer reset → 1280-sample int16 streaming frames → window after every
+    frame) — the same regime debug/retrain_wake_verifier.py uses and
+    validates. Classifier: deterministic logistic regression (C=1.0).
+    Threshold: calibrated from runtime-identical clip max-scores.
     """
     import json
     import pickle
@@ -121,10 +121,10 @@ def _train_verifier(wake_phrase, base_model_path):
     import scipy.io.wavfile as wavfile
     import numpy as np
     from openwakeword import Model as OWWModel
-    from openwakeword.custom_verifier_model import (
-        get_reference_clip_features,
-        train_verifier_model,
-    )
+    from openwakeword.custom_verifier_model import flatten_features
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.pipeline import make_pipeline
+    from sklearn.preprocessing import FunctionTransformer, StandardScaler
 
     outputs = [str(p) for p in sorted(POSITIVES_DIR.glob("*.wav"))]
     negatives = [str(p) for p in sorted(NEGATIVES_DIR.glob("*.wav"))]
@@ -141,119 +141,102 @@ def _train_verifier(wake_phrase, base_model_path):
           f"{len(negatives)} negative clips)...")
     print(f"  Base model: {base_model_stem}")
 
+    FRAME = 1280  # 80 ms @ 16 kHz — the openWakeWord streaming frame
+
+    def _full_reset(m) -> None:
+        pre = m.preprocessor
+        pre.raw_data_buffer.clear()
+        pre.melspectrogram_buffer = np.ones((76, 32))
+        pre.accumulated_samples = 0
+        pre.feature_buffer = pre._get_embeddings(
+            np.zeros(160000).astype(np.int16))
+        m.reset()
+        silence = np.zeros(FRAME, dtype=np.int16)
+        for _ in range(6):  # re-prime the 5-frame zeroed prediction window
+            m.predict(silence)
+
+    def _read_int16(path):
+        sr, dat = wavfile.read(path)
+        if sr != SAMPLE_RATE:
+            from scipy import signal as sc
+            import math
+            up, down = SAMPLE_RATE, sr
+            g = math.gcd(up, down)
+            dat = sc.resample_poly(dat.astype(np.float64), up // g, down // g).astype(np.int16)
+        if dat.dtype != np.int16:
+            dat = np.clip(dat.astype(np.float64), -32768, 32767).astype(np.int16)
+        return dat
+
     try:
         oww = OWWModel(wakeword_model_paths=[str(base_model_path)])
+        feats_ndx = oww.model_inputs[base_model_stem]
 
-        # Extract features with threshold=0.0 for ALL clips so that even
-        # when the base model scores "hello leo" < 0.5, we still get features.
-        print("  Extracting positive features (threshold=0.0)...")
-        pos_feats = []
+        def harvest(path):
+            dat = _read_int16(path)
+            _full_reset(oww)
+            windows = []
+            for i in range(0, len(dat) - FRAME + 1, FRAME):
+                oww.predict(dat[i:i + FRAME])
+                windows.append(oww.preprocessor.get_features(feats_ndx)[0].copy())
+            return windows
+
+        Xs, ys = [], []
         for p in outputs:
-            sr, dat = wavfile.read(p)
-            if sr != SAMPLE_RATE:
-                from scipy import signal as sc
-                import math
-                up, down = SAMPLE_RATE, sr
-                g = math.gcd(up, down)
-                dat = sc.resample_poly(dat.astype(np.float64), up // g, down // g).astype(np.int16)
-            feats = get_reference_clip_features(
-                dat, oww, base_model_stem, threshold=0.0, N=3
-            )
-            if feats.shape[0] > 0 and feats.shape[1] > 0:
-                pos_feats.append(feats)
-        if not pos_feats:
-            logger.error("No positive features extracted — cannot train verifier")
-            return False
-        positive_features = np.vstack(pos_feats)
-
-        print("  Extracting negative features (threshold=0.0)...")
-        neg_feats = []
+            for w in harvest(p):
+                Xs.append(w)
+                ys.append(1)
         for n in negatives:
-            sr, dat = wavfile.read(n)
-            if sr != SAMPLE_RATE:
-                from scipy import signal as sc
-                import math
-                up, down = SAMPLE_RATE, sr
-                g = math.gcd(up, down)
-                dat = sc.resample_poly(dat.astype(np.float64), up // g, down // g).astype(np.int16)
-            feats = get_reference_clip_features(
-                dat, oww, base_model_stem, threshold=0.0, N=1
-            )
-            if feats.shape[0] > 0 and feats.shape[1] > 0:
-                neg_feats.append(feats)
-        if neg_feats:
-            negative_features = np.vstack(neg_feats)
-        else:
-            # Fall back to silence negatives if no negative features were extracted
-            negative_features = np.zeros(
-                (positive_features.shape[0] // 2 or 10,
-                 positive_features.shape[1],
-                 positive_features.shape[2]),
-                dtype=positive_features.dtype,
-            )
+            for w in harvest(n):
+                Xs.append(w)
+                ys.append(0)
+        if not Xs or not any(ys):
+            logger.error("No features extracted — cannot train verifier")
+            return False
+        if not any(not t for t in ys):
+            # No negatives recorded: use the room-tone tail of silence as
+            # negatives is NOT possible — refuse rather than train a
+            # "nonzero = wake" classifier (the original false-wake bug).
+            logger.error("No negative samples — cannot train a safe verifier")
+            return False
+        X = np.array(Xs)
+        y = np.array(ys)
+        print(f"  Windows: total={X.shape[0]} positive={int(y.sum())} "
+              f"negative={int(len(y) - y.sum())}")
 
-        print(f"  Positive features: {positive_features.shape}")
-        print(f"  Negative features: {negative_features.shape}")
-
-        lr_model = train_verifier_model(
-            np.vstack((positive_features, negative_features)),
-            np.array([1] * positive_features.shape[0]
-                     + [0] * negative_features.shape[0]),
+        model = make_pipeline(
+            FunctionTransformer(flatten_features),
+            StandardScaler(),
+            LogisticRegression(random_state=0, max_iter=3000, C=1.0),
         )
-
+        model.fit(X, y)
         with open(verifier_path, "wb") as f:
-            pickle.dump(lr_model, f)
+            pickle.dump(model, f)
 
-        # ── Compute optimal detection threshold (inference-consistent) ──
-        # Score each FULL clip via streaming predict (max score per clip),
-        # exactly as inference does at runtime. This avoids the mismatch
-        # between raw feature-window scores and real-time max scores.
-        def _clip_max_score(path, oww_model, model_key):
-            import scipy.io.wavfile as _wav
-            sr, dat = _wav.read(path)
-            if sr != SAMPLE_RATE:
-                from scipy import signal as sc
-                import math
-                up, down = SAMPLE_RATE, sr
-                g = math.gcd(up, down)
-                dat = sc.resample_poly(dat.astype(np.float64), up // g, down // g).astype(np.int16)
-            audio_float = dat.astype(np.float32) / 32768.0
-            remainder = len(audio_float) % 1280
-            if remainder:
-                audio_float = np.pad(audio_float, (0, 1280 - remainder))
+        # ── Threshold: runtime-identical clip max-scores ──
+        def _clip_max_score(path):
+            dat = _read_int16(path)
+            _full_reset(oww)
             best = 0.0
-            for i in range(0, len(audio_float), 1280):
-                preds = oww_model.predict(audio_float[i:i + 1280])
-                best = max(best, float(preds.get(model_key, 0.0)))
+            for i in range(0, len(dat) - FRAME + 1, FRAME):
+                oww.predict(dat[i:i + FRAME])
+                feats = oww.preprocessor.get_features(feats_ndx)
+                best = max(best, float(model.predict_proba(feats)[0][-1]))
             return best
 
         try:
-            # Attach the freshly trained verifier so scoring matches runtime.
-            oww_scoring = OWWModel(
-                wakeword_model_paths=[str(base_model_path)],
-                custom_verifier_models={base_model_stem: str(verifier_path)},
-                custom_verifier_threshold=0.0,
-            )
-            pos_scores = [_clip_max_score(p, oww_scoring, base_model_stem) for p in outputs]
-            neg_scores = [_clip_max_score(n, oww_scoring, base_model_stem) for n in negatives]
-            pos_min = float(np.min(pos_scores))
-            neg_max = float(np.max(neg_scores))
-            pos_mean = float(np.mean(pos_scores))
-            # Wake-word thresholds favor PRECISION (fewer false positives)
-            # over recall: bias the cut-off toward the positive distribution
-            # (65% of the way from the negative max to the positive min) so
-            # ambient/non-wake audio does not spuriously trigger the assistant.
+            pos_scores = np.array([_clip_max_score(p) for p in outputs])
+            neg_scores = np.array([_clip_max_score(n) for n in negatives])
+            pos_min = float(pos_scores.min())
+            pos_mean = float(pos_scores.mean())
+            neg_max = float(neg_scores.max())
             if pos_min > neg_max:
-                detection_threshold = float(neg_max + 0.65 * (pos_min - neg_max))
+                detection_threshold = float(neg_max + 0.5 * (pos_min - neg_max))
             else:
-                # Distributions overlap (weak/mismatched data). Use a small
-                # margin above the negative max so detection still works, and
-                # warn that more/better training data would improve robustness.
                 detection_threshold = float(neg_max * 1.15)
                 print("  ⚠ WARNING: positive/negative scores overlap "
                       f"(pos_min={pos_min:.3f} <= neg_max={neg_max:.3f}). "
                       "Recording more positives will improve reliability.")
-            detection_threshold = max(0.05, min(0.90, detection_threshold))
+            detection_threshold = max(0.40, min(0.85, detection_threshold))
             print(f"  Verifier max-scores: positives min={pos_min:.3f} mean={pos_mean:.3f}, "
                   f"negatives max={neg_max:.3f}, "
                   f"detection_threshold={detection_threshold:.3f}")
@@ -275,7 +258,9 @@ def _train_verifier(wake_phrase, base_model_path):
         "verifier_threshold": 0.0,
         # Detection threshold computed from verifier score distributions.
         "detection_threshold": detection_threshold,
+        "domain": "int16-16kHz-mono",
         "trained_at": time.time(),
+        "classifier": "logreg(c=1.0, regime-identical-windows)",
     }
     (MODELS_WAKE_DIR / "metadata.json").write_text(
         json.dumps(metadata, indent=2), encoding="utf-8"
