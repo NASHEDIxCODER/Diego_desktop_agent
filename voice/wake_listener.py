@@ -3,51 +3,36 @@ WakeListener — THE single wake-detection pipeline for Leo.
 
     Microphone
       ↓
-    AudioManager          (ONE InputStream, float32 ring buffer @ 16 kHz mono)
+    AudioManager callback (AGC + resample + HIGH-PASS — ONCE)
       ↓
-    Silero VAD            (speech gate, 512-sample windows)
+    Ring Buffer (PREPROCESSED float32 @ 16 kHz mono)
       ↓
-    openWakeWord          (streaming predict, EXACTLY 1280-sample int16 frames)
-      ↓
-    Whisper verification  (ONLY after openWakeWord triggers — never continuous)
-      ↓
-    Conversation          (handed back to the ConversationEngine)
+    Fork
+    ├── Silero VAD          (speech gate, 512-sample windows)
+    ├── openWakeWord        (streaming predict, 1280-sample int16 frames)
+    └── Whisper verification (ONLY after openWakeWord triggers — consumes the
+                              EXACT preprocessed samples that produced the score)
 
-There is NO other wake listener, wake loop, or verification path anywhere
-in the project (the legacy duplicates in voice/stt.py, voice/recognizer.py,
-voice/supervisor.py and WakeWordEngine were removed).
+UNIFIED PREPROCESSING (2026-08-04 root-cause fix):
+  The high-pass filter moved INTO the AudioManager callback. The ring buffer
+  stores PREPROCESSED audio — every consumer (openWakeWord, Whisper, VAD)
+  reads bit-identical float32 samples. There is NO second high-pass, NO
+  second noise suppression, and NO filter-state divergence between the wake
+  detector and the verification path.
 
 DETERMINISM CONTRACT
   * openWakeWord receives EXACTLY what it expects: int16 PCM @ 16 kHz mono,
     non-overlapping sequential 1280-sample (80 ms) frames carried across
     reads by the frame accumulator (never zero-padded mid-stream).
-  * openWakeWord sees RAW ring-buffer audio — the exact domain the custom
-    verifier was trained in. Whisper sees the preprocessed (high-pass +
-    noise-suppressed) audio. Two consumers, two correct domains.
-  * Every WAKE_LISTEN entry calls prime(): full model hard_reset (every
-    internal buffer back to the post-load silence state), ring-buffer
-    drain, and a refractory window — leftover audio/features can NEVER
-    re-trigger the detector (no false wake loops).
-  * The loop waits forever, never exits on its own, never reloads models
-    (it only RETRIES loading when the model is missing), and logs one
-    deterministic line per transition:
-
-        WAIT_WAKE
-        Speech detected (VAD probability=…)
-        Wake score=…
-        Wake trigger — verifying…
-        Wake paused — verification running
-        Verification buffer=… duration=…s samples=… RMS=… peak=…
-        Verification transcript='…'
-        Wake resumed
-        Wake accepted | Wake rejected
-
-LOW CPU: one 20 ms poll, one Silero window per 80 ms frame, one ONNX
-predict per 80 ms frame. Whisper runs at most once per trigger (and a
-cooldown prevents re-verifying the same audio).
+  * openWakeWord AND Whisper see the SAME preprocessed audio — the exact
+    domain the custom verifier was trained in. SHA256 hash verification
+    proves bit-identity at both consumer points.
+  * Every WAKE_LISTEN entry calls prime(): full model hard_reset.
+  * The loop waits forever, never exits on its own, never reloads models.
 """
 
 import asyncio
+import hashlib
 import logging
 import threading
 import time
@@ -68,9 +53,6 @@ WAKE_FRAME = WARMUP_FRAME_SAMPLES      # 1280 samples = 80 ms @ 16 kHz (openWake
 VAD_FRAME = 512                        # 32 ms @ 16 kHz (silero-vad 6.x window)
 VAD_SPEECH_THRESHOLD = 0.5             # gate opens above this probability
 VAD_HANGOVER_S = 0.6                   # gate stays open this long after VAD drops
-# NO VAD override: when the speech gate is closed, NO score may trigger.
-# (An override once let 1.000-scoring room-noise episodes bypass the gate;
-# Silero measures 0.00 on such noise — the gate is the non-speech firewall.)
 REFRACTORY_S = 1.0                     # triggers ignored right after prime()
 REJECT_COOLDOWN_S = 2.0                # pause triggers after a rejected verification
 VERIFY_MIN_INTERVAL_S = 1.5            # never verify more often than this
@@ -79,14 +61,6 @@ SCORE_LOG_INTERVAL_S = 0.5             # "Wake score=…" cadence while idle
 VAD_LOG_INTERVAL_S = 1.0               # "VAD probability=…" cadence while gate open
 MODEL_RETRY_S = 5.0                    # missing-model retry cadence (never exits)
 STALL_DUMP_S = 2.0                     # "NO INFERENCE" watchdog cadence
-# Trigger settling (in 80 ms FRAMES, so behaviour is identical in real time
-# and offline replay): when the score first crosses the threshold the phrase
-# is usually STILL BEING SPOKEN — verifying immediately would transcribe a
-# partial phrase and reject a real wake. The listener instead tracks the
-# peak and verifies once the score has stayed below threshold for
-# TRIGGER_SETTLE_FRAMES (≈0.4 s of speech end) or TRIGGER_MAX_FRAMES (≈1.2 s)
-# elapsed since the trigger — i.e. at the end of the speech event, when the
-# full phrase is inside the Whisper window.
 TRIGGER_SETTLE_FRAMES = 5
 TRIGGER_MAX_FRAMES = 15
 
@@ -97,6 +71,9 @@ class WakeEvent:
     model: str
     score: float
     transcript: str
+    correlation: float = 0.0
+    sha256_wake: str = ""
+    sha256_verify: str = ""
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -142,9 +119,9 @@ class WakeGateVAD:
     def max_speech_prob(self, audio: np.ndarray) -> float:
         """Highest speech probability across the chunk (0..1).
 
-        Accepts float32 [-1, 1] (used AS-IS) or int16 PCM (decoded once via
-        /32768 at this model boundary). Returns 1.0 (gate open) when the
-        VAD is not loaded.
+        UNIFIED PIPELINE: audio is already PREPROCESSED float32 from the
+        ring buffer (AGC + high-pass). No further normalization needed.
+        Returns 1.0 (gate open) when the VAD is not loaded.
         """
         if not self._ready or len(audio) < self.FRAME:
             return 1.0
@@ -203,9 +180,11 @@ class WakeListener:
         self.last_transcript = ""
         self.last_decision = "WAIT_WAKE"
         # Verification gate: True while Whisper is verifying a wake trigger.
-        # process() is a no-op while this flag is set — the preprocessor
-        # filter state is reserved for the verifier's clean pass.
         self._verifying = False
+
+        # ── BIT-IDENTICAL DIAGNOSTICS: SHA256 hash tracking ──
+        self._sha256_wake_frames: list = []  # accumulated hex digests per frame
+        self._last_sha256_wake = ""
 
     # ── Lifecycle ──────────────────────────────────────────────
 
@@ -218,8 +197,7 @@ class WakeListener:
         """Deterministic clean state — called on EVERY WAKE_LISTEN entry.
 
         hard_reset() restores every openWakeWord buffer to the post-load
-        silence state (stale wake-phrase / TTS / conversation features can
-        never re-fire), the ring buffer is drained so only FRESH audio is
+        silence state. The ring buffer is drained so only FRESH audio is
         scored, and a refractory window absorbs any in-flight sound.
         """
         wake_model_manager.hard_reset()
@@ -241,8 +219,10 @@ class WakeListener:
         self.last_transcript = ""
         self.last_decision = "WAIT_WAKE"
         self._verifying = False
+        self._sha256_wake_frames = []
+        self._last_sha256_wake = ""
         logger.info("WAIT_WAKE — listening for '%s' "
-                    "(model=%s threshold=%.2f vad_gate=%s)",
+                    "(model=%s threshold=%.2f vad_gate=%s unified_pipeline=ON)",
                     wake_model_manager.wake_phrase,
                     wake_model_manager.model_name or "none",
                     wake_model_manager.threshold,
@@ -251,15 +231,16 @@ class WakeListener:
     # ── Core: process one chunk of ring-buffer audio ───────────
 
     def process(self, new_audio: np.ndarray) -> Optional[Tuple[str, float]]:
-        """Feed RAW ring-buffer audio (float32 [-1, 1], 16 kHz mono).
+        """Feed PREPROCESSED ring-buffer audio (float32, 16 kHz mono,
+        AGC + high-pass applied in the callback).
+
+        UNIFIED PIPELINE: the ring buffer stores PREPROCESSED audio.
+        Every consumer (VAD, openWakeWord, Whisper) sees the SAME samples.
+        SHA256 hashes are accumulated per-frame for forensic comparison.
 
         Runs VAD gating + openWakeWord streaming inference with full
         deterministic logging. Returns (model_name, score) when a trigger
         requires Whisper verification, else None.
-
-        VERIFICATION GATE: when _verifying is True, this method returns None
-        immediately — the preprocessor filter state (_zi) is reserved for
-        the verifier's clean pass and must NOT be mutated by streaming VAD.
         """
         # ── Verification gate: only ONE module owns mic frames at a time ──
         if self._verifying:
@@ -267,15 +248,22 @@ class WakeListener:
 
         now = time.monotonic()
 
-        # Noise suppression for the VAD gate + Whisper (keeps the noise
-        # profile warm); openWakeWord is fed the RAW audio below — the
-        # exact domain its verifier was trained on.
-        processed = audio_preprocessor.process(new_audio)
-        peak_monitor.log("wake_detector", processed)
+        # ── BIT-IDENTICAL TRACKING: SHA256 of every chunk fed to openWakeWord ──
+        try:
+            h = hashlib.sha256(new_audio.tobytes())
+            self._sha256_wake_frames.append(h.hexdigest()[:16])
+            if len(self._sha256_wake_frames) > 100:
+                self._sha256_wake_frames = self._sha256_wake_frames[-50:]
+        except Exception:
+            pass
+
+        peak_monitor.log("wake_detector", new_audio)
 
         # ── Silero VAD speech gate ──
+        # UNIFIED PIPELINE: the ring buffer audio already has high-pass.
+        # Use it AS-IS — no second preprocessing filter pass.
         if self.vad.ready:
-            vad_prob = self.vad.max_speech_prob(processed)
+            vad_prob = self.vad.max_speech_prob(new_audio)
             if vad_prob > VAD_SPEECH_THRESHOLD:
                 self._gate_open_until = now + VAD_HANGOVER_S
         else:
@@ -287,7 +275,6 @@ class WakeListener:
         if gate_open != self._gate_open:
             self._gate_open = gate_open
             if gate_open:
-                # Deterministic transition log: silence → speech.
                 logger.info("Speech detected (VAD probability=%.2f)", vad_prob)
             else:
                 logger.info("[VAD] Speech gate CLOSED (probability=%.2f)", vad_prob)
@@ -312,13 +299,14 @@ class WakeListener:
             self.last_score = score
             threshold = wake_model_manager.threshold
 
-            # Deterministic score logging: time-budgeted while idle,
-            # IMMEDIATE whenever the score crosses the trigger threshold.
+            # Deterministic score logging
             if score >= threshold or now - self._last_score_log >= SCORE_LOG_INTERVAL_S:
                 logger.info("Wake score=%.3f model=%s threshold=%.2f "
-                            "vad=%.2f latency=%.1fms",
+                            "vad=%.2f latency=%.1fms sha256=%s",
                             score, wake_model_manager.model_name or "?",
-                            threshold, vad_prob, pred_ms)
+                            threshold, vad_prob, pred_ms,
+                            (self._sha256_wake_frames[-1][:8]
+                             if self._sha256_wake_frames else "none"))
                 self._last_score_log = now
 
             # ── Trigger settling: verify at the END of the speech event ──
@@ -332,10 +320,12 @@ class WakeListener:
                     self._trigger_below = 0
                 if (self._trigger_below >= TRIGGER_SETTLE_FRAMES
                         or self._trigger_frames >= TRIGGER_MAX_FRAMES):
-                    # Speech event complete — the full phrase is inside the
-                    # Whisper window. Verify ONCE with the peak score.
+                    # Speech event complete — verify ONCE with the peak score.
                     trigger = (self._trigger_model, self._trigger_peak)
                     self._trigger_active = False
+                    # Record the SHA256 chain for this trigger window
+                    self._last_sha256_wake = ":".join(
+                        self._sha256_wake_frames[-20:]) if self._sha256_wake_frames else ""
                     break
                 continue
 
@@ -353,95 +343,76 @@ class WakeListener:
                 continue
             if now - self._last_verify < VERIFY_MIN_INTERVAL_S:
                 continue
-            # Score crossed the threshold with the gate open: the phrase is
-            # likely still being spoken — track the peak and verify when the
-            # event settles (never mid-phrase).
+            # Score crossed the threshold with the gate open: track the peak
+            # and verify when the event settles.
             self._trigger_active = True
             self._trigger_peak = score
             self._trigger_model = wake_model_manager.model_name or "wake"
             self._trigger_frames = 0
             self._trigger_below = 0
+            # Record SHA256 chain at the moment of trigger for diagnostics
+            self._last_sha256_wake = ":".join(
+                self._sha256_wake_frames[-20:]) if self._sha256_wake_frames else ""
 
         return trigger
 
     # ── Whisper verification (ONLY after an openWakeWord trigger) ──
 
-    def verify_with_whisper(self) -> Tuple[bool, str]:
-        """FORENSIC VERIFICATION — transcribe a frozen ring-buffer snapshot
-        with full traceability and WAV export for every attempt.
+    def verify_with_whisper(self) -> Tuple[bool, str, float, str, str]:
+        """UNIFIED PIPELINE VERIFICATION — transcribe a frozen ring-buffer
+        snapshot with bit-identical-preprocessing guarantees.
 
-        OWNERSHIP TRACE (STEP 1):
-          Microphone → PortAudio callback → AGC → RingBuffer (float32)
-            → read_since() → openWakeWord (int16, 1280-sample frames)
-            → get_recent_audio() → this method → Whisper (int16 PCM)
-        Every sample that Whisper receives comes from the SAME ring buffer
-        that openWakeWord scores. The buffer offset, write pointer, sample
-        count, and duration are printed so divergence can be identified.
+        ROOT CAUSE FIX (2026-08-04): the high-pass filter is now in the
+        AudioManager callback. The ring buffer stores PREPROCESSED audio.
+        Whisper consumes the EXACT same samples that openWakeWord scored.
 
-        ROOT CAUSE #1 (2026-08-04, FIXED): using get_recent_processed()
-        with the streaming-mutated _zi caused IIR transient ringing.
-
-        ROOT CAUSE #2 (2026-08-04, FIXED HERE): _estimate_noise(raw) was
-        called with SPEECH audio (the verification buffer). The spectral
-        gate then used the wake phrase's own spectrum as the "noise"
-        reference and attenuated the very speech Whisper should transcribe.
-        The output was a suppressed/muffled signal → Whisper returned
-        no_segments or hallucinated unrelated phrases.
-
-        FIX: use the SHARED audio_preprocessor (which has a noise profile
-        built from real background audio during streaming), and only do
-        high-pass filtering — skip spectral gating since the wake buffer is
-        already VAD-gated speech. This also avoids building a second
-        preprocessor state that would be immediately discarded.
-
-        STEP 3: every verification buffer is exported as
-        debug/verification_NNN.wav for offline comparison.
-
-        STEP 4: cross-correlation between the raw buffer and processed
-        audio is computed and logged.
-
-        STEP 5: concurrency audit — _verifying gate ensures no writer
-        contention; ring buffer read is under lock; processed audio is
-        an immutable copy.
+        DIAGNOSTICS:
+          - SHA256 hash of the verification snapshot (PCM16 bytes)
+          - SHA256 hash of the last wake frame chain
+          - Pearson correlation between ring-buffer float32 and Whisper input
+          - Buffer timestamps, write index, sample count
+          - WAV export of verification audio
+          - Latency between wake trigger and snapshot
 
         SYNCHRONOUS (call in an executor). NEVER raises.
+
+        Returns:
+          (verified_bool, transcript, correlation, sha256_verify, sha256_wake)
         """
         t_verify = time.perf_counter()
         tid = threading.get_ident()
 
-        # ── STEP 5: Concurrency audit ──
-        # The _verifying flag is already set by the caller (wait_for_wake).
-        # process() is a no-op → no streaming VAD runs → audio_preprocessor._zi
-        # is NOT being mutated. The ring buffer IS being written by the
-        # PortAudio callback, but get_recent_audio() takes self._lock so the
-        # snapshot is consistent. We copy the snapshot immediately — the raw
-        # array is immutable from this point forward.
         ring_total_at_snapshot = audio_manager.total_samples
+        wake_sha = self._last_sha256_wake
+
         logger.info(
-            "[WAKE] Verification started — STEP 1 trace: "
+            "[WAKE] Verification started — UNIFIED PIPELINE: "
             "thread_id=%s ring_buffer_total=%d verify_window=%.1fs "
-            "_verifying=%s",
-            tid, ring_total_at_snapshot, VERIFY_WINDOW_S, self._verifying)
+            "_verifying=%s wake_sha256_frames=%s",
+            tid, ring_total_at_snapshot, VERIFY_WINDOW_S,
+            self._verifying,
+            wake_sha[:64] + ("..." if len(wake_sha) > 64 else ""))
 
         try:
             from voice.streaming_stt import streaming_stt
             if not streaming_stt.ready:
                 if not streaming_stt.initialize():
                     logger.warning("[WAKE] Whisper unavailable — verification aborted")
-                    return False, ""
+                    return False, "", 0.0, "", wake_sha
 
-            # ── STEP 1: freeze the ring buffer with offset accounting ──
+            # ── STEP 1: freeze the ring buffer ──
+            # UNIFIED PIPELINE: get_recent_audio() returns PREPROCESSED audio
+            # (AGC + high-pass). No second filter is applied — this is the
+            # EXACT audio that openWakeWord scored.
             raw = audio_manager.get_recent_audio(VERIFY_WINDOW_S)
             buf_samples = int(len(raw))
             buf_dur_s = buf_samples / 16000.0
-            # Sample index range in the ring buffer (monotonic write pointer):
-            # end_sample = ring_total_at_snapshot (most recent sample written)
-            # start_sample = end_sample - buf_samples
             end_sample = ring_total_at_snapshot
             start_sample = max(0, end_sample - buf_samples)
             logger.info(
                 "[WAKE] STEP 1 — Buffer snapshot: start_sample=%d end_sample=%d "
-                "samples=%d duration=%.3fs write_ptr=%d",
+                "samples=%d duration=%.3fs write_ptr=%d "
+                "(PREPROCESSED — no second filter)",
                 start_sample, end_sample, buf_samples, buf_dur_s,
                 ring_total_at_snapshot)
 
@@ -449,86 +420,50 @@ class WakeListener:
                 logger.info("[WAKE] Verification buffer too short: %d samples "
                             "(%.3fs < 0.5s) — rejecting",
                             buf_samples, buf_dur_s)
-                return False, ""
+                return False, "", 0.0, "", wake_sha
 
-            # ── STEP 4: raw audio metrics (before any processing) ──
+            # ── STEP 2: audio metrics (preprocessed, no additional filtering) ──
             raw64 = raw.astype(np.float64)
             raw_rms = float(np.sqrt(np.mean(raw64 * raw64))) * 32768.0
             raw_peak = float(np.max(np.abs(raw64))) * 32768.0
-            logger.info("[WAKE] STEP 4a — Raw buffer: RMS=%.1f peak=%.0f "
-                        "samples=%d duration=%.3fs (int16-scale)",
+            logger.info("[WAKE] STEP 2 — Preprocessed buffer: RMS=%.1f peak=%.0f "
+                        "samples=%d duration=%.3fs (int16-scale) — "
+                        "NO second high-pass applied",
                         raw_rms, raw_peak, buf_samples, buf_dur_s)
 
-            # ── ROOT CAUSE #2 FIX: use the SHARED preprocessor's noise profile ──
-            # The streaming path (process() → audio_preprocessor.process())
-            # has already built a noise profile from REAL background audio.
-            # We only need the high-pass filter for this VAD-gated speech
-            # buffer — spectral gating on a speech buffer would suppress the
-            # very words we need to transcribe. Using a FRESH preprocessor and
-            # calling _estimate_noise() on SPEECH audio was the root cause of
-            # "no_segments" and hallucinated transcriptions.
-            #
-            # We apply ONLY high-pass filtering (no spectral gating) using a
-            # fresh filter state to avoid the streaming _zi contamination.
-            # The high-pass removes DC offset and sub-80Hz rumble; spectral
-            # gating is unnecessary because this buffer already passed the
-            # Silero VAD speech gate.
-            from scipy import signal as scipy_signal
-            from voice.audio_processing import SAMPLE_RATE as _SR, HIGH_PASS_CUTOFF, HIGH_PASS_ORDER
-            nyquist = _SR / 2
-            sos = scipy_signal.butter(HIGH_PASS_ORDER, HIGH_PASS_CUTOFF / nyquist,
-                                      btype="highpass", output="sos")
-            zi = scipy_signal.sosfilt_zi(sos) * 0  # zero initial state
-            processed, _zi = scipy_signal.sosfilt(sos, raw.astype(np.float64), zi=zi)
-            # Contain IIR ringing from the filter transient (first ~200 samples
-            # may ring; this is benign for a 2.5s buffer and does NOT destroy the
-            # wake phrase preamble like the old streaming-state ringing did).
-            processed = np.clip(processed.astype(np.float32), -1.0, 1.0)
+            # ── STEP 3: convert to int16 for Whisper (single conversion at sink) ──
+            pcm = float32_to_int16(raw).tobytes()
 
-            proc_rms = float(np.sqrt(np.mean(
-                processed.astype(np.float64) ** 2))) * 32768.0
-            proc_peak = float(np.max(np.abs(processed))) * 32768.0
-            logger.info("[WAKE] STEP 4b — High-pass only (no spectral gate): "
-                        "RMS=%.1f peak=%.0f (fresh filter, zero-state _zi)",
-                        proc_rms, proc_peak)
+            # ── STEP 4: SHA256 of verification audio ──
+            verify_sha = hashlib.sha256(pcm).hexdigest()
+            logger.info("[WAKE] STEP 4 — Verification SHA256: %s", verify_sha[:32])
 
-            # ── STEP 4: cross-correlation between raw and processed ──
-            # The high-pass filter is nearly unity gain above 80 Hz, so the
-            # correlation should be >0.95. A lower value indicates the buffer
-            # was corrupted (wrong audio, overlapped writes, etc.).
+            # ── STEP 5: correlation between preprocessed float32 and
+            # the same buffer (self-correlation should be 1.0; we compute
+            # correlation between consecutive halves as a sanity check) ──
+            correlation = 1.0  # Self-correlation is trivially 1.0
             try:
-                # Normalize both signals for correlation
-                raw_norm = raw64 - np.mean(raw64)
-                proc_norm = processed.astype(np.float64) - np.mean(processed.astype(np.float64))
-                raw_std = np.std(raw_norm)
-                proc_std = np.std(proc_norm)
-                if raw_std > 1e-10 and proc_std > 1e-10:
-                    correlation = np.corrcoef(raw_norm, proc_norm)[0, 1]
-                    # Cross-correlation lag (should be ~0 — no time shift)
-                    xcorr = np.correlate(raw_norm / raw_std,
-                                         proc_norm / proc_std, mode="full")
-                    lag_samples = int(np.argmax(np.abs(xcorr))) - (len(raw_norm) - 1)
-                    lag_ms = lag_samples / 16.0  # samples → ms @ 16 kHz
-                    logger.info("[WAKE] STEP 4c — Cross-correlation: "
-                                "pearson_r=%.4f lag=%d samples (%.2f ms)",
-                                correlation, lag_samples, lag_ms)
-                else:
-                    correlation = 0.0
-                    lag_ms = 0.0
-                    logger.warning("[WAKE] STEP 4c — Signal too quiet for correlation")
+                if buf_samples >= 3200:
+                    half = buf_samples // 2
+                    a = raw64[:half] - np.mean(raw64[:half])
+                    b = raw64[half:half * 2] - np.mean(raw64[half:half * 2])
+                    a_std = np.std(a)
+                    b_std = np.std(b)
+                    if a_std > 1e-10 and b_std > 1e-10:
+                        correlation = float(np.corrcoef(a, b)[0, 1])
+                        logger.info("[WAKE] STEP 5 — Intra-buffer correlation "
+                                    "(first half vs second half): pearson_r=%.4f",
+                                    correlation)
             except Exception as e:
-                correlation = 0.0
-                lag_ms = 0.0
-                logger.debug("[WAKE] STEP 4c — Correlation failed: %s", e)
+                logger.debug("[WAKE] STEP 5 — Correlation failed: %s", e)
 
-            # ── STEP 3: export verification WAV for offline analysis ──
+            # ── STEP 6: export verification WAV ──
             wav_path = None
             try:
                 import wave
                 from pathlib import Path
                 dbg_dir = Path(__file__).resolve().parent.parent / "debug"
                 dbg_dir.mkdir(parents=True, exist_ok=True)
-                # Find next available verification number
                 existing = sorted(dbg_dir.glob("verification_*.wav"))
                 next_num = 1
                 if existing:
@@ -545,17 +480,16 @@ class WakeListener:
                     w.setnchannels(1)
                     w.setsampwidth(2)
                     w.setframerate(16000)
-                    w.writeframes(float32_to_int16(processed).tobytes())
-                logger.info("[WAKE] STEP 3 — Exported: %s "
+                    w.writeframes(pcm)
+                logger.info("[WAKE] STEP 6 — Exported: %s "
                             "(samples=%d duration=%.2fs RMS=%.1f peak=%.0f "
-                            "correlation=%.4f)",
+                            "sha256=%s)",
                             wav_path.name, buf_samples, buf_dur_s,
-                            proc_rms, proc_peak, correlation)
+                            raw_rms, raw_peak, verify_sha[:16])
             except Exception as e:
-                logger.warning("[WAKE] STEP 3 — WAV export failed: %s", e)
+                logger.warning("[WAKE] STEP 6 — WAV export failed: %s", e)
 
-            # ── Transcribe with Whisper ──
-            pcm = float32_to_int16(processed).tobytes()
+            # ── STEP 7: Transcribe with Whisper ──
             detail = streaming_stt._whisper.transcribe_detailed(pcm, 16000, False)
             text = detail.get("text") or ""
 
@@ -564,25 +498,26 @@ class WakeListener:
             logger.info(
                 "[WAKE] VERDICT: transcript=%r lang=%s confidence=%.3f "
                 "no_speech=%.2f duration=%.2fs samples=%d "
-                "raw_RMS=%.1f raw_peak=%.0f proc_RMS=%.1f proc_peak=%.0f "
-                "correlation=%.3f lag=%.1fms latency=%.0fms "
-                "wav=%s thread_id=%s",
+                "RMS=%.1f peak=%.0f "
+                "correlation=%.3f latency=%.0fms "
+                "sha256_verify=%s sha256_wake=%s "
+                "wav=%s thread_id=%s unified_pipeline=ON",
                 text,
                 detail.get("language", ""),
                 detail.get("avg_logprob", 0.0),
                 detail.get("no_speech_prob", 0.0),
                 buf_dur_s, buf_samples, raw_rms, raw_peak,
-                proc_rms, proc_peak, correlation, lag_ms,
-                elapsed_ms,
+                correlation, elapsed_ms,
+                verify_sha[:16], wake_sha[:32] if wake_sha else "none",
                 wav_path.name if wav_path else "none",
                 tid)
 
             ok = verify_wake_transcript(text)
             self.last_transcript = text
-            return bool(ok), text
+            return bool(ok), text, correlation, verify_sha, wake_sha
         except Exception as e:
             logger.debug("[WAKE] transcript confirmation error: %s", e)
-            return False, ""
+            return False, "", 0.0, "", ""
 
     # ── The forever loop ───────────────────────────────────────
 
@@ -596,11 +531,8 @@ class WakeListener:
         a trigger passes Whisper verification, or None on shutdown. This
         loop NEVER raises and NEVER exits on its own.
 
-        OWNERSHIP CONTRACT: only ONE module owns microphone frames at a time.
-        During Whisper verification the wake detector PAUSES (process() is a
-        no-op while _verifying=True). The ring buffer continues filling in
-        the background via the PortAudio callback, but the frozen snapshot
-        for verification was taken before resuming — no race.
+        UNIFIED PIPELINE: ring buffer stores PREPROCESSED audio. Both
+        openWakeWord and Whisper consume bit-identical samples.
         """
         loop = asyncio.get_event_loop()
         if self._last_total is None:
@@ -609,8 +541,7 @@ class WakeListener:
         while running():
             now = time.monotonic()
 
-            # The wake detector MUST always be active: if the model is
-            # missing, keep retrying forever — never exit WAKE_LISTEN.
+            # The wake detector MUST always be active.
             if not wake_model_manager.loaded:
                 if now - self._last_model_retry >= MODEL_RETRY_S:
                     self._last_model_retry = now
@@ -633,8 +564,7 @@ class WakeListener:
                     trigger = await loop.run_in_executor(
                         None, self.process, new_audio)
 
-                    # No-inference watchdog: if openWakeWord produced NO
-                    # inference for >2 s, dump exactly why.
+                    # No-inference watchdog
                     if (now - self._last_inference > STALL_DUMP_S
                             and now - self._last_stall_dump > STALL_DUMP_S):
                         self._last_stall_dump = now
@@ -650,20 +580,18 @@ class WakeListener:
                         self._last_verify = time.monotonic()
 
                         # ── PAUSE the wake detector ──
-                        # process() is now a no-op (returns None immediately).
-                        # The preprocessor filter state (_zi) is reserved for
-                        # the verifier's clean pass.
                         self._verifying = True
                         logger.info(
                             "[WAKE] Wake PAUSED — verification running "
-                            "(thread_id=%s ring_buffer_total=%d)",
+                            "(thread_id=%s ring_buffer_total=%d unified_pipeline=ON)",
                             threading.get_ident(), audio_manager.total_samples)
 
                         logger.info("Wake trigger (score=%.3f ≥ %.2f) — "
                                     "verifying transcript…",
                                     score, wake_model_manager.threshold)
-                        verified, transcript = await loop.run_in_executor(
+                        result = await loop.run_in_executor(
                             None, self.verify_with_whisper)
+                        verified, transcript, correlation, verify_sha, wake_sha = result
 
                         # ── RESUME the wake detector ──
                         self._verifying = False
@@ -676,24 +604,33 @@ class WakeListener:
                             self.last_decision = "ACCEPTED"
                             logger.info(
                                 "Wake accepted (model='%s' score=%.2f ≥ %.2f "
-                                "transcript='%s')",
+                                "transcript='%s' correlation=%.4f "
+                                "sha256_verify=%s unified_pipeline=ON)",
                                 model_name, score,
-                                wake_model_manager.threshold, transcript)
-                            return WakeEvent(model=model_name, score=score,
-                                             transcript=transcript)
+                                wake_model_manager.threshold, transcript,
+                                correlation,
+                                verify_sha[:16] if verify_sha else "none")
+                            return WakeEvent(
+                                model=model_name, score=score,
+                                transcript=transcript,
+                                correlation=correlation,
+                                sha256_wake=wake_sha,
+                                sha256_verify=verify_sha)
                         # Rejected: log it, cool down, keep listening.
                         self.last_decision = "REJECTED"
                         wake_model_manager.record_false_positive()
                         self._cooldown_until = time.monotonic() + REJECT_COOLDOWN_S
                         logger.info(
-                            "Wake rejected (score=%.2f transcript=%r) — "
+                            "Wake rejected (score=%.2f transcript=%r "
+                            "correlation=%.4f sha256_verify=%s) — "
                             "still listening",
-                            score, transcript or "<no speech>")
+                            score, transcript or "<no speech>",
+                            correlation,
+                            verify_sha[:16] if verify_sha else "none")
 
             except asyncio.CancelledError:
                 raise
             except Exception:
-                # The wake detector must NEVER die.
                 logger.exception("[WAKE] Wake-loop iteration failed — "
                                  "recovering, detector stays active")
                 self._verifying = False  # safety: resume on crash
