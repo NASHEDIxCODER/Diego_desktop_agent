@@ -87,10 +87,10 @@ async def run_e2e():
         return False
 
     # ── 3. Wake Detection (simulated) ──────────────────
-    from voice.wake_word import wake_word_engine
+    from voice.wake_word import verify_wake_transcript
     t0 = time.time()
     wake_text = "hello leo"
-    wake_detected = wake_word_engine.detect(wake_text)
+    wake_detected = verify_wake_transcript(wake_text)
     record_stage("wake_detection", "PASS" if wake_detected else "FAIL",
                  time.time() - t0, f"phrase='{wake_text}'")
 

@@ -1,27 +1,29 @@
 """
 Voice subsystem for Leo Desktop Assistant.
 
-Production-grade voice pipeline with:
-- VoiceSupervisor: State machine managing the entire voice lifecycle
-- MicrophoneManager: Auto-recovery, hotplug support
-- WakeWordEngine: Offline wake word detection
-- SpeechRecognizer: STT with fallback chain
-- SpeechSynthesizer: TTS with multi-backend (ALSA/PulseAudio/PipeWire/JACK)
-- AudioDeviceManager: Auto-detect best audio backend
-- NoiseCalibrator: Persist noise profile to disk
-- VoiceSettings: Runtime configuration
+THE SINGLE VOICE PIPELINE (exactly one implementation of each stage):
 
-Architecture:
-  One crash never terminates the assistant.
-  Every component is isolated with its own error handling.
-  The VoiceSupervisor orchestrates the state machine.
+    Microphone
+      ↓
+    AudioManager            voice/audio_manager.py   (ONE InputStream,
+                                                      verified mic, ring buffer)
+      ↓
+    WakeListener            voice/wake_listener.py   (Silero VAD gate →
+                                                      openWakeWord streaming)
+      ↓
+    Whisper verification    voice/wake_word.py       (verify_wake_transcript —
+                                                      RapidFuzz + phonetic)
+      ↓
+    Conversation            core/conversation_engine.py
+
+Supporting modules:
+  - WakeModelManager  (voice/wake_model_manager.py) — openWakeWord lifecycle
+  - StreamingSTT      (voice/streaming_stt.py)      — Whisper (verification +
+                                                      conversation STT)
+  - StreamingTTS      (voice/streaming_tts.py)      — speech output
+  - VoiceSettings     (voice/settings.py)           — runtime configuration
 """
 
-from voice.supervisor import VoiceSupervisor, VoiceState
 from voice.settings import VoiceSettings
 
-__all__ = [
-    "VoiceSupervisor",
-    "VoiceState",
-    "VoiceSettings",
-]
+__all__ = ["VoiceSettings"]

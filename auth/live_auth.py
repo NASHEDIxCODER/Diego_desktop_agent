@@ -224,6 +224,11 @@ def authenticate_live(stop_event: Optional[threading.Event] = None,
 
 
     try:
+        # Initial state: the popup shows "Searching for face..." while the
+        # camera warms up — the user always sees WHERE the flow is.
+        _ui(None, "searching", "Searching for face...",
+            sub="Look at the camera to begin")
+
         # ── WAIT FOREVER for a face + verification ──
         # No timeout on "no face". Only stop_event or success breaks the loop.
         while True:
@@ -340,12 +345,19 @@ def authenticate_live(stop_event: Optional[threading.Event] = None,
                         break
 
                     else:
-                        # Not a stable known identity → keep trying, reset
-                        logger.info("[LIVE-AUTH] unstable/unknown (top=%s %d/%d) — resuming",
+                        # Not a stable known identity → show "Unknown user",
+                        # keep searching forever (NEVER silently continue).
+                        logger.info("[LIVE-AUTH] Unknown user (top=%s %d/%d) — resuming",
                                     top, top_n, len(votes))
+                        _ui(frame, "guidance", "Unknown user", box,
+                            "Face not recognized — still searching")
                         votes.clear()
                         good_streak = 0
                 else:
+                    # A face was tracked for VOTE_FRAMES frames but never
+                    # matched a registered user → "Unknown user", keep going.
+                    _ui(frame, "guidance", "Unknown user", box,
+                        "Face not recognized — still searching")
                     votes.clear()
                     good_streak = 0
 

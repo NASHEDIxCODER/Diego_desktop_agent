@@ -10,13 +10,14 @@ STATE MACHINE (no state may bypass another):
 
     BOOT
       ↓
-    FACE_AUTH
-      ↓
     IDLE
       ↓
     WAKE_LISTEN
       ↓
     WAKE_DETECTED
+      ↓
+    FACE_AUTH        (mandatory — the camera opens ONLY here,
+                      after a verified wake, NEVER at boot)
       ↓
     GREETING
       ↓
@@ -49,7 +50,7 @@ HARD INVARIANTS:
   COMMAND_LISTEN
       Streaming Whisper exists ONLY here. It is created on entry and
       DESTROYED (stream cancelled) immediately after endpoint detection
-      ends the session. Silence >= CONVERSATION_TIMEOUT_S (8 s) returns
+      ends the session. Silence >= CONVERSATION_TIMEOUT_S (60 s) returns
       the machine to WAKE_LISTEN.
 
   THINKING   — LLM runs only here.
@@ -84,17 +85,18 @@ import threading
 import time
 from enum import Enum
 from pathlib import Path
-from typing import AsyncIterator, List, Optional, Tuple
+from typing import AsyncIterator, List, Optional
 
 import numpy as np
 
 from core.gui_dispatcher import gui
 from voice.audio_manager import audio_manager
 
-from voice.audio_processing import audio_preprocessor, peak_monitor
+from voice.audio_processing import peak_monitor
 from voice.streaming_stt import streaming_stt, is_filler, UtteranceEvent
 from voice.streaming_tts import streaming_tts
-from voice.wake_model_manager import wake_model_manager, WARMUP_FRAME_SAMPLES
+from voice.wake_listener import WakeListener, WakeEvent
+from voice.wake_model_manager import wake_model_manager
 from agent.streaming_llm import streaming_llm
 from agent.conversation_memory import conv_memory
 from agent.personality import personality
@@ -102,24 +104,17 @@ from agent.personality import personality
 logger = logging.getLogger(__name__)
 
 # ── Conversation lifecycle tuning ────────────────────────────────
-CONVERSATION_TIMEOUT_S = 8.0    # silence this long → back to WAKE_LISTEN
+CONVERSATION_TIMEOUT_S = 60.0   # silence this long → back to WAKE_LISTEN
 GOODBYE_PHRASES = {
     "bye", "goodbye", "see you", "see ya", "later", "that's all",
     "thats all", "nothing else", "i'm done", "im done", "stop listening",
-    "go to sleep", "good night", "goodnight",
+    "go to sleep", "good night", "goodnight", "cancel",
 }
 WAKE_VARIANTS = ("leo", "hey leo", "hello leo", "hi leo", "okay leo", "ok leo")
 
 # Re-auth suppression: after a successful face auth, don't ask again for
 # this many seconds (default 10 minutes) unless explicitly invalidated.
 AUTH_SESSION_S = 600.0
-
-# Wake-loop instrumentation
-WAKE_SCORE_LOG_INTERVAL_S = 0.5   # "Wake score X.XX" cadence while idle
-WAKE_VAD_HANGOVER_S = 0.6         # speech gate stays open this long after VAD drops
-# If the VAD gate is closed, a score this far above threshold still wakes
-# (protects against a flaky VAD rejecting a real wake).
-WAKE_VAD_OVERRIDE_MARGIN = 0.30
 
 CHIME_PATH = Path(__file__).resolve().parent.parent / "leo.wav"
 
@@ -144,9 +139,8 @@ class EngineState(str, Enum):
 # The complete transition table. Any transition not listed here is a
 # state-machine violation and is logged as ILLEGAL (but never crashes Leo).
 ALLOWED_TRANSITIONS = {
-    EngineState.BOOT:           {EngineState.FACE_AUTH},
-    EngineState.FACE_AUTH:      {EngineState.IDLE, EngineState.GREETING,
-                                 EngineState.WAKE_LISTEN},
+    EngineState.BOOT:           {EngineState.IDLE},
+    EngineState.FACE_AUTH:      {EngineState.GREETING, EngineState.WAKE_LISTEN},
     EngineState.IDLE:           {EngineState.WAKE_LISTEN},
     EngineState.WAKE_LISTEN:    {EngineState.WAKE_DETECTED},
     EngineState.WAKE_DETECTED:  {EngineState.FACE_AUTH, EngineState.GREETING},
@@ -157,74 +151,6 @@ ALLOWED_TRANSITIONS = {
     EngineState.SPEAKING:       {EngineState.FOLLOWUP},
     EngineState.FOLLOWUP:       {EngineState.COMMAND_LISTEN, EngineState.WAKE_LISTEN},
 }
-
-
-# ═══════════════════════════════════════════════════════════════
-# Optional Silero VAD gate for WAKE_LISTEN
-# ═══════════════════════════════════════════════════════════════
-
-class _WakeGateVAD:
-    """
-    Optional Silero VAD used ONLY inside WAKE_LISTEN.
-
-    Its sole job is to keep the speech gate closed while the room is silent
-    so openWakeWord scores produced by fan noise / keyboard clicks are never
-    accepted. If Silero is unavailable the gate is permanently open and
-    openWakeWord alone decides (exactly like before).
-    """
-
-    # silero-vad 6.x accepts ONLY 256/512/768-sample windows at 16 kHz.
-    # 480 samples (30 ms) raises "Input audio chunk is too short" — which
-    # the old code swallowed, silently forcing the gate open forever.
-    FRAME = 512  # 32 ms @ 16 kHz (valid silero-vad 6.x window)
-
-
-    def __init__(self):
-        self._model = None
-        self._ready = False
-
-    def load(self) -> bool:
-        if self._ready:
-            return True
-        try:
-            from silero_vad import load_silero_vad
-            self._model = load_silero_vad(onnx=True)
-            self._ready = True
-            logger.info("[WAKE] Silero VAD gate loaded (WAKE_LISTEN speech gate)")
-            return True
-        except Exception as e:
-            logger.info("[WAKE] Silero VAD gate unavailable (%s) — "
-                        "openWakeWord runs ungated", e)
-            self._ready = False
-            return False
-
-    @property
-    def ready(self) -> bool:
-        return self._ready
-
-    def max_speech_prob(self, audio: np.ndarray) -> float:
-        """Highest speech probability across the chunk (0..1).
-
-        Accepts float32 [-1, 1] (used AS-IS — NO renormalization, per the
-        single-normalization rule) or legacy int16 PCM (decoded once via
-        /32768 at this model boundary).
-        """
-        if not self._ready or len(audio) < self.FRAME:
-            return 1.0  # gate open when VAD missing
-        try:
-            import torch
-            best = 0.0
-            for i in range(0, len(audio) - self.FRAME + 1, self.FRAME):
-                frame = audio[i:i + self.FRAME]
-                if frame.dtype != np.float32:
-                    frame = frame.astype(np.float32) / 32768.0
-                with torch.no_grad():
-                    prob = self._model(torch.from_numpy(frame), 16000).item()
-                if prob > best:
-                    best = float(prob)
-            return best
-        except Exception:
-            return 1.0
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -251,8 +177,9 @@ class ConversationEngine:
         self._auth_session_s: float = AUTH_SESSION_S
         self._auth_provider = None       # async callable() -> Optional[str]
 
-        # WAKE_LISTEN-only modules
-        self._wake_vad = _WakeGateVAD()
+        # WAKE_LISTEN module — THE single wake pipeline (VAD → openWakeWord
+        # → Whisper verification). See voice/wake_listener.py.
+        self._wake_listener = WakeListener()
 
         # Per-turn cancellation (user interrupts Leo while speaking)
         self._tts_interrupt = asyncio.Event()
@@ -332,7 +259,10 @@ class ConversationEngine:
 
     async def run(self) -> None:
         """
-        BOOT → FACE_AUTH → IDLE → (WAKE_LISTEN → … conversation …) forever.
+        BOOT → IDLE → (WAKE_LISTEN → … conversation …) forever.
+
+        Face authentication NEVER runs at boot: the camera opens ONLY after
+        a verified wake (WAKE_DETECTED → FACE_AUTH).
         """
         self._running = True
         loop = asyncio.get_event_loop()
@@ -352,43 +282,45 @@ class ConversationEngine:
             logger.warning("[BOOT] Engine not on main thread — GUI disabled")
 
         # Audio capture (shared ring buffer). AudioManager owns the mic;
-        # it is the ONLY audio source for every state.
-
-        if not audio_manager.is_running:
+        # it is the ONLY audio source for every state. Leo NEVER exits:
+        # if the microphone cannot be opened, BOOT retries forever.
+        while self._running and not audio_manager.is_running:
             ok = await loop.run_in_executor(None, audio_manager.start)
-            if not ok:
-                logger.error("[BOOT] AudioManager failed to start — engine cannot run")
-                self._running = False
-                return
+            if ok:
+                break
+            logger.error("[BOOT] AudioManager failed to start — retrying "
+                         "in 5s (Leo never exits)")
+            await asyncio.sleep(5.0)
+        if not audio_manager.is_running:
+            self._running = False
+            return
 
         # openWakeWord — the ONLY model that stays active forever.
         await loop.run_in_executor(None, self._ensure_wake_model)
 
-        # Optional Silero VAD gate for WAKE_LISTEN (optional by design).
-        await loop.run_in_executor(None, self._wake_vad.load)
+        # Silero VAD speech gate for WAKE_LISTEN (owned by the WakeListener).
+        await loop.run_in_executor(None, self._wake_listener.load)
 
         # TTS engine selection (no synthesis happens here — playback worker
         # idles until SPEAKING/GREETING actually enqueue audio).
         await loop.run_in_executor(None, streaming_tts.initialize)
 
-        # Whisper is PRELOADED here: the wake-confirmation path
-        # (_confirm_wake_by_transcript) needs it hot — a lazy 3 s load on
-        # the first trigger loses the wake-phrase window (proven live).
+        # Whisper is PRELOADED here: the wake-verification path
+        # (WakeListener.verify_with_whisper) needs it hot — a lazy 3 s load
+        # on the first trigger loses the wake-phrase window (proven live).
         # The LLM is still NOT contacted until THINKING.
         await loop.run_in_executor(None, streaming_stt.initialize)
 
         logger.info("[BOOT] Models loaded (wake=%s, vad_gate=%s, whisper=%s) — "
                     "LLM deferred to THINKING",
                     wake_model_manager.model_name or "unavailable",
-                    "on" if self._wake_vad.ready else "off",
+                    "on" if self._wake_listener.vad.ready else "off",
                     "ready" if streaming_stt.ready else "unavailable")
 
 
-        # ── STATE: FACE_AUTH ──────────────────────────────
-        self._set_state(EngineState.FACE_AUTH)
-        await self._boot_auth()
-
         # ── STATE: IDLE ───────────────────────────────────
+        # No boot authentication: BOOT → IDLE → WAKE_LISTEN. The camera
+        # stays closed until a verified wake word requests it.
         self._set_state(EngineState.IDLE)
         logger.info("[IDLE] Only the wake-word detector is active — "
                     "Whisper inactive, LLM inactive, TTS inactive")
@@ -398,13 +330,13 @@ class ConversationEngine:
             while self._running:
                 if self._state is not EngineState.WAKE_LISTEN:
                     self._set_state(EngineState.WAKE_LISTEN)
-                detection = await self._wake_listen_loop()
-                if detection is None:
+                event = await self._wake_listen_loop()
+                if event is None:
                     break  # engine stopped
-                score_name, score = detection
                 self._set_state(EngineState.WAKE_DETECTED)
                 logger.info("Wake accepted (model='%s' score=%.2f ≥ %.2f)",
-                            score_name, score, wake_model_manager.threshold)
+                            event.model, event.score,
+                            wake_model_manager.threshold)
                 await self._handle_wake_detected()
         except asyncio.CancelledError:
             logger.info("[ENGINE] Conversation engine cancelled")
@@ -423,26 +355,6 @@ class ConversationEngine:
                          "wake detection disabled", wake_model_manager.load_error)
         return ok
 
-    async def _boot_auth(self) -> None:
-        """FACE_AUTH at boot: authenticate once if a provider is configured.
-
-        --no-auth mode has no provider → instant pass-through to IDLE.
-        Failure does NOT kill Leo: the machine still goes IDLE and
-        re-authenticates after the next wake.
-        """
-        if self._auth_provider is None:
-            logger.info("[FACE_AUTH] No auth provider — skipping (dev mode)")
-            return
-        name = await self._run_auth()
-        if name:
-            self._auth_user = name
-            self._last_auth_time = time.time()
-            conv_memory.set_user_name(name)
-            logger.info("[FACE_AUTH] Authenticated: %s", name)
-        else:
-            logger.warning("[FACE_AUTH] Boot authentication failed — "
-                           "will retry after the next wake")
-
     async def _run_auth(self) -> Optional[str]:
         """Call the auth provider safely. NEVER raises."""
         if self._auth_provider is None:
@@ -455,201 +367,27 @@ class ConversationEngine:
 
     # ── STATE: WAKE_LISTEN ────────────────────────────────
 
-    async def _wake_listen_loop(self) -> Optional[Tuple[str, float]]:
+    async def _wake_listen_loop(self) -> Optional[WakeEvent]:
         """
-        WAKE_LISTEN: idle forever on AudioManager + openWakeWord (+ VAD gate).
+        WAKE_LISTEN: idle forever on THE single wake pipeline
+        (voice/wake_listener.py — AudioManager → Silero VAD → openWakeWord
+        → Whisper verification).
 
-        Whisper / LLM / TTS are NOT running in this state. Returns
-        (model_name, score) when the wake score crosses the threshold,
-        or None if the engine is shutting down.
+        Whisper / LLM / TTS are NOT running in this state. Returns a
+        WakeEvent on a VERIFIED wake, or None if the engine is shutting
+        down. The detector never exits on its own.
         """
-        loop = asyncio.get_event_loop()
-        # Resync to "now": any backlog in the ring buffer is dropped so the
-        # detector scores fresh audio only.
-        last_total = audio_manager.total_samples
-        last_score_log = 0.0
-        speech_gate_open_until = 0.0
-
-        # ── Thread inventory BEFORE the detector starts ──
-        # (spec: print every active thread before entering WAKE_LISTEN;
-        # any surviving GUI thread must have its id printed).
+        # Thread inventory BEFORE the detector starts (any surviving GUI
+        # thread is called out with its id).
         self._log_active_threads("WAKE_LISTEN")
 
-        logger.info("[WAKE_LISTEN] Wake detector started — model='%s' "
-                    "phrase='%s' threshold=%.2f vad_gate=%s",
-                    wake_model_manager.model_name or "none",
-                    wake_model_manager.wake_phrase,
-                    wake_model_manager.threshold,
-                    "on" if self._wake_vad.ready else "off")
+        # Deterministic clean entry: hard model reset + ring-buffer drain
+        # + refractory window — stale audio can never re-trigger a wake.
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, self._wake_listener.prime)
         logger.info("[WAKE_LISTEN] Listening for wake word...")
 
-        # Stall diagnostics: if openWakeWord produces NO inference for >2s,
-        # dump exactly why the inference loop is not running.
-        last_inference_time = time.monotonic()
-        last_stall_dump = 0.0
-        empty_reads = 0
-        last_model_retry = 0.0
-        WAKE_MODEL_RETRY_S = 5.0
-        vad_prob = 1.0
-        # Rate-limit Whisper wake-confirmations (each costs ~0.5–1 s CPU).
-        last_confirm = 0.0
-        CONFIRM_MIN_INTERVAL_S = 1.2
-
-
-        while self._running:
-            now = time.monotonic()
-
-            # ── TASK 7: the wake detector MUST always be active ──
-            # If the model is missing/unloaded, KEEP RETRYING forever —
-            # never exit WAKE_LISTEN, never run deaf. Audio keeps flowing
-            # into the ring buffer between retries so nothing is lost.
-            if not wake_model_manager.loaded:
-                if now - last_model_retry >= WAKE_MODEL_RETRY_S:
-                    last_model_retry = now
-                    logger.warning(
-                        "[WAKE] Wake model NOT loaded (%s) — retrying "
-                        "every %.0fs; detector stays in WAKE_LISTEN",
-                        wake_model_manager.load_error or "no model",
-                        WAKE_MODEL_RETRY_S)
-                    ok = await loop.run_in_executor(None, wake_model_manager.load)
-                    if ok:
-                        logger.info(
-                            "[WAKE] Wake model loaded: '%s' phrase='%s' "
-                            "threshold=%.2f — detector ACTIVE",
-                            wake_model_manager.model_name,
-                            wake_model_manager.wake_phrase,
-                            wake_model_manager.threshold)
-                await asyncio.sleep(0.25)
-                continue
-
-            # ── TASK 7: no exception may EVER kill the wake loop ──
-            try:
-                new_audio, last_total = audio_manager.read_since(last_total)
-                if len(new_audio) == 0:
-                    empty_reads += 1
-                    await asyncio.sleep(0.02)
-                else:
-                    empty_reads = 0
-
-                # ── No-inference watchdog: dump why the loop is stalling ──
-                if (now - last_inference_time > 2.0
-                        and now - last_stall_dump > 2.0):
-                    last_stall_dump = now
-                    logger.warning(
-                        "[WAKE] NO INFERENCE for %.1fs — diagnostics: "
-                        "model_loaded=%s running=%s audio_empty_streak=%d "
-                        "total_samples=%d ring_buffer_alive=%s",
-                        now - last_inference_time,
-                        wake_model_manager.loaded, self._running,
-                        empty_reads, last_total, audio_manager.is_running)
-
-                if len(new_audio) == 0:
-                    continue
-
-                # Noise suppression (spectral gating). NO AGC, NO normalization —
-                # the signal is never amplified beyond unity.
-                processed = await loop.run_in_executor(
-                    None, audio_preprocessor.process, new_audio)
-                # Stage trace: print peak/RMS of audio entering the wake detector.
-                peak_monitor.log("wake_detector", processed)
-
-                # Optional Silero VAD speech gate
-                if self._wake_vad.ready:
-                    vad_prob = await loop.run_in_executor(
-                        None, self._wake_vad.max_speech_prob, processed)
-                    if vad_prob > 0.5:
-                        speech_gate_open_until = now + WAKE_VAD_HANGOVER_S
-                else:
-                    vad_prob = 1.0
-                    speech_gate_open_until = now + WAKE_VAD_HANGOVER_S  # gate open
-
-                # Feed openWakeWord in non-overlapping 80 ms streaming frames.
-                for frame in self._iter_wake_frames(processed):
-                    t_pred = time.perf_counter()
-                    preds = await loop.run_in_executor(
-                        None, wake_model_manager.predict_stream, frame)
-                    pred_ms = (time.perf_counter() - t_pred) * 1000.0
-                    if not preds:
-                        continue
-                    last_inference_time = time.monotonic()
-                    score = max(float(s) for s in preds.values())
-
-                    # ── TASK 4: EVERY prediction is printed with the full
-                    # decision context — score, model, threshold, VAD,
-                    # latency. If these lines stop, the detector is dead.
-                    if score >= 0.01 or now - last_score_log >= WAKE_SCORE_LOG_INTERVAL_S:
-                        logger.info(
-                            "Wake score=%.3f model=%s threshold=%.2f "
-                            "vad=%.2f latency=%.1fms",
-                            score, wake_model_manager.model_name or "?",
-                            wake_model_manager.threshold, vad_prob, pred_ms)
-                        last_score_log = now
-
-                    # ── PRODUCTION WAKE DECISION ─────────────────────────
-                    # The small-data verifier CANNOT be trusted on mic-domain
-                    # audio (proven: 0.001 on the real phrase through this
-                    # mic, 0.79 on TV audio). So the wake decision is:
-                    #   TRIGGER  — openWakeWord score ≥ threshold, OR
-                    #              sustained VAD speech (the phrase the SVM
-                    #              missed still reaches Whisper), rate-limited.
-                    #   AUTHORITY — the transcript must contain the wake
-                    #              phrase (strict verify_wake_transcript).
-                    threshold = wake_model_manager.threshold
-                    speech_now = vad_prob > 0.5
-                    confirm_due = (now - last_confirm) >= CONFIRM_MIN_INTERVAL_S
-                    triggered = (
-                        score >= threshold
-                        or (speech_now and confirm_due
-                            and now <= speech_gate_open_until)
-                    )
-                    if not triggered:
-                        continue
-
-                    gate_open = now <= speech_gate_open_until
-                    if not gate_open and score < threshold + WAKE_VAD_OVERRIDE_MARGIN:
-                        logger.info(
-                            "[WAKE] Score %.2f ≥ %.2f but VAD gate closed "
-                            "(no speech) — rejected", score, threshold)
-                        continue
-
-                    last_confirm = now
-                    verified, transcript = await self._confirm_wake_by_transcript()
-                    if not verified:
-                        if score >= threshold:
-                            logger.info(
-                                "[WAKE] score=%.2f ≥ trigger %.2f but transcript "
-                                "rejected (%r) — still listening",
-                                score, threshold, transcript or "<no speech>")
-                        continue
-                    logger.info("WAKE ACCEPTED score=%.3f model=%s vad=%.2f "
-                                "transcript='%s'",
-                                score, wake_model_manager.model_name, vad_prob,
-                                transcript)
-                    return wake_model_manager.highest_score()[0] or "wake", score
-
-
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                # TASK 7: the wake detector must NEVER die. Log the full
-                # traceback (no hidden exceptions) and keep listening.
-                logger.exception("[WAKE] Wake-loop iteration failed — "
-                                 "recovering, detector stays active")
-                await asyncio.sleep(0.1)
-
-        return None
-
-
-    @staticmethod
-    def _iter_wake_frames(audio: np.ndarray):
-        """Yield openWakeWord-sized frames (1280 samples = 80 ms)."""
-        n = len(audio)
-        step = WARMUP_FRAME_SAMPLES
-        for i in range(0, n, step):
-            frame = audio[i:i + step]
-            if len(frame) < step:
-                frame = np.pad(frame, (0, step - len(frame)))
-            yield frame
+        return await self._wake_listener.wait_for_wake(lambda: self._running)
 
     @staticmethod
     def _log_active_threads(context: str) -> None:
@@ -726,44 +464,6 @@ class ConversationEngine:
         # ── STATE: COMMAND_LISTEN … (full session) ───────
         await self._conversation_session()
 
-    async def _confirm_wake_by_transcript(self) -> Tuple[bool, str]:
-        """Whisper-based wake confirmation — the production wake AUTHORITY.
-
-        openWakeWord's small-data verifier is only a trigger: it cannot
-        generalize across room conditions (loud TV, TTS echo, fan noise).
-        This method transcribes the most recent ~2.5 s of ring-buffer
-        audio with the shared streaming-Whisper transcriber and applies
-        the strict transcript verifier (must contain a real wake phrase —
-        'leo'/'lio' as a distinctive word, never a lookalike).
-
-        Returns (verified, transcript). NEVER raises: any failure returns
-        (False, '') and WAKE_LISTEN simply continues.
-        """
-        try:
-            from voice.wake_word import verify_wake_transcript
-            from voice.audio_processing import float32_to_int16
-            loop = asyncio.get_event_loop()
-            # Shared transcriber, loaded lazily once (also used by
-            # COMMAND_LISTEN — no duplicate model in memory).
-            if not streaming_stt.ready:
-                ok = await loop.run_in_executor(None, streaming_stt.initialize)
-                if not ok:
-                    return False, ""
-            audio = audio_manager.get_recent_audio(2.5)
-            if len(audio) < 8000:  # <0.5 s — nothing to transcribe yet
-                return False, ""
-            pcm = float32_to_int16(audio).tobytes()
-            # vad_filter OFF: Silero already gated this audio as speech;
-            # faster-whisper's internal VAD drops quiet-but-real phrases.
-            text = await loop.run_in_executor(
-                None, streaming_stt._whisper.transcribe, pcm, 16000, False)
-            ok = verify_wake_transcript(text)
-            return bool(ok), (text or "")
-
-        except Exception as e:
-            logger.debug("[WAKE] transcript confirmation error: %s", e)
-            return False, ""
-
     @staticmethod
     def _play_wake_chime() -> None:
         """Play leo.wav synchronously (runs in an executor thread)."""
@@ -797,7 +497,7 @@ class ConversationEngine:
 
             COMMAND_LISTEN → THINKING → SPEAKING → FOLLOWUP → COMMAND_LISTEN …
 
-        until 8 s of silence (→ WAKE_LISTEN) or a goodbye (→ WAKE_LISTEN).
+        until 60 s of silence (→ WAKE_LISTEN) or a goodbye (→ WAKE_LISTEN).
 
         Streaming Whisper is created here and DESTROYED when the session
         ends — it never exists outside COMMAND_LISTEN-family states.
@@ -1123,7 +823,7 @@ class ConversationEngine:
         """
         DEPRECATED no-op kept for API compatibility with leo.py.
 
-        The 8-second conversation timeout is enforced inside
+        The 60-second conversation timeout is enforced inside
         COMMAND_LISTEN (session deadline), not by an external watchdog.
         """
         while self._running:

@@ -23,6 +23,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import core.conversation_engine as ce
+import voice.wake_listener as wl
 from core.conversation_engine import ConversationEngine, EngineState
 from voice.streaming_stt import UtteranceEvent
 
@@ -51,10 +52,19 @@ class FakeAudioManager:
     def read_since(self, last):
         # Deliver one 1280-sample chunk per call, like the real ring buffer.
         self._total += 1280
-        return np.zeros(1280, dtype=np.int16), self._total
+        return np.zeros(1280, dtype=np.float32), self._total
 
     def get_recent_audio(self, _dur):
-        return np.zeros(16, dtype=np.int16)
+        # ≥8000 samples: the wake-confirmation path requires ≥0.5 s of
+        # audio (float32 ring-buffer domain). Returning fewer silently
+        # starves the confirmation — the exact production failure mode.
+        return np.zeros(16000, dtype=np.float32)
+
+    def get_recent_processed(self, _dur):
+        # Wake confirmation reads PREPROCESSED audio (the detector's
+        # input), same ≥8000-sample contract.
+        return np.zeros(16000, dtype=np.float32)
+
 
 
 class FakeWakeModel:
@@ -68,6 +78,7 @@ class FakeWakeModel:
         self.calls = 0
         self.score = 0.12
         self.fired = False
+        self._t0 = time.monotonic()
 
     def load(self):
         return True
@@ -78,10 +89,12 @@ class FakeWakeModel:
             # Already woke once — park below threshold forever so the test
             # observes exactly ONE conversation cycle.
             return {self.model_name: 0.05}
-        # Ramp: 0.12 → 0.32 → … → 0.93 (crosses threshold after 5 frames)
-        self.score = min(0.93, self.score + 0.20)
-        if self.score >= self.threshold:
-            self.fired = True
+        # Stay below threshold during the WakeListener's 1.0 s refractory
+        # window, then fire ONCE (0.93 ≥ 0.5) and latch.
+        if time.monotonic() - self._t0 < 1.3:
+            return {self.model_name: 0.12}
+        self.fired = True
+        self.score = 0.93
         return {self.model_name: self.score}
 
 
@@ -89,6 +102,13 @@ class FakeWakeModel:
         return self.model_name, self.score
 
     def reset_stream(self):
+        pass
+
+    def hard_reset(self):
+        # Deterministic re-entry reset (called by WakeListener.prime).
+        self._t0 = time.monotonic()
+
+    def record_false_positive(self):
         pass
 
 
@@ -99,6 +119,35 @@ class FakeVADGate:
         return False
 
 
+class _FakeWhisperBackend:
+    """The streaming_stt._whisper double used by the wake-confirmation
+    path. Returns a verified wake transcript ONCE, then background
+    speech — so the engine runs exactly ONE conversation cycle (the
+    VAD-fallback trigger re-confirms continuously, and only the first
+    confirmation may pass)."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def _text(self) -> str:
+        self.calls += 1
+        return "hello leo" if self.calls == 1 else "what time is it"
+
+    def transcribe_detailed(self, _pcm, _sr=16000, _use_vad=False):
+        text = self._text()
+        return {"text": text, "language": "en",
+                "language_probability": 0.99, "avg_logprob": -0.2,
+                "no_speech_prob": 0.05, "compression_ratio": 1.1,
+                "segments": [{"text": text, "avg_logprob": -0.2,
+                              "no_speech_prob": 0.05,
+                              "compression_ratio": 1.1}],
+                "ok": True, "reason": "accepted"}
+
+    def transcribe(self, _pcm, _sr=16000, _use_vad=False):
+        return self._text()
+
+
+
 class FakeSTT:
     """Streaming Whisper double. Counts activations; must be 0 during
     WAKE_LISTEN and exactly 1 after WAKE_DETECTED."""
@@ -107,6 +156,8 @@ class FakeSTT:
         self.ready = True
         self.sessions = 0
         self.destroyed = 0
+        self._whisper = _FakeWhisperBackend()
+
 
     def initialize(self):
         return True
@@ -165,16 +216,26 @@ async def main() -> int:
 
     fake_stt = FakeSTT()
     fake_tts = FakeTTS()
-    ce.audio_manager = FakeAudioManager()
-    ce.wake_model_manager = FakeWakeModel()
+    fake_audio = FakeAudioManager()
+    fake_wake = FakeWakeModel()
+    ce.audio_manager = fake_audio
+    ce.wake_model_manager = fake_wake
     ce.streaming_stt = fake_stt
     ce.streaming_tts = fake_tts
     ce.streaming_llm = FakeLLM()
+    # The WakeListener binds its own module-level singletons — patch them
+    # at its module level too (same fakes, single pipeline).
+    wl.audio_manager = fake_audio
+    wl.wake_model_manager = fake_wake
     # Noise suppression passthrough (real one needs a noise profile).
-    ce.audio_preprocessor = type("P", (), {"process": staticmethod(lambda a: a)})()
+    wl.audio_preprocessor = type("P", (), {"process": staticmethod(lambda a: a)})()
+    # Whisper verification resolves streaming_stt lazily from its module —
+    # point it at the fake (the fake's _whisper returns a wake transcript).
+    import voice.streaming_stt as stt_mod
+    stt_mod.streaming_stt = fake_stt
 
     eng = ConversationEngine()
-    eng._wake_vad = FakeVADGate()
+    eng._wake_listener.vad = FakeVADGate()
     eng.set_authenticated(None)  # --no-auth dev session
 
     # Whisper must NOT exist yet.
@@ -192,8 +253,11 @@ async def main() -> int:
     print("  " + " → ".join(names))
 
     # ── 1. Exact chain, in order ──────────────────────────
+    # (no-auth dev session: FACE_AUTH is correctly SKIPPED — the only
+    # legal BOOT exit is IDLE; auth only appears after WAKE_DETECTED
+    # when an auth provider is configured).
     expected_prefix = [
-        "BOOT", "FACE_AUTH", "IDLE", "WAKE_LISTEN", "WAKE_DETECTED",
+        "BOOT", "IDLE", "WAKE_LISTEN", "WAKE_DETECTED",
         "GREETING", "COMMAND_LISTEN", "THINKING", "SPEAKING",
         "FOLLOWUP", "COMMAND_LISTEN",
     ]

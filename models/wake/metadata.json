@@ -2,11 +2,12 @@
   "wake_phrase": "hello leo",
   "base_model": "hey_mycroft_v0.1",
   "verifier_path": "verifier.pkl",
-  "positive_count": 15,
-  "negative_count": 25,
+  "positive_count": 61,
+  "negative_count": 85,
   "verifier_threshold": 0.0,
-  "detection_threshold": 0.05,
-  "trained_at": 1785751708.9555671,
-  "classifier": "svm-rbf(c=10)",
+  "detection_threshold": 0.848424893783194,
+  "domain": "int16-16kHz-mono",
+  "trained_at": 1785794569.1406252,
+  "classifier": "logreg(c=1.0, regime-identical-windows)",
   "accept": "oww-trigger + whisper-transcript-verification"
 }

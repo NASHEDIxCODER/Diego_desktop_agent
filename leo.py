@@ -9,13 +9,16 @@ ChatGPT Voice / Gemini Live — NOT a command executor.
   python leo.py --status     # Show subsystem status
 
 Pipeline:
-  Face auth (mandatory)
-    → Wake ("leo" / "hey leo" / "hello leo")
+  Wake ("leo" / "hey leo" / "hello leo")
+    → Transcript verification
+    → Face auth (mandatory — camera opens ONLY here, waits forever)
     → Streaming VAD
     → Streaming Whisper (partials)
     → Streaming LLM (sentence-by-sentence)
     → Streaming TTS (interruptible)
     → Full duplex: interrupt Leo any time by speaking
+    → 60 s of silence / "goodbye" / "stop listening" / "cancel"
+    → Back to wake listening (Leo NEVER exits on its own)
 
 Everything is async and cancellable. Graceful shutdown on Ctrl+C.
 """
@@ -106,13 +109,12 @@ async def run_leo(no_auth: bool = False) -> None:
 
     Leo ALWAYS boots successfully and stays alive forever. Face auth is
     deferred until the wake word. There is NO startup authentication.
+
+    The conversation engine owns the real boot sequence (audio → wake
+    model → VAD → TTS → Whisper) and logs each stage as it completes.
     """
     from core.conversation_engine import conversation_engine
     from agent.action_dispatcher import action_dispatcher
-
-    logger.info("BOOT")
-    logger.info("Models loaded")
-    logger.info("Audio initialized")
 
     # ── Wire subsystems ───────────────────────────────────
     conversation_engine.set_action_executor(action_dispatcher.execute)
@@ -249,6 +251,18 @@ def cmd_status() -> None:
     print(f"  Face encodings: {'present' if ep.exists() else 'MISSING'}")
 
 
+def run(no_auth: bool = False) -> None:
+    """Canonical blocking entry point — boots Leo and runs until Ctrl+C.
+
+    Used by BOTH `python leo.py` and `python main.py` so there is exactly
+    ONE runtime entry path.
+    """
+    try:
+        asyncio.run(_main_async(no_auth=no_auth))
+    except KeyboardInterrupt:
+        pass
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Leo — Conversational Desktop Agent")
     parser.add_argument("--no-auth", action="store_true",
@@ -261,10 +275,7 @@ def main() -> None:
         cmd_status()
         return
 
-    try:
-        asyncio.run(_main_async(no_auth=args.no_auth))
-    except KeyboardInterrupt:
-        pass
+    run(no_auth=args.no_auth)
 
 
 if __name__ == "__main__":

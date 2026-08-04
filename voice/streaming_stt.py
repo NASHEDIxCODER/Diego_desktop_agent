@@ -232,8 +232,30 @@ class _WhisperTranscriber:
         internal filter aggressively drops quiet-but-real speech
         ("VAD filter removed 00:02.500 of audio" on a played wake phrase).
         """
+        return self.transcribe_detailed(
+            pcm_int16, sample_rate, use_vad_filter).get("text") or ""
+
+    def transcribe_detailed(self, pcm_int16: bytes,
+                            sample_rate: int = SAMPLE_RATE,
+                            use_vad_filter: bool = True) -> dict:
+        """STEP 9 — Whisper transcription with FULL decision logging.
+
+        NEVER silently rejects: every outcome is reported with language,
+        avg_logprob, no_speech_prob, compression ratio and per-segment
+        confidence, so a failing wake verification shows exactly WHY
+        Whisper heard what it heard.
+
+        Returns a dict:
+          text, language, language_probability, avg_logprob,
+          no_speech_prob, compression_ratio, segments (per-segment
+          confidence list), ok, reason
+        """
+        result = {"text": "", "language": "", "language_probability": 0.0,
+                  "avg_logprob": 0.0, "no_speech_prob": 0.0,
+                  "compression_ratio": 0.0, "segments": [],
+                  "ok": False, "reason": "whisper_unavailable"}
         if not self._ready or not pcm_int16:
-            return ""
+            return result
         try:
             # Stage trace: peak/RMS of the exact audio handed to Whisper.
             from voice.audio_processing import peak_monitor
@@ -241,20 +263,71 @@ class _WhisperTranscriber:
             audio = np.frombuffer(pcm_int16, dtype=np.int16).astype(np.float32) / 32768.0
 
             if len(audio) < sample_rate * 0.2:
-                return ""
-            segments, _info = self._model.transcribe(
+                result["reason"] = "too_short"
+                return result
+            segments, info = self._model.transcribe(
                 audio,
                 beam_size=1,
                 language="en",
                 vad_filter=use_vad_filter,
                 without_timestamps=True,
             )
-            text = " ".join(seg.text.strip() for seg in segments).strip()
-            return text
+            segs = list(segments)
+            result["language"] = getattr(info, "language", "") or ""
+            result["language_probability"] = float(
+                getattr(info, "language_probability", 0.0) or 0.0)
+            if not segs:
+                result["reason"] = "no_segments"
+                logger.info("[WHISPER] REJECTED reason=no_segments "
+                            "lang=%s(%.2f) duration=%.2fs",
+                            result["language"], result["language_probability"],
+                            len(audio) / sample_rate)
+                return result
+
+            seg_details = []
+            for s in segs:
+                seg_details.append({
+                    "text": s.text.strip(),
+                    "start": round(float(getattr(s, "start", 0.0)), 2),
+                    "end": round(float(getattr(s, "end", 0.0)), 2),
+                    "avg_logprob": round(float(getattr(s, "avg_logprob", 0.0) or 0.0), 3),
+                    "no_speech_prob": round(float(getattr(s, "no_speech_prob", 0.0) or 0.0), 3),
+                    "compression_ratio": round(float(getattr(s, "compression_ratio", 0.0) or 0.0), 2),
+                })
+            text = " ".join(d["text"] for d in seg_details).strip()
+            logprobs = [d["avg_logprob"] for d in seg_details]
+            result.update({
+                "text": text,
+                "segments": seg_details,
+                "avg_logprob": float(np.mean(logprobs)) if logprobs else 0.0,
+                "no_speech_prob": max(d["no_speech_prob"] for d in seg_details),
+                "compression_ratio": max(d["compression_ratio"] for d in seg_details),
+            })
+            if not text:
+                result["reason"] = "empty_transcript"
+            elif result["no_speech_prob"] > 0.6:
+                result["reason"] = f"high_no_speech_prob({result['no_speech_prob']:.2f})"
+            elif result["compression_ratio"] > 2.4:
+                result["reason"] = f"high_compression_ratio({result['compression_ratio']:.2f})"
+            else:
+                result["ok"] = True
+                result["reason"] = "accepted"
+
+            # STEP 9: the FULL decision is always visible — no silent reject.
+            logger.info(
+                "[WHISPER] %s text=%r lang=%s(%.2f) avg_logprob=%.3f "
+                "no_speech=%.2f compression=%.2f segments=%d reason=%s",
+                "ACCEPTED" if result["ok"] else "REJECTED",
+                text, result["language"], result["language_probability"],
+                result["avg_logprob"], result["no_speech_prob"],
+                result["compression_ratio"], len(seg_details), result["reason"])
+            return result
         except Exception as e:
             # No hidden exceptions: a failing backend must be visible.
             logger.warning("[STREAM-STT] transcribe error: %s", e)
-            return ""
+            result["reason"] = f"exception:{type(e).__name__}:{e}"
+            return result
+
 
 
 
@@ -432,20 +505,34 @@ class StreamingSTT:
                             yield final
 
     async def _finalize(self, frames: List[np.ndarray], start: float) -> Optional[UtteranceEvent]:
-        """Transcribe the complete utterance."""
+        """Transcribe the complete utterance.
+
+        STEP 8: every discard path is logged with its reason — speech
+        duration, endpoint timing and the VAD verdict are never silent.
+        """
         pcm = self._frames_to_bytes(frames)
         dur_ms = len(frames) * 30
         if dur_ms < MIN_UTTERANCE_MS or len(pcm) < 512:
+            logger.info(
+                "[STREAM-STT] Utterance DISCARDED reason=too_short "
+                "(duration=%dms < %dms, bytes=%d) — likely a click/cough, "
+                "not speech", dur_ms, MIN_UTTERANCE_MS, len(pcm))
             return None
         loop = asyncio.get_event_loop()
         text = await loop.run_in_executor(
             None, self._whisper.transcribe, pcm, SAMPLE_RATE)
         if not text:
+            logger.info(
+                "[STREAM-STT] Utterance DISCARDED reason=empty_transcript "
+                "(duration=%dms) — Whisper heard nothing intelligible",
+                dur_ms)
             return None
-        logger.info("[STREAM-STT] Final (%dms): '%s'", dur_ms, text)
+        logger.info("[STREAM-STT] Final (%dms, endpoint at +%.1fs): '%s'",
+                    dur_ms, time.time() - start, text)
         return UtteranceEvent(
             kind="final", text=text, is_final=True,
             started_at=start, ended_at=time.time(), audio=pcm)
+
 
     @staticmethod
     def _frames_to_bytes(frames: List[np.ndarray]) -> bytes:
