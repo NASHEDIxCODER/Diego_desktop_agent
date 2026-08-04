@@ -88,13 +88,10 @@ class UtteranceEvent:
 class _SileroVAD:
     """Silero VAD wrapper for streaming frames.
 
-    silero-vad 6.x accepts ONLY 256/512/768-sample windows at 16 kHz —
-    the legacy 480-sample (30 ms) frame raises "Input audio chunk is too
-    short", which the old fallback path swallowed, silently degrading the
-    VAD to an energy heuristic. Frames are padded to 512 samples here.
+    The pipeline now uses 512-sample frames (32 ms @ 16 kHz) — native
+    Silero VAD v6 window size. NO zero-padding is needed because every
+    frame is exactly 512 samples.
     """
-
-    FRAME = 512  # 32 ms @ 16 kHz (valid silero-vad 6.x window)
 
     def __init__(self):
         self._model = None
@@ -132,11 +129,14 @@ class _SileroVAD:
             return False
 
     def speech_prob(self, frame: np.ndarray) -> float:
-        """Return speech probability for a 30ms 16kHz frame.
+        """Return speech probability for a 32ms 16kHz (512-sample) frame.
 
         VAD preprocessing applies NO gain: float32 [-1, 1] frames are
         used AS-IS (no renormalization); legacy int16 frames are decoded
         once via /32768 at this model boundary.
+
+        FRAME SIZE: 512 samples = 32ms @ 16kHz = native Silero VAD window.
+        NO zero-padding needed — every frame is the exact required length.
         """
         if not self._ready:
             # Energy fallback (threshold stays on the int16 scale)
@@ -150,12 +150,8 @@ class _SileroVAD:
                 audio = frame.astype(np.float32) / 32768.0
             else:
                 audio = frame
-            # silero-vad 6.x requires 256/512/768-sample windows; the
-            # pipeline's 480-sample frames are zero-padded to 512.
-            if len(audio) < self.FRAME:
-                audio = np.pad(audio, (0, self.FRAME - len(audio)))
-            elif len(audio) > self.FRAME:
-                audio = audio[: self.FRAME]
+            # Native 512-sample window — NO zero-padding needed.
+            # silero-vad v6 accepts 256, 512, or 768 samples.
             tensor = torch.from_numpy(audio)
             with torch.no_grad():
                 prob = self._model(tensor, 16000).item()
@@ -262,10 +258,40 @@ class _WhisperTranscriber:
             if len(audio) < sample_rate * 0.2:
                 result["reason"] = "too_short"
                 return result
+            # ROOT CAUSE FIX (2026-08-04): command-length utterances need
+            # specific decode settings that differ from long-form defaults:
+            #
+            #   condition_on_previous_text=False — short commands have no
+            #     multi-turn conversational context; chaining segment text
+            #     causes "you too" → "for me" hallucination cascades.
+            #
+            #   compression_ratio_threshold=None — short utterances have
+            #     naturally high audio/token ratios (1.5s "open firefox" ≈
+            #     3000 frames / 4 tokens = 750). The default 2.4 threshold
+            #     silently drops EVERY command-length segment. Disabled.
+            #
+            #   no_speech_threshold=0.9 — lenient; the external streaming
+            #     Silero VAD already verified speech exists upstream. A
+            #     lower threshold double-gates and drops quiet commands.
+            #
+            #   temperature=0.0 — greedy decoding produces deterministic
+            #     transcripts. Beam search with temperature > 0 is useful
+            #     for creative long-form but introduces variance on short
+            #     commands that causes hallucinations.
+            #
+            #   vad_filter=use_vad_filter — caller decides. For final
+            #     transcription after Silero VAD, this is False (external
+            #     VAD already gated). For partials, same — we already know
+            #     this is speech.
             segments, info = self._model.transcribe(
                 audio,
                 beam_size=1,
                 language="en",
+                temperature=0.0,
+                best_of=1,
+                condition_on_previous_text=False,
+                compression_ratio_threshold=None,
+                no_speech_threshold=0.9,
                 vad_filter=use_vad_filter,
                 without_timestamps=True,
             )

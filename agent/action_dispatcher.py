@@ -29,6 +29,7 @@ Usage:
 
 import asyncio
 import logging
+import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -55,6 +56,25 @@ class ActionDispatcher:
                 self._executor = None
         return self._executor
 
+    # ── Learning integration ──────────────────────────────
+
+    @staticmethod
+    def _record_for_learning(action_name: str, params: Dict[str, Any],
+                              success: bool, latency_ms: float = 0.0,
+                              error: str = "") -> None:
+        """Record an action in the learning engine (non-blocking)."""
+        try:
+            from learning.learning_engine import learning_engine
+            learning_engine.record_action(
+                action_name=action_name,
+                params=params,
+                success=success,
+                latency_ms=latency_ms,
+                error=error,
+            )
+        except Exception:
+            pass  # Learning engine failure must never break action execution
+
     # ── Main entry point ──────────────────────────────────
 
     async def execute(self, action: Dict[str, Any]) -> Optional[str]:
@@ -63,15 +83,24 @@ class ActionDispatcher:
 
         Runs blocking desktop operations in a thread so the event loop
         stays responsive (full duplex keeps listening while acting).
+
+        Every action is recorded in the learning engine for continuous
+        self-improvement.
         """
         name = action.get("action", "")
         params = action.get("params", {}) or {}
         logger.info("[ACTIONS] execute: %s %s", name, params)
 
+        t0 = time.time()
         loop = asyncio.get_event_loop()
         try:
-            return await loop.run_in_executor(None, self._execute_sync, name, params)
+            result = await loop.run_in_executor(None, self._execute_sync, name, params)
+            latency_ms = (time.time() - t0) * 1000
+            self._record_for_learning(name, params, success=True, latency_ms=latency_ms)
+            return result
         except Exception as e:
+            latency_ms = (time.time() - t0) * 1000
+            self._record_for_learning(name, params, success=False, latency_ms=latency_ms, error=str(e))
             logger.warning("[ACTIONS] execute failed (%s): %s", name, e)
             return f"Couldn't {name.replace('_', ' ')}"
 
@@ -138,10 +167,21 @@ class ActionDispatcher:
                 return None
             return None
 
-        # ── Media ─────────────────────────────────────────
+        # ── Media (routed through MusicAgent) ────────────
         if name == "play_media":
             query = params.get("query", "")
-            return self._play_media(query)
+            return asyncio.run(self._play_media_async(query))
+
+        # ── Music control actions ─────────────────────────
+        if name in ("music_pause", "music_resume", "music_next",
+                     "music_previous", "music_stop", "music_shuffle",
+                     "music_repeat", "music_status"):
+            return asyncio.run(self._music_action(name, params))
+        if name == "music_volume":
+            pct = int(params.get("percent", params.get("level", 50)))
+            return asyncio.run(self._music_volume(pct))
+        if name == "music_mute":
+            return asyncio.run(self._music_mute())
 
         # ── Folder opening (TASK 9) ───────────────────────
         if name == "open_folder":
@@ -481,17 +521,57 @@ class ActionDispatcher:
             logger.debug("[ACTIONS] locate_text failed: %s", e)
         return None
 
-    def _play_media(self, query: str) -> str:
-        """Play media: try Spotify, else YouTube search."""
-        q_lower = query.lower()
-        # If it looks like a music request, try YouTube
-        url = "https://www.youtube.com/results?search_query=" + query.replace(" ", "+")
-        ex = self._ensure_executor()
-        if ex:
-            ok, msg = ex.browser_navigate(url)
-            if ok:
-                return f"Playing {query}"
-        return self._open_url_fallback(url)
+    async def _play_media_async(self, query: str) -> str:
+        """Play media through the MusicAgent."""
+        try:
+            from services.music_agent import music_agent
+            await music_agent.initialize()
+            return await music_agent.play(query)
+        except Exception as e:
+            logger.warning("[ACTIONS] MusicAgent failed: %s — falling back", e)
+            # Fallback to old browser-based playback
+            url = "https://www.youtube.com/results?search_query=" + query.replace(" ", "+")
+            ex = self._ensure_executor()
+            if ex:
+                ok, msg = ex.browser_navigate(url)
+                if ok:
+                    return f"Playing {query}"
+            return self._open_url_fallback(url)
+
+    async def _music_action(self, name: str, params: Dict[str, Any]) -> str:
+        """Execute a music control action."""
+        try:
+            from services.music_agent import music_agent
+            action_map = {
+                "music_pause": music_agent.pause,
+                "music_resume": music_agent.resume,
+                "music_next": music_agent.next,
+                "music_previous": music_agent.previous,
+                "music_stop": music_agent.stop,
+                "music_shuffle": music_agent.shuffle,
+                "music_repeat": music_agent.repeat,
+                "music_status": music_agent.status,
+            }
+            fn = action_map.get(name)
+            if fn:
+                return await fn()
+        except Exception as e:
+            logger.debug("[ACTIONS] Music action failed: %s", e)
+        return f"Music control unavailable for {name}"
+
+    async def _music_volume(self, percent: int) -> str:
+        try:
+            from services.music_agent import music_agent
+            return await music_agent.set_volume(percent)
+        except Exception:
+            return "Volume control unavailable"
+
+    async def _music_mute(self) -> str:
+        try:
+            from services.music_agent import music_agent
+            return await music_agent.mute()
+        except Exception:
+            return "Mute unavailable"
 
 
 # Global singleton

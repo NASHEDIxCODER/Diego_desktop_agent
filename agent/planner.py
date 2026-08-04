@@ -72,6 +72,7 @@ class AgentPlanner:
     def __init__(self):
         self._llm_client = None
         self._initialized = False
+        self._experience_enabled = False
 
     def initialize(self) -> bool:
         """Initialize the planner."""
@@ -82,6 +83,18 @@ class AgentPlanner:
         except Exception as e:
             logger.warning("LLM client not available: %s", e)
             self._llm_client = None
+
+        # Wire experience DB for self-improving planning
+        try:
+            from learning.experience_db import experience_db
+            self._experience_db = experience_db
+            self._experience_enabled = True
+            logger.info("[Planner] Experience DB wired — self-improving enabled")
+        except Exception as e:
+            logger.debug("[Planner] Experience DB unavailable: %s", e)
+            self._experience_db = None
+            self._experience_enabled = False
+
         self._initialized = True
         logger.info("Agent planner initialized")
         return True
@@ -145,7 +158,27 @@ class AgentPlanner:
         return f"Done! I've completed the task: {request}"
 
     def _generate_plan(self, request: str) -> Optional[List[Dict[str, Any]]]:
-        """Generate a step-by-step plan using the LLM."""
+        """Generate a step-by-step plan using the LLM + experience DB."""
+        # ── Check experience DB for previously successful plans ──
+        experience_ctx = ""
+        if self._experience_enabled and self._experience_db:
+            try:
+                # Query for best approach
+                best = self._experience_db.best_approach(request, top_n=2)
+                if best and best[0].get("success"):
+                    exp = best[0]
+                    experience_ctx = "\nPrevious successful approach:\n"
+                    experience_ctx += f"  Steps: {' → '.join(exp.get('plan_steps', [])[:5])}\n"
+                    experience_ctx += f"  Latency: {exp.get('latency_ms', 0):.0f}ms\n"
+                    experience_ctx += f"  Result: {exp.get('result', '')}\n"
+
+                # Actions to avoid
+                avoid = self._experience_db.avoid_actions(request)
+                if avoid:
+                    experience_ctx += f"\nDo NOT use these actions (they failed before): {', '.join(avoid)}\n"
+            except Exception as e:
+                logger.debug("[Planner] Experience query failed: %s", e)
+
         if not self._llm_client:
             return self._fallback_plan(request)
 
@@ -154,6 +187,7 @@ class AgentPlanner:
             context = f"Current URL: {agent_memory.browser_url or 'unknown'}\n"
             context += f"Tabs: {len(agent_memory.browser_tabs)} open\n"
             context += f"Last action: {agent_memory.last_action or 'none'}\n"
+            context += experience_ctx
 
             prompt = f"{PLANNER_SYSTEM_PROMPT}\n\nContext:\n{context}\n\nUser request: {request}\n\nPlan:"
 
@@ -285,8 +319,59 @@ class AgentPlanner:
         return False, f"Unknown action: {action}"
 
     def _try_recovery(self, action: str, params: Dict[str, Any], error: str) -> Optional[str]:
-        """Try to recover from a failed action."""
+        """Try to recover from a failed action using experience + heuristics."""
         logger.info("Attempting recovery for %s...", action)
+
+        # ── Check experience DB for recovery strategies ──
+        if self._experience_enabled and self._experience_db:
+            try:
+                approaches = self._experience_db.best_approach(
+                    f"recover {action}", top_n=1)
+                if approaches and approaches[0].get("recovery_action"):
+                    recovery = approaches[0]["recovery_action"]
+                    logger.info("[Planner] Experience-based recovery: %s", recovery)
+                    # Try the recovery action
+                    # Parse recovery as "action_name:param" format
+                    if ":" in recovery:
+                        rec_action, rec_param = recovery.split(":", 1)
+                        rec_params = {"app": rec_param} if "desktop_open" in rec_action else {}
+                        success, msg = self._execute_action(rec_action, rec_params)
+                        if success:
+                            return f"Recovered via {recovery}: {msg}"
+            except Exception as e:
+                logger.debug("[Planner] Recovery query failed: %s", e)
+
+        # ── Heuristic recovery ──────────────────────────
+
+        # Firefox failed → try Chrome
+        if action == "desktop_open" and params.get("app", "").lower() in ("firefox", "firefox-esr", "firefox-bin"):
+            alternatives = ["google-chrome", "chromium", "brave", "chromium-browser"]
+            import shutil
+            for alt in alternatives:
+                if shutil.which(alt):
+                    logger.info("[Planner] Firefox failed → trying %s", alt)
+                    success, msg = self._execute_action("desktop_open", {"app": alt})
+                    if success:
+                        return f"Firefox wasn't available, used {alt} instead: {msg}"
+
+        # Chrome failed → try Firefox
+        if action == "desktop_open" and params.get("app", "").lower() in ("google-chrome", "chromium", "chrome"):
+            if shutil.which("firefox"):
+                logger.info("[Planner] Chrome failed → trying Firefox")
+                success, msg = self._execute_action("desktop_open", {"app": "firefox"})
+                if success:
+                    return f"Chrome wasn't available, used Firefox instead: {msg}"
+
+        # Browser navigate failed → try fallback
+        if action == "browser_navigate":
+            url = params.get("url", "")
+            if url and not url.startswith(("http://", "https://")):
+                # Try adding https://
+                retry_url = "https://" + url
+                logger.info("[Planner] Retrying navigate with https: %s", retry_url)
+                success, msg = self._execute_action("browser_navigate", {"url": retry_url})
+                if success:
+                    return msg
 
         # For browser click failures, try taking a screenshot first
         if "browser_click" in action and "timeout" in error.lower():

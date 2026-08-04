@@ -85,8 +85,8 @@ shutdown_event = threading.Event()
 SAMPLE_RATE = 16000
 CHANNELS = 1
 DTYPE = "int16"
-FRAME_DURATION = 0.03  # 30ms frames
-FRAME_SAMPLES = int(SAMPLE_RATE * FRAME_DURATION)  # 480 samples
+FRAME_DURATION = 0.032  # 32ms frames — native Silero VAD window size (no zero-padding)
+FRAME_SAMPLES = int(SAMPLE_RATE * FRAME_DURATION)  # 512 samples
 RING_BUFFER_SECONDS = 10.0
 RING_BUFFER_MAX_FRAMES = int(RING_BUFFER_SECONDS / FRAME_DURATION)
 

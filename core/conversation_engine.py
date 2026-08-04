@@ -191,6 +191,12 @@ class ConversationEngine:
         # Vision context provider (set by main/leo)
         self._vision_context_fn = None
 
+        # Search provider (set by main/leo) — callable(query) -> str
+        self._search_provider_fn = None
+
+        # Learning context provider (set by main/leo) — callable() -> str
+        self._learning_context_fn = None
+
         # Action executor (set by main/leo) — maps ACTION dicts to desktop ops
         self._action_executor = None
 
@@ -201,8 +207,16 @@ class ConversationEngine:
     # ── Wiring ────────────────────────────────────────────
 
     def set_vision_context(self, fn) -> None:
-        """Provide a callable() -> str that returns current screen context."""
+        """Provide an async callable() -> str that returns current screen context."""
         self._vision_context_fn = fn
+
+    def set_search_provider(self, fn) -> None:
+        """Provide an async callable(query: str) -> str that returns search results."""
+        self._search_provider_fn = fn
+
+    def set_learning_context(self, fn) -> None:
+        """Provide a callable() -> str that returns learned user profile context."""
+        self._learning_context_fn = fn
 
     def set_action_executor(self, fn) -> None:
         """Provide an async callable(action_dict) -> str that runs desktop actions."""
@@ -755,15 +769,53 @@ class ConversationEngine:
 
     async def _llm_sentences(
         self, user_text: str, interrupt: asyncio.Event) -> AsyncIterator[str]:
-        """Yield LLM sentences, adding vision context when useful."""
+        """Yield LLM sentences, adding vision/search/desktop/learn/music context."""
+        # ── Desktop state injection (always) ───────────────
+        try:
+            from services.desktop_state import desktop_state
+            loop = asyncio.get_event_loop()
+            ds_ctx = await loop.run_in_executor(None, desktop_state.quick_context)
+            if ds_ctx:
+                user_text = f"{user_text}\n[Desktop: {ds_ctx}]"
+        except Exception as e:
+            logger.debug("[LLM] desktop state failed: %s", e)
+
+        # ── Screen context injection ───────────────────────
         if self._references_screen(user_text) and self._vision_context_fn:
             try:
-                loop = asyncio.get_event_loop()
-                ctx = await loop.run_in_executor(None, self._vision_context_fn)
+                ctx = await self._vision_context_fn()
                 if ctx:
                     user_text = f"{user_text}\n[Screen context: {ctx}]"
             except Exception as e:
                 logger.debug("[LLM] vision context failed: %s", e)
+
+        # ── Search context injection ───────────────────────
+        if self._references_search(user_text) and self._search_provider_fn:
+            try:
+                search_ctx = await self._search_provider_fn(user_text)
+                if search_ctx:
+                    user_text = f"{user_text}\n[Web search results: {search_ctx}]"
+            except Exception as e:
+                logger.debug("[LLM] search context failed: %s", e)
+
+        # ── Context Composer (smart memory injection) ──────
+        try:
+            from agent.context_composer import context_composer
+            composed = context_composer.compose(user_text, max_tokens=800)
+            if composed:
+                user_text = f"{user_text}\n[{composed}]"
+        except Exception as e:
+            logger.debug("[LLM] context composer failed: %s", e)
+
+        # ── Music agent status (if music is playing) ───────
+        try:
+            from services.music_agent import music_agent
+            if music_agent.is_playing:
+                status = await music_agent.status()
+                if status and "Nothing" not in status:
+                    user_text = f"{user_text}\n[Music: {status}]"
+        except Exception as e:
+            logger.debug("[LLM] music agent failed: %s", e)
 
         async for sentence in streaming_llm.generate(user_text, interrupt):
             yield sentence
@@ -831,6 +883,20 @@ class ConversationEngine:
             "screen", "looking at", "this page", "this window", "what am i",
             "read this", "what does this say", "on my screen", "this button",
             "click the", "click this", "what's open", "whats open",
+        ]
+        return any(k in t for k in keys)
+
+    @staticmethod
+    def _references_search(text: str) -> bool:
+        """Return True if the user query likely needs web search."""
+        t = text.lower()
+        keys = [
+            "search", "look up", "find", "google", "what is", "who is",
+            "how to", "how do i", "latest", "news", "weather",
+            "definition", "meaning of", "what are", "what does",
+            "tell me about", "information on", "learn about",
+            "what's happening", "whats happening", "trending",
+            "today", "this week", "current", "recent",
         ]
         return any(k in t for k in keys)
 

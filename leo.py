@@ -115,10 +115,41 @@ async def run_leo(no_auth: bool = False) -> None:
     """
     from core.conversation_engine import conversation_engine
     from agent.action_dispatcher import action_dispatcher
+    from services.vision_service import vision_service
+    from services.search_service import search_service
+    from services.screen_capture import screen_capture_service
 
     # ── Wire subsystems ───────────────────────────────────
     conversation_engine.set_action_executor(action_dispatcher.execute)
-    conversation_engine.set_vision_context(action_dispatcher._screen_context_sync)
+
+    # Vision context: Use the new VisionService (structured UI tree + OCR)
+    # Falls back gracefully to the old vision module if the new service is
+    # unavailable.
+    conversation_engine.set_vision_context(vision_service.quick_context)
+
+    # Search provider: Use the new SearchService (DuckDuckGo/Tavily + trafilatura)
+    conversation_engine.set_search_provider(search_service.context_for_llm)
+
+    # Learning context: Context Composer — smart, ranked, compact memory injection
+    # Replaces the old naive learning_engine.llm_context() approach.
+    from agent.context_composer import context_composer
+    conversation_engine.set_learning_context(
+        lambda: context_composer.compose("", max_tokens=500)
+    )
+
+    # ── Initialize new services ───────────────────────────
+    # MusicAgent: unified music control (MPV, Spotify, YouTube, local)
+    from services.music_agent import music_agent
+    try:
+        await music_agent.initialize()
+        logger.info("[LEO] MusicAgent initialized")
+    except Exception as e:
+        logger.debug("[LEO] MusicAgent init skipped: %s", e)
+
+    # Augment the learning engine callable with the composer for richer context
+    from learning.learning_engine import learning_engine
+    # Keep backward compatibility: the engine's llm_context() still works
+    # but ContextComposer now handles ranking/compression in the LLM pipe.
 
     # ── Face auth provider (deferred to wake) ─────────────
     if no_auth:

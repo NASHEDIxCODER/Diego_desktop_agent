@@ -208,4 +208,17 @@ onnxruntime>=1.17.0       # ONNX inference backend for openWakeWord models
 rapidfuzz>=3.0.0          # fuzzy wake-transcript verification (phonetic+fuzzy+confidence)
 jellyfish>=1.0.0          # metaphone phonetic matching for wake verification
 
+# ── Web Search stack (SearchService) ──
+aiohttp>=3.9.0            # async HTTP for DuckDuckGo / Tavily / page fetching
+trafilatura>=1.12.0       # high-quality HTML content extraction (removes boilerplate)
+beautifulsoup4>=4.12.0    # HTML parsing (DuckDuckGo results + extraction fallback)
+lxml>=5.0.0               # fast HTML/XML parser (BeautifulSoup backend)
+
+# ── Screen Vision stack (VisionService) ──
+mss>=9.0.0                # ultra-fast screen capture (<20ms, C extension)
+pytesseract>=0.3.10       # OCR fallback (Tesseract wrapper)
+# Optional: paddleocr>=2.8.0  # best OCR accuracy (requires paddlepaddle)
+# Optional: easyocr>=1.7.0    # good OCR accuracy (requires torch)
+# Optional: playwright>=1.45.0 # JavaScript page rendering (install: playwright install chromium)
+
 

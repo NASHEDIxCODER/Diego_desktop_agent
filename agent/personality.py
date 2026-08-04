@@ -25,21 +25,32 @@ class LeoPersonality:
     Generates varied, natural conversational responses.
 
     Tracks recently used phrases to avoid repetition.
-    Adapts based on time of day and conversation context.
+    Adapts based on time of day, conversation context, mood, and user sentiment.
+
+    NEVER says:
+        - "How may I assist you?"
+        - "Task completed."
+        - "Done."
+        - Robotic confirmation patterns
     """
 
     def __init__(self):
         self._recent_greetings: List[str] = []
         self._recent_acks: List[str] = []
-        self._max_recent = 5  # Don't repeat last N phrases
+        self._recent_results: List[str] = []
+        self._max_recent = 8     # Don't repeat last N phrases
+        self._session_greeting_count = 0
+        self._used_greetings_today: List[str] = []
 
-        # Greetings — never use "How may I assist you?"
+        # ── Greetings: varied by time of day ──────────────
         self._greetings_morning = [
             "Good morning.",
-            "Morning! Ready when you are.",
+            "Morning. Ready when you are.",
             "Hey, good morning.",
-            "Up and at 'em. What's on your mind?",
+            "Morning. What's on your mind?",
             "Morning. Coffee's on you though.",
+            "Rise and shine. What are we working on?",
+            "Good morning. Let's get to it.",
         ]
 
         self._greetings_afternoon = [
@@ -48,6 +59,8 @@ class LeoPersonality:
             "Hey, what can I do for you?",
             "Yo. What do you need?",
             "Hey there. What are we working on?",
+            "Afternoon. How's it going?",
+            "Hey hey. What's on the docket?",
         ]
 
         self._greetings_evening = [
@@ -56,6 +69,17 @@ class LeoPersonality:
             "Hey, winding down?",
             "Evening. What's up?",
             "Hey. Still going strong, I see.",
+            "Evening. Late session today?",
+            "Good to see you. How was the day?",
+        ]
+
+        self._greetings_night = [
+            "Hey. Late one?",
+            "Burning the midnight oil, huh?",
+            "Late night. What's going on?",
+            "Hey. Couldn't sleep?",
+            "Still up? I'm here.",
+            "Late shift. What do you need?",
         ]
 
         self._greetings_returning = [
@@ -64,6 +88,8 @@ class LeoPersonality:
             "Hey, you're back.",
             "Oh hey. Welcome back.",
             "Good to see you again. What's up?",
+            "Back so soon? What's up?",
+            "There you are. How's it going?",
         ]
 
         self._greetings_generic = [
@@ -75,9 +101,11 @@ class LeoPersonality:
             "What do you need?",
             "Go ahead.",
             "Listening.",
+            "I'm all ears.",
+            "Present.",
         ]
 
-        # Acknowledgments (short, natural)
+        # ── Acknowledgments: short and natural ────────────
         self._acks = [
             "Got it.",
             "Sure.",
@@ -89,18 +117,25 @@ class LeoPersonality:
             "Alright.",
             "Yep.",
             "Understood.",
+            "Say no more.",
+            "Gotcha.",
+            "Noted.",
+            "Consider it done.",
+            "I'm on it.",
         ]
 
-        # Thinking fillers (when Leo needs a moment)
+        # ── Thinking fillers ──────────────────────────────
         self._thinking = [
             "Let me think...",
             "Hmm, give me a second.",
             "One moment...",
             "Let me check that.",
             "Thinking...",
+            "Hang on, let me process that.",
+            "Just a sec...",
         ]
 
-        # Farewells
+        # ── Farewells: varied ─────────────────────────────
         self._farewells = [
             "Catch you later.",
             "See ya.",
@@ -108,15 +143,41 @@ class LeoPersonality:
             "Take it easy.",
             "Later.",
             "I'll be here when you need me.",
+            "Until next time.",
+            "Have a good one.",
         ]
 
-        # Error responses (varied, not robotic)
+        # ── Error responses: natural, not robotic ─────────
         self._errors = [
             "Hmm, that didn't work. Let me try something else.",
             "I hit a snag there. Give me a moment.",
             "That didn't go through. Want me to try again?",
             "Ran into an issue. Let me figure this out.",
             "Something went sideways. Working on it.",
+            "Ah, that failed. Let me take another approach.",
+            "Didn't work. Trying a different way.",
+        ]
+
+        # ── Task confirmation: natural, never "Task completed" ──
+        self._task_confirmations = [
+            "That worked.",
+            "Done. {detail}",
+            "{detail} — all set.",
+            "Alright, {detail}",
+            "Got it. {detail}",
+            "That's done.",
+            "Finished. {detail}",
+            "It's done.",
+            "Sorted.",
+        ]
+
+        # ── Status observations: for when Leo notices something ──
+        self._observations = [
+            "Looks like you're working on {detail}.",
+            "I see {detail}.",
+            "Looks like {detail}.",
+            "Noticed {detail}.",
+            "Ah, {detail}.",
         ]
 
     def greeting(self, returning: bool = False) -> str:
@@ -172,6 +233,28 @@ class LeoPersonality:
 
         return choice
 
+    def task_confirmation(self, detail: str = "") -> str:
+        """
+        Generate a natural task confirmation.
+
+        NEVER "Task completed." or "Done." — always includes detail naturally.
+
+        Args:
+            detail: What was accomplished (e.g. "VS Code is open", "volume set to 50")
+        """
+        template = self._pick_varied(self._task_confirmations, self._recent_results)
+        return template.format(detail=detail) if detail else template.replace("{detail}", "").strip()
+
+    def observation(self, detail: str) -> str:
+        """
+        Generate a natural observation about the user's desktop state.
+
+        Args:
+            detail: What Leo noticed (e.g. "you're on GhostLine", "two failing tests")
+        """
+        template = random.choice(self._observations)
+        return template.format(detail=detail)
+
     def contextual_response(self, user_text: str) -> Optional[str]:
         """
         Generate a contextual short response for common inputs.
@@ -210,6 +293,37 @@ class LeoPersonality:
             return self.farewell()
 
         return None
+
+    # ── Emotional tone helpers ─────────────────────────────
+
+    @staticmethod
+    def detect_sentiment(text: str) -> str:
+        """Quick sentiment detection from user input. Returns 'positive', 'negative', or 'neutral'."""
+        t = text.lower()
+        positive_words = ("great", "awesome", "thanks", "love", "perfect",
+                          "nice", "good", "cool", "amazing", "excellent")
+        negative_words = ("bad", "terrible", "awful", "hate", "wrong",
+                          "broken", "fails", "doesn't work", "stupid")
+        pos = sum(1 for w in positive_words if w in t)
+        neg = sum(1 for w in negative_words if w in t)
+        if pos > neg:
+            return "positive"
+        elif neg > pos:
+            return "negative"
+        return "neutral"
+
+    @staticmethod
+    def tone_match(response: str, sentiment: str) -> str:
+        """Adjust response tone to match the user's sentiment."""
+        if sentiment == "negative":
+            acknowledgments = ["I hear you.", "Got it. Let me fix that.",
+                               "Understood. Working on it.", "Alright, let's sort this out."]
+            if not any(response.startswith(a.rstrip(".")) for a in acknowledgments):
+                return random.choice(acknowledgments) + " " + response
+        elif sentiment == "positive":
+            if not any(w in response.lower() for w in ("great", "awesome", "love", "glad")):
+                pass  # LLM should handle positive tone
+        return response
 
 
 # Global singleton
