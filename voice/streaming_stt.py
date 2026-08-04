@@ -101,7 +101,6 @@ class _SileroVAD:
         self._ready = False
         self._threshold = 0.5
 
-
     def load(self) -> bool:
         if self._ready:
             return True
@@ -168,7 +167,6 @@ class _SileroVAD:
             return 0.9 if rms > 300.0 else 0.05
 
 
-
 class _WhisperTranscriber:
     """faster-whisper transcriber for partial + final transcription."""
 
@@ -221,7 +219,6 @@ class _WhisperTranscriber:
         except Exception as e:
             logger.warning("[STREAM-STT] faster-whisper unavailable: %s", e)
             return False
-
 
     def transcribe(self, pcm_int16: bytes, sample_rate: int = SAMPLE_RATE,
                    use_vad_filter: bool = True) -> str:
@@ -329,9 +326,6 @@ class _WhisperTranscriber:
             return result
 
 
-
-
-
 class StreamingSTT:
     """
     Streaming speech-to-text with VAD endpointing and partial results.
@@ -386,7 +380,6 @@ class StreamingSTT:
     def reset_cancel(self) -> None:
         self._cancel.clear()
 
-
     # ── Main streaming loop ───────────────────────────────
 
     async def stream_utterances(
@@ -408,7 +401,21 @@ class StreamingSTT:
                 return
 
         self.reset_cancel()
-        last_total = audio_manager.total_samples
+
+        # ── DRAIN the ring buffer of all audio accumulated during TTS ──
+        # ROOT CAUSE FIX: when the STT re-enters COMMAND_LISTEN after
+        # SPEAKING, the ring buffer contains Leo's OWN speech (TTS audio
+        # played through the speakers and captured by the microphone).
+        # The read_since cursor MUST be advanced to the current write
+        # pointer so Leo never transcribes himself as user speech.
+        # Without this drain, the first "command" the user speaks is
+        # always lost — the ring buffer is full of TTS audio.
+        drain_start = audio_manager.total_samples
+        logger.info("[STREAM-STT] Draining TTS-contaminated audio "
+                    "(total_samples=%d → dropping all audio written before "
+                    "this point so Leo never hears himself)",
+                    drain_start)
+        last_total = drain_start  # skip everything written before this moment
 
         speech_frames: List[np.ndarray] = []
         pre_roll: List[np.ndarray] = []
@@ -419,9 +426,15 @@ class StreamingSTT:
         last_partial_len = 0
         last_partial_time = 0.0
         loop = asyncio.get_event_loop()
+        # ── ROOT CAUSE FIX: frame remainder tracking ──
+        # _iter_frames() silently discards samples that don't fill a
+        # complete 480-sample frame at chunk boundaries. This remainder
+        # is carried forward to the next chunk — NO sample is ever lost.
+        _frame_remainder: np.ndarray = np.array([], dtype=np.float32)
 
-        logger.info("[STREAM-STT] Listening started (endpoint=%dms, min_pause=%dms)",
-                    ENDPOINT_SILENCE_MS, MIN_PAUSE_MS)
+        logger.info("[STREAM-STT] Listening started (endpoint=%dms, min_pause=%dms "
+                    "total_samples=%d)",
+                    ENDPOINT_SILENCE_MS, MIN_PAUSE_MS, drain_start)
 
         while not self._cancel.is_set():
             await self._listen_enabled.wait()
@@ -434,8 +447,17 @@ class StreamingSTT:
                 await asyncio.sleep(0.01)
                 continue
 
-            # Process in 30ms frames
-            for frame in self._iter_frames(new_audio):
+            # Prepend any frame remainder from the previous chunk so NO
+            # sample is ever discarded at chunk boundaries.
+            if len(_frame_remainder) > 0:
+                new_audio = np.concatenate([_frame_remainder, new_audio])
+                _frame_remainder = np.array([], dtype=np.float32)
+
+            # Process in 30ms frames. _iter_frames_with_remainder yields
+            # (index, frame) pairs so we can compute the leftover samples.
+            last_full_idx = -1
+            for i, frame in self._iter_frames_with_remainder(new_audio):
+                last_full_idx = i
                 prob = await loop.run_in_executor(None, self._vad.speech_prob, frame)
                 is_speech = prob > 0.5
                 now = time.time()
@@ -453,7 +475,9 @@ class StreamingSTT:
                         speech_frames = list(pre_roll)  # include pre-roll
                         last_partial_len = 0
                         last_partial_time = now
-                        logger.info("[STREAM-STT] Speech start")
+                        logger.info("[STREAM-STT] Speech start "
+                                    "(VAD_prob=%.2f frames_collected=%d)",
+                                    prob, len(speech_frames))
                         yield UtteranceEvent(
                             kind="speech_start", started_at=now)
                     speech_frames.append(frame)
@@ -466,6 +490,11 @@ class StreamingSTT:
 
                         # Check endpoint
                         if silence_run_ms >= ENDPOINT_SILENCE_MS:
+                            dur_so_far = len(speech_frames) * 30
+                            logger.info("[STREAM-STT] Endpoint detected "
+                                        "(duration=%dms silence=%dms frames=%d)",
+                                        dur_so_far, int(silence_run_ms),
+                                        len(speech_frames))
                             final = await self._finalize(speech_frames, speech_start_time)
                             # Reset state
                             in_speech = False
@@ -498,11 +527,21 @@ class StreamingSTT:
 
                     # Hard cap on utterance length
                     if (now - speech_start_time) >= MAX_UTTERANCE_S:
+                        logger.info("[STREAM-STT] Utterance capped at %.1fs "
+                                    "(MAX_UTTERANCE_S)", MAX_UTTERANCE_S)
                         final = await self._finalize(speech_frames, speech_start_time)
                         in_speech = False
                         speech_frames = []
                         if final is not None and not is_filler(final.text):
                             yield final
+
+            # ── ROOT CAUSE FIX: carry frame remainder forward ──
+            # After the frame loop, any samples beyond the last full frame
+            # are the remainder. Carry them to the next chunk.
+            if last_full_idx >= 0:
+                remainder_start = last_full_idx + FRAME_SAMPLES
+                if remainder_start < len(new_audio):
+                    _frame_remainder = new_audio[remainder_start:].copy()
 
     async def _finalize(self, frames: List[np.ndarray], start: float) -> Optional[UtteranceEvent]:
         """Transcribe the complete utterance.
@@ -512,6 +551,11 @@ class StreamingSTT:
         """
         pcm = self._frames_to_bytes(frames)
         dur_ms = len(frames) * 30
+        num_samples = len(pcm) // 2
+        logger.info("[STREAM-STT] Finalizing utterance: duration=%dms "
+                    "frames=%d pcm_bytes=%d samples=%d",
+                    dur_ms, len(frames), len(pcm), num_samples)
+
         if dur_ms < MIN_UTTERANCE_MS or len(pcm) < 512:
             logger.info(
                 "[STREAM-STT] Utterance DISCARDED reason=too_short "
@@ -519,20 +563,28 @@ class StreamingSTT:
                 "not speech", dur_ms, MIN_UTTERANCE_MS, len(pcm))
             return None
         loop = asyncio.get_event_loop()
+        # ── ROOT CAUSE FIX: DISABLE Whisper's internal VAD filter ──
+        # The streaming Silero VAD ALREADY gates speech upstream (speech
+        # frames are only collected when VAD prob > 0.5). Enabling
+        # faster-whisper's internal vad_filter applies a SECOND VAD that
+        # is calibrated for long-form audio and aggressively strips short
+        # utterances — proven to produce "no_segments" on 0.5–1.5s
+        # commands like "open vscode" or "search weather".
+        # use_vad_filter=False because the external VAD verified speech.
         text = await loop.run_in_executor(
-            None, self._whisper.transcribe, pcm, SAMPLE_RATE)
+            None, self._whisper.transcribe, pcm, SAMPLE_RATE, False)
         if not text:
             logger.info(
                 "[STREAM-STT] Utterance DISCARDED reason=empty_transcript "
-                "(duration=%dms) — Whisper heard nothing intelligible",
-                dur_ms)
+                "(duration=%dms samples=%d) — Whisper heard nothing "
+                "intelligible",
+                dur_ms, num_samples)
             return None
-        logger.info("[STREAM-STT] Final (%dms, endpoint at +%.1fs): '%s'",
+        logger.info("[STREAM-STT] Final transcript (%dms, endpoint at +%.1fs): '%s'",
                     dur_ms, time.time() - start, text)
         return UtteranceEvent(
             kind="final", text=text, is_final=True,
             started_at=start, ended_at=time.time(), audio=pcm)
-
 
     @staticmethod
     def _frames_to_bytes(frames: List[np.ndarray]) -> bytes:
@@ -549,10 +601,23 @@ class StreamingSTT:
 
     @staticmethod
     def _iter_frames(audio: np.ndarray):
-        """Yield 30ms frames from an arbitrary-length int16 array."""
+        """Yield 30ms frames from an arbitrary-length float32 array."""
         n = len(audio)
         for i in range(0, n - FRAME_SAMPLES + 1, FRAME_SAMPLES):
             yield audio[i:i + FRAME_SAMPLES]
+
+    @staticmethod
+    def _iter_frames_with_remainder(audio: np.ndarray):
+        """Yield (index, 30ms frame) pairs from an array, returning the
+        index so the caller can compute the remainder slice after the loop.
+
+        The remainder (samples left after the last full frame) MUST be
+        carried forward by the caller — otherwise samples are silently
+        discarded at every chunk boundary (ROOT CAUSE FIX).
+        """
+        n = len(audio)
+        for i in range(0, n - FRAME_SAMPLES + 1, FRAME_SAMPLES):
+            yield i, audio[i:i + FRAME_SAMPLES]
 
     # ── Interruption detection while Leo speaks ───────────
 

@@ -597,6 +597,23 @@ class ConversationEngine:
                     await self._run_action(action_json)
                 logger.info("[FOLLOWUP] Listening for follow-up (%.0fs window)",
                             CONVERSATION_TIMEOUT_S)
+                # ── DRAIN stale events accumulated during TTS/ACTION ──
+                # The STT pump runs continuously during SPEAKING and
+                # FOLLOWUP. It captures Leo's OWN voice (TTS audio played
+                # through speakers) as phantom speech_start/final events.
+                # These MUST be drained before re-entering COMMAND_LISTEN,
+                # otherwise the first user command is always lost.
+                drained = 0
+                while True:
+                    try:
+                        events.get_nowait()
+                        drained += 1
+                    except asyncio.QueueEmpty:
+                        break
+                if drained:
+                    logger.info("[FOLLOWUP] Drained %d stale STT events "
+                                "(TTS/action contamination) — queue clean "
+                                "for next turn", drained)
                 self._set_state(EngineState.COMMAND_LISTEN)
         finally:
             # DESTROY streaming Whisper the instant the session ends.
