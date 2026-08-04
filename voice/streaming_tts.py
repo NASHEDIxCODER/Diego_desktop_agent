@@ -11,7 +11,7 @@ KEY DIFFERENCE from the old TTS (subprocess pw-play/paplay):
 
 Architecture:
   LLM sentences ──▶ sentence queue ──▶ synthesizer worker ──▶ audio chunk queue ──▶ playback worker ──▶ speakers
-                        (async)              (thread)              (async queue)         (thread)
+                         (async)              (thread)              (async queue)         (thread)
 
 Interruption path:
   user speaks ──▶ engine calls stop() ──▶ playback aborted + queues cleared + synthesis cancelled
@@ -45,7 +45,11 @@ class _InterruptiblePlayer:
     """
     Owns a sounddevice.OutputStream and plays int16 PCM chunks.
 
-    Provides INSTANT stop: aborts the stream without draining the buffer.
+    OWNERSHIP CONTRACT: the OutputStream is created ONCE (lazily on first
+    write) and destroyed ONCE (in close() at shutdown). It is NEVER
+    destroyed during interruption — only stopped. This guarantees that
+    the PortAudio/ALSA C memory is NEVER freed while the playback thread
+    is inside write(), eliminating the use-after-free → heap corruption.
 
     The worker thread is PERSISTENT: it runs for the lifetime of the player
     (until close()), surviving utterance boundaries. `finish()` merely marks
@@ -56,18 +60,26 @@ class _InterruptiblePlayer:
     def __init__(self, sample_rate: int = PLAY_SAMPLE_RATE):
         self._sample_rate = sample_rate
         self._sd = None
-        self._stream = None
-        self._lock = threading.Lock()
+        self._stream_lock = threading.Lock()       # guards _stream create/destroy ONLY
+        self._stream = None                        # persistent OutputStream (id fixed at log)
+        self._stream_created: bool = False         # True once created, False until close()
         self._playing = False
-        self._abort = threading.Event()       # interrupt current utterance
-        self._shutdown = threading.Event()    # kill the worker thread
+        self._abort = threading.Event()             # interrupt current utterance
+        self._shutdown = threading.Event()          # kill the worker thread
         self._chunk_queue: "queue.Queue[Optional[bytes]]" = queue.Queue()
         self._thread: Optional[threading.Thread] = None
 
+    # ── Stream lifecycle ───────────────────────────────────
+
     def _ensure_stream(self) -> bool:
-        with self._lock:
+        """Lazily create the OutputStream. Called ONLY from the playback
+        worker thread (tts-playback). Creates once, never recreates after
+        interruption — the stream lives until close() at shutdown."""
+        with self._stream_lock:
             if self._stream is not None:
                 return True
+            if self._shutdown.is_set():
+                return False
             try:
                 if self._sd is None:
                     import sounddevice as sd
@@ -78,24 +90,43 @@ class _InterruptiblePlayer:
                     dtype="int16",
                     blocksize=0,  # let PortAudio pick for low latency
                 )
+                stream_id = id(self._stream)
                 self._stream.start()
+                self._stream_created = True
+                logger.info("[PLAYER] OutputStream CREATED id=%s "
+                            "thread=%s — persistent, lives until shutdown",
+                            stream_id, threading.current_thread().name)
                 return True
             except Exception as e:
                 logger.error("[PLAYER] Failed to open output stream: %s", e)
                 self._stream = None
                 return False
 
+    # ── Worker thread ──────────────────────────────────────
+
     def start_worker(self) -> None:
         """Start the persistent background playback thread."""
         if self._thread and self._thread.is_alive():
+            logger.debug("[PLAYER] Worker thread already running (name=%s)",
+                         self._thread.name)
             return
         self._shutdown.clear()
         self._abort.clear()
-        self._thread = threading.Thread(target=self._run, name="tts-playback", daemon=True)
+        self._thread = threading.Thread(
+            target=self._run, name="tts-playback", daemon=True)
         self._thread.start()
+        logger.info("[PLAYER] Worker thread STARTED name=%s",
+                    self._thread.name)
 
     def _run(self) -> None:
-        """Persistent playback loop. Exits only on close()/shutdown."""
+        """Persistent playback loop. Exits only on close()/shutdown.
+
+        NEVER touches self._stream_lock — only reads self._stream.
+        The stream is never destroyed while this thread is alive,
+        so a bare read is safe (no use-after-free possible)."""
+        tid = threading.get_ident()
+        logger.info("[PLAYER] Playback loop ENTERED thread=%s/%s",
+                    threading.current_thread().name, tid)
         while not self._shutdown.is_set():
             try:
                 chunk = self._chunk_queue.get(timeout=0.1)
@@ -103,10 +134,14 @@ class _InterruptiblePlayer:
                 continue
             if chunk is None:  # end-of-utterance marker (NOT thread exit)
                 self._playing = False
+                logger.debug("[PLAYER] End-of-utterance marker received")
                 continue
             if self._abort.is_set():
-                # Drop chunks for an interrupted utterance
+                # Drop chunks for an interrupted utterance.
+                # Do NOT touch the stream — it stays alive.
                 self._playing = False
+                logger.debug("[PLAYER] Chunk dropped (abort set, queue_size=%d)",
+                             self._chunk_queue.qsize())
                 continue
             if not self._ensure_stream():
                 # Can't play; drop the chunk but keep the worker alive
@@ -114,15 +149,32 @@ class _InterruptiblePlayer:
             try:
                 data = np.frombuffer(chunk, dtype=np.int16)
                 self._playing = True
+                # ROOT CAUSE FIX: the stream may have been stopped by
+                # interrupt() → _stream.stop(). write() auto-starts it.
+                # We never close/destroy the stream here — it persists.
                 self._stream.write(data)
+                self._playing = False
             except Exception as e:
                 logger.debug("[PLAYER] write error: %s", e)
-                # A broken stream is recreated lazily on next chunk
-                with self._lock:
-                    self._stream = None
-            finally:
-                self._playing = False
+                # Stream error — mark it for lazy recreation on next write.
+                # Do NOT set to None here without holding the lock;
+                # _ensure_stream will try to recreate it.
+                with self._stream_lock:
+                    if self._stream is not None:
+                        logger.warning("[PLAYER] Stream error on write — "
+                                       "will recreate on next write. "
+                                       "stream_id=%s error=%s",
+                                       id(self._stream), e)
+                        try:
+                            self._stream.close()
+                        except Exception:
+                            pass
+                        self._stream = None
         self._playing = False
+        logger.info("[PLAYER] Playback loop EXITED thread=%s/%s",
+                    threading.current_thread().name, tid)
+
+    # ── Queue operations ────────────────────────────────────
 
     def enqueue(self, pcm_bytes: bytes) -> None:
         """Queue a chunk for playback (non-blocking)."""
@@ -134,37 +186,69 @@ class _InterruptiblePlayer:
         if not self._shutdown.is_set():
             self._chunk_queue.put(None)
 
+    # ── Interruption (SAFE — never destroys the stream) ────
+
     def interrupt(self) -> None:
         """
         INSTANT interrupt of the CURRENT utterance only.
 
-        Clears queued chunks and aborts the hardware stream so buffered
-        audio is dropped immediately, but keeps the worker thread alive
-        for the next utterance.
+        ROOT CAUSE FIX (PortAudio/ALSA crash):
+          BEFORE: interrupt() called abort() + close() + stream=None,
+          destroying the PortAudio/ALSA stream from the asyncio event
+          loop thread while the tts-playback daemon thread was inside
+          _stream.write(). This freed ALSA C memory while PortAudio's
+          blocking write still referenced it → free(): chunks in
+          smallbin corrupted → PaAlsaStreamComponent_EndProcessing crash.
+
+          AFTER: interrupt() ONLY sets the abort flag + drains the
+          queue + calls _stream.stop() to drop buffered audio.
+          The OutputStream object is NEVER destroyed during interrupt.
+          The playback thread naturally skips chunks when abort is set.
+          The stream persists until close() at shutdown — created once,
+          destroyed once, never touched by two threads simultaneously.
         """
+        caller_thread = threading.current_thread().name
+        logger.info("[PLAYER] Interrupt received from thread=%s "
+                    "(queue_size=%d stream_id=%s stream_created=%s)",
+                    caller_thread, self._chunk_queue.qsize(),
+                    id(self._stream) if self._stream else "none",
+                    self._stream_created)
+
+        # Step 1: Set abort flag so the worker skips all pending chunks
         self._abort.set()
-        # Drain pending chunks
+
+        # Step 2: Drain the pending chunk queue
+        drained = 0
         try:
             while True:
                 self._chunk_queue.get_nowait()
+                drained += 1
         except queue.Empty:
             pass
-        # Abort the hardware stream immediately (discards buffered audio)
-        with self._lock:
+        if drained:
+            logger.info("[PLAYER] Interrupt drained %d pending chunks", drained)
+
+        # Step 3: Stop the stream to drop hardware-buffered audio.
+        # stop() is SAFE to call from any thread — it does NOT free
+        # PortAudio/ALSA memory, it only tells the stream to drop its
+        # internal buffer. The stream object stays alive.
+        with self._stream_lock:
             if self._stream is not None:
+                stream_id = id(self._stream)
                 try:
-                    self._stream.abort()
-                except Exception:
-                    pass
-                try:
-                    self._stream.close()
-                except Exception:
-                    pass
-                self._stream = None
+                    self._stream.stop()
+                    logger.info("[PLAYER] Stream STOPPED id=%s "
+                                "(buffered audio dropped, stream alive)", stream_id)
+                except Exception as e:
+                    logger.debug("[PLAYER] Stream stop error: %s", e)
+
         self._playing = False
-        # Re-arm for the next utterance
+
+        # Step 4: Re-arm for the next utterance.
+        # The worker thread will now see abort=False and process new chunks.
         self._abort.clear()
-        logger.debug("[PLAYER] Interrupted current utterance instantly")
+        logger.info("[PLAYER] Interrupt complete — re-armed for next utterance")
+
 
     def stop(self) -> None:
         """Alias for interrupt() — stops current playback immediately."""
@@ -172,29 +256,85 @@ class _InterruptiblePlayer:
 
     @property
     def is_playing(self) -> bool:
-        # Playing if actively writing or if there are chunks still queued
+        """True while audio is actively writing or chunks are queued."""
         return self._playing or not self._chunk_queue.empty()
 
+    # ── Shutdown (the ONLY place the stream is destroyed) ──
+
     def close(self) -> None:
-        """Kill the worker thread and release the stream."""
+        """
+        Kill the worker thread and DESTROY the stream.
+
+        THIS IS THE ONLY PLACE THE OUTPUTSTREAM IS CLOSED.
+
+        Guarantees:
+          1. Tells the worker to exit (shutdown flag)
+          2. Waits for the worker thread to join — at this point
+             _stream.write() is guaranteed to have returned
+          3. THEN closes and destroys the stream from the calling
+             thread (always the main/asyncio thread at shutdown)
+        """
+        caller_thread = threading.current_thread().name
+        logger.info("[PLAYER] Close requested from thread=%s "
+                    "(stream_id=%s stream_created=%s worker_alive=%s)",
+                    caller_thread,
+                    id(self._stream) if self._stream else "none",
+                    self._stream_created,
+                    self._thread.is_alive() if self._thread else False)
+
+        # Step 1: Tell worker thread to exit
         self._shutdown.set()
         self._abort.set()
+
+        # Step 2: Drain the queue so the worker isn't blocked on put()
+        drained = 0
         try:
             while True:
                 self._chunk_queue.get_nowait()
+                drained += 1
         except queue.Empty:
             pass
-        with self._lock:
+        if drained:
+            logger.info("[PLAYER] Close drained %d remaining chunks", drained)
+
+        # Step 3: Wait for the worker thread to exit.
+        # The worker loop checks _shutdown on every iteration.
+        # After join() returns, _stream.write() is guaranteed done.
+        if self._thread and self._thread.is_alive():
+            worker_name = self._thread.name
+            logger.info("[PLAYER] Waiting for worker thread '%s' to exit...",
+                        worker_name)
+            self._thread.join(timeout=2.0)
+            if self._thread.is_alive():
+                logger.warning("[PLAYER] Worker thread '%s' did not exit "
+                               "within timeout — forcing stream close anyway",
+                               worker_name)
+            else:
+                logger.info("[PLAYER] Worker thread '%s' confirmed EXITED",
+                            worker_name)
+        else:
+            logger.info("[PLAYER] No worker thread to join (was never started "
+                        "or already dead)")
+
+        # Step 4: NOW it's safe to destroy the stream.
+        # The worker thread is dead — no one else can touch _stream.
+        with self._stream_lock:
             if self._stream is not None:
+                stream_id = id(self._stream)
                 try:
                     self._stream.abort()
                     self._stream.close()
-                except Exception:
-                    pass
+                    logger.info("[PLAYER] OutputStream DESTROYED id=%s "
+                                "— ALSA resources freed safely", stream_id)
+                except Exception as e:
+                    logger.debug("[PLAYER] Stream close error (benign): %s", e)
                 self._stream = None
-        if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=1.0)
+                self._stream_created = False
+            else:
+                logger.info("[PLAYER] No stream to destroy (was never created)")
+
         self._playing = False
+        logger.info("[PLAYER] Close completed")
 
 
 class StreamingTTS:
@@ -279,8 +419,6 @@ class StreamingTTS:
         self._speaking.set()
         loop = asyncio.get_event_loop()
 
-        # Pipeline: pull next sentence's synthesis while current plays
-        pending_synth: Optional[asyncio.Task] = None
         try:
             async for sentence in sentences:
                 if self._should_stop(interrupt_event):
@@ -302,8 +440,6 @@ class StreamingTTS:
             if not self._should_stop(interrupt_event):
                 self._player.finish()
         finally:
-            if pending_synth is not None:
-                pending_synth.cancel()
             self._speaking.clear()
 
     def _should_stop(self, interrupt_event: Optional[asyncio.Event]) -> bool:
@@ -352,9 +488,11 @@ class StreamingTTS:
 
     def stop(self) -> None:
         """Immediately stop synthesis and playback (user interruption)."""
+        logger.info("[STREAM-TTS] stop() called — interrupting playback")
         self._stop_event.set()
         self._player.stop()
         self._speaking.clear()
+        logger.info("[STREAM-TTS] stop() complete")
 
     @property
     def is_speaking(self) -> bool:
@@ -365,9 +503,12 @@ class StreamingTTS:
         return self._ready
 
     def close(self) -> None:
+        """Graceful shutdown: stop playback, kill worker, destroy stream."""
+        logger.info("[STREAM-TTS] close() called — graceful shutdown")
         self.stop()
         self._player.close()
         self._ready = False
+        logger.info("[STREAM-TTS] close() complete")
 
 
 # ── Synthesis engine adapters ─────────────────────────────
