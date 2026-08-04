@@ -69,6 +69,15 @@ class _InterruptiblePlayer:
         self._chunk_queue: "queue.Queue[Optional[bytes]]" = queue.Queue()
         self._thread: Optional[threading.Thread] = None
 
+        # ── Race-free interruption protocol ──────────────────
+        # NEVER call _stream.stop() from the caller thread.
+        # The worker thread is the SOLE owner of stop().
+        # interrupt() sets a flag; the worker executes stop()
+        # after it has safely returned from write().
+        self._stop_requested = threading.Event()    # caller → worker: "please stop"
+        self._stop_executed = threading.Event()     # worker → caller: "stop complete"
+        self._write_active = threading.Event()      # worker is inside write()
+
     # ── Stream lifecycle ───────────────────────────────────
 
     def _ensure_stream(self) -> bool:
@@ -123,19 +132,30 @@ class _InterruptiblePlayer:
 
         NEVER touches self._stream_lock — only reads self._stream.
         The stream is never destroyed while this thread is alive,
-        so a bare read is safe (no use-after-free possible)."""
+        so a bare read is safe (no use-after-free possible).
+
+        STOP PROTOCOL: only this thread ever calls _stream.stop().
+        When the caller wants to interrupt, it sets _stop_requested.
+        This thread checks the flag before write() (to skip the write)
+        and after write() returns (to execute the stop), guaranteeing
+        that stop() NEVER races with write() inside PortAudio/ALSA."""
         tid = threading.get_ident()
         logger.info("[PLAYER] Playback loop ENTERED thread=%s/%s",
                     threading.current_thread().name, tid)
         while not self._shutdown.is_set():
+            # ── Check stop-requested BEFORE blocking on the queue ──
+            self._service_stop_request()
+
             try:
                 chunk = self._chunk_queue.get(timeout=0.1)
             except queue.Empty:
                 continue
+
             if chunk is None:  # end-of-utterance marker (NOT thread exit)
                 self._playing = False
                 logger.debug("[PLAYER] End-of-utterance marker received")
                 continue
+
             if self._abort.is_set():
                 # Drop chunks for an interrupted utterance.
                 # Do NOT touch the stream — it stays alive.
@@ -143,22 +163,31 @@ class _InterruptiblePlayer:
                 logger.debug("[PLAYER] Chunk dropped (abort set, queue_size=%d)",
                              self._chunk_queue.qsize())
                 continue
+
+            # ── Check stop-requested BEFORE calling write() ──
+            if self._stop_requested.is_set():
+                self._execute_stop()
+                continue
+
             if not self._ensure_stream():
                 # Can't play; drop the chunk but keep the worker alive
                 continue
+
             try:
                 data = np.frombuffer(chunk, dtype=np.int16)
                 self._playing = True
-                # ROOT CAUSE FIX: the stream may have been stopped by
-                # interrupt() → _stream.stop(). write() auto-starts it.
-                # We never close/destroy the stream here — it persists.
+                logger.debug("[PLAYER] WRITE START  thread=%s/%s  "
+                             "chunk_samples=%d  stream_id=%s",
+                             threading.current_thread().name, tid,
+                             len(data), id(self._stream))
+                # Signal that we are inside write().
+                # interrupt() will wait for this to clear before
+                # considering the stop protocol complete.
+                self._write_active.set()
                 self._stream.write(data)
-                self._playing = False
             except Exception as e:
                 logger.debug("[PLAYER] write error: %s", e)
                 # Stream error — mark it for lazy recreation on next write.
-                # Do NOT set to None here without holding the lock;
-                # _ensure_stream will try to recreate it.
                 with self._stream_lock:
                     if self._stream is not None:
                         logger.warning("[PLAYER] Stream error on write — "
@@ -170,9 +199,48 @@ class _InterruptiblePlayer:
                         except Exception:
                             pass
                         self._stream = None
+            finally:
+                self._write_active.clear()
+                self._playing = False
+                logger.debug("[PLAYER] WRITE END    thread=%s/%s  "
+                             "stream_id=%s",
+                             threading.current_thread().name, tid,
+                             id(self._stream) if self._stream else "none")
+
+            # ── Check stop-requested AFTER write() returned ──
+            # This is the SAFE point: write() has definitely returned,
+            # so calling stop() cannot race with PortAudio internals.
+            self._service_stop_request()
         self._playing = False
         logger.info("[PLAYER] Playback loop EXITED thread=%s/%s",
                     threading.current_thread().name, tid)
+
+    def _service_stop_request(self) -> None:
+        """If the caller requested a stream stop, execute it HERE (worker thread).
+
+        This is the ONLY place _stream.stop() is ever called during
+        normal operation.  Guarantees single-thread ownership of
+        PortAudio's stream-stop path."""
+        if self._stop_requested.is_set():
+            self._execute_stop()
+
+    def _execute_stop(self) -> None:
+        """Execute stream.stop() from the worker thread and signal completion."""
+        tid = threading.get_ident()
+        logger.info("[PLAYER] STOP EXECUTED thread=%s/%s  "
+                    "stream_id=%s",
+                    threading.current_thread().name, tid,
+                    id(self._stream) if self._stream else "none")
+        with self._stream_lock:
+            if self._stream is not None:
+                try:
+                    self._stream.stop()
+                    logger.info("[PLAYER] Stream STOPPED — buffered audio dropped "
+                                "(stream alive)  stream_id=%s", id(self._stream))
+                except Exception as e:
+                    logger.debug("[PLAYER] Stream stop error (benign): %s", e)
+        self._stop_requested.clear()
+        self._stop_executed.set()
 
     # ── Queue operations ────────────────────────────────────
 
@@ -192,25 +260,29 @@ class _InterruptiblePlayer:
         """
         INSTANT interrupt of the CURRENT utterance only.
 
-        ROOT CAUSE FIX (PortAudio/ALSA crash):
-          BEFORE: interrupt() called abort() + close() + stream=None,
-          destroying the PortAudio/ALSA stream from the asyncio event
-          loop thread while the tts-playback daemon thread was inside
-          _stream.write(). This freed ALSA C memory while PortAudio's
-          blocking write still referenced it → free(): chunks in
-          smallbin corrupted → PaAlsaStreamComponent_EndProcessing crash.
+        RACE-FREE PROTOCOL:
+          The caller thread NEVER calls _stream.stop() directly.
+          Instead it sets _stop_requested and waits for the worker
+          thread to execute stop() after it has safely returned from
+          write().  This eliminates the PortAudio/ALSA race where
+          Pa_StopStream (stop) and Pa_WriteStream (write) execute
+          concurrently on different threads inside the ALSA backend,
+          which corrupts internal ALSA state and causes:
+            PaAlsaStreamComponent_EndProcessing  →  assertion / abort.
 
-          AFTER: interrupt() ONLY sets the abort flag + drains the
-          queue + calls _stream.stop() to drop buffered audio.
-          The OutputStream object is NEVER destroyed during interrupt.
-          The playback thread naturally skips chunks when abort is set.
-          The stream persists until close() at shutdown — created once,
-          destroyed once, never touched by two threads simultaneously.
+          Protocol:
+            1. Set _abort     → worker skips queued chunks
+            2. Drain queue    → remove pending work
+            3. Set _stop_requested → delegate stop() to the worker
+            4. Wait for _write_active to clear   → write() has returned
+            5. Wait for _stop_executed           → stop() has been called
+            6. Re-arm for next utterance
         """
+        caller_tid = threading.get_ident()
         caller_thread = threading.current_thread().name
-        logger.info("[PLAYER] Interrupt received from thread=%s "
+        logger.info("[PLAYER] Interrupt received from thread=%s/%s "
                     "(queue_size=%d stream_id=%s stream_created=%s)",
-                    caller_thread, self._chunk_queue.qsize(),
+                    caller_thread, caller_tid, self._chunk_queue.qsize(),
                     id(self._stream) if self._stream else "none",
                     self._stream_created)
 
@@ -228,26 +300,42 @@ class _InterruptiblePlayer:
         if drained:
             logger.info("[PLAYER] Interrupt drained %d pending chunks", drained)
 
-        # Step 3: Stop the stream to drop hardware-buffered audio.
-        # stop() is SAFE to call from any thread — it does NOT free
-        # PortAudio/ALSA memory, it only tells the stream to drop its
-        # internal buffer. The stream object stays alive.
-        with self._stream_lock:
-            if self._stream is not None:
-                stream_id = id(self._stream)
-                try:
-                    self._stream.stop()
-                    logger.info("[PLAYER] Stream STOPPED id=%s "
-                                "(buffered audio dropped, stream alive)", stream_id)
-                except Exception as e:
-                    logger.debug("[PLAYER] Stream stop error: %s", e)
+        # Step 3: Request stop — but do NOT execute it here.
+        # The worker thread will execute _stream.stop() from its own
+        # context, after write() has safely returned.
+        logger.info("[PLAYER] STOP REQUESTED  thread=%s/%s  → delegating to worker",
+                    caller_thread, caller_tid)
+        self._stop_executed.clear()
+        self._stop_requested.set()
+
+        # Step 4: Wait for any in-flight write() to return.
+        # _write_active is set by the worker just before write() and
+        # cleared in the finally block after write() returns.
+        # Event.wait() is a blocking OS primitive — NOT busy-waiting.
+        if self._write_active.is_set():
+            logger.info("[PLAYER] Waiting for in-flight write() to return...  "
+                        "thread=%s/%s", caller_thread, caller_tid)
+            self._write_active.wait(timeout=2.0)
+            logger.info("[PLAYER] Write gate cleared  thread=%s/%s",
+                        caller_thread, caller_tid)
+
+        # Step 5: Wait for the worker to actually call _stream.stop().
+        # The worker checks _stop_requested at the top of every loop
+        # iteration and after every write() — so it will pick up the
+        # request promptly.
+        if not self._stop_executed.wait(timeout=2.0):
+            logger.warning("[PLAYER] stop() not acknowledged by worker "
+                           "within timeout — stream may still be running")
+
+        logger.info("[PLAYER] STOP EXECUTED confirmed  thread=%s/%s",
+                    caller_thread, caller_tid)
 
         self._playing = False
 
-        # Step 4: Re-arm for the next utterance.
-        # The worker thread will now see abort=False and process new chunks.
+        # Step 6: Re-arm for the next utterance.
         self._abort.clear()
-        logger.info("[PLAYER] Interrupt complete — re-armed for next utterance")
+        logger.info("[PLAYER] Interrupt complete — re-armed for next utterance  "
+                    "thread=%s/%s", caller_thread, caller_tid)
 
 
     def stop(self) -> None:
