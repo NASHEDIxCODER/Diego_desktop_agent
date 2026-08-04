@@ -80,7 +80,7 @@ def main() -> int:
                 model_name, score = trigger
                 listener._last_verify = time.monotonic()
                 print(f"\n  ── trigger (score={score:.3f}) — verifying…")
-                verified, transcript = listener.verify_with_whisper()
+                verified, transcript, *_ = listener.verify_with_whisper()
                 if verified:
                     listener.last_decision = "WAKE ACCEPTED"
                     print(f"  ── WAKE ACCEPTED (transcript='{transcript}') — "

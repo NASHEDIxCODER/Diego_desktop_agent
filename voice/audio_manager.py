@@ -35,6 +35,13 @@ AUDIO FORMAT CONTRACT (gain pipeline):
   waveform it can actually repair. int16 conversion happens ONLY at sink
   boundaries (openWakeWord / Whisper / WAV export / PCM bytes) via
   float32_to_int16(). No other stage may apply gain or re-normalization.
+
+UNIFIED PREPROCESSING (2026-08-04 root-cause fix):
+  The ring buffer now stores PREPROCESSED float32 audio (AGC + resample +
+  high-pass). Every consumer — openWakeWord, Whisper verification, command
+  STT — reads bit-identical samples from the same buffer. There is NO
+  second high-pass, NO second noise suppression, and NO filter-state
+  divergence between the wake detector and the verification path.
 """
 
 
@@ -51,10 +58,14 @@ from typing import Optional, Callable
 
 
 import numpy as np
+from scipy import signal as scipy_signal
 
 from voice.audio_processing import (
     AutomaticGainControl,
     GainError,
+    SAMPLE_RATE as _PROC_SAMPLE_RATE,
+    HIGH_PASS_CUTOFF,
+    HIGH_PASS_ORDER,
     audio_preprocessor,
     float32_to_int16,
     peak_monitor,
@@ -675,6 +686,12 @@ class AudioManager:
         self._sat_rail_samples: int = 0
         self._sat_total_samples: int = 0
 
+        # ── UNIFIED PREPROCESSING: high-pass filter built ONCE, used by
+        # every callback frame. The ring buffer stores PREPROCESSED audio
+        # so openWakeWord and Whisper consume bit-identical samples. ──
+        self._hp_sos = None   # scipy sos array, built lazily first callback
+        self._hp_zi = None    # streaming filter state, carried across frames
+
         # Callback for wake word detection
         self._on_speech_detected: Optional[Callable] = None
 
@@ -854,7 +871,7 @@ class AudioManager:
         if self._actual_sample_rate == SAMPLE_RATE:
             return audio_float
         try:
-            from scipy import signal as scipy_signal
+            from scipy import signal as _scs
             import math
             # Resample using rational ratio
             up = SAMPLE_RATE
@@ -863,22 +880,19 @@ class AudioManager:
             up //= gcd
             down //= gcd
             # Design the polyphase FIR filter EXACTLY ONCE per (up, down)
-            # ratio. scipy's default designs a (2*10*max(up,down)+1)-tap
-            # Kaiser filter on EVERY call — at 44100 Hz that is an 8821-tap
-            # firwin running inside the 30 ms real-time callback, which
-            # blows the callback budget and causes input overflows.
+            # ratio.
             key = (up, down)
             window = self._resample_filter_cache.get(key)
             if window is None:
                 max_rate = max(up, down)
                 half_len = 10  # scipy default
                 num_taps = 2 * half_len * max_rate + 1
-                window = scipy_signal.firwin(
+                window = _scs.firwin(
                     num_taps, 1.0 / max_rate, window=("kaiser", 5.0))
                 self._resample_filter_cache[key] = window
                 logger.info("[AUDIO] Resample filter designed: %d->%d Hz (%d taps, cached)",
                             self._actual_sample_rate, SAMPLE_RATE, num_taps)
-            resampled = scipy_signal.resample_poly(
+            resampled = _scs.resample_poly(
                 audio_float.astype(np.float64), up, down, window=window
             )
             return resampled.astype(np.float32)
@@ -900,11 +914,6 @@ class AudioManager:
             logger.debug("[AUDIO] Stream status (dropped): %s", status)
 
         # ── TASK 2: verify the RAW callback input BEFORE ANY processing ──
-        # First frame prints shape/dtype/min/max/RMS/peak of indata exactly
-        # as delivered by PortAudio. Every frame is then checked for exact
-        # digital silence (max|x| == 0.0); a sustained all-zero stream means
-        # the opened device is a dead/virtual bus — latch _digital_silence
-        # so start() ABORTS initialization instead of running on silence.
         raw = np.asarray(indata)
         if self._callback_count == 1:
             try:
@@ -975,10 +984,6 @@ class AudioManager:
         self._peak_history.append(mono_peak)
 
         # ── STEP 8: the callback MUST report the real device + real levels ──
-        # First callback and every 50th callback print the verified device,
-        # EVERY channel's RMS (never assume channel 0), the chosen speech
-        # channel, the callback interval and the int16-scale RMS/Peak.
-        # This must NEVER read RMS=0 on a verified device.
         if self._callback_count == 1 or self._callback_count % 50 == 0:
             ch_report = " ".join(
                 f"ch{c}={r * 32768:.0f}" for c, r in enumerate(chan_rms))
@@ -993,9 +998,6 @@ class AudioManager:
 
 
         # ── Source-overdrive diagnostic: answers "where is the gain?" ──
-        # sounddevice float32 is nominally [-1, 1]. If the RAW stream
-        # exceeds ±1.0 the device/OS mixer is overdriving the signal —
-        # no pipeline stage below can un-clip it.
         if mono_peak > 1.0:
             self._src_overdrive_events = getattr(self, "_src_overdrive_events", 0) + 1
             c = self._src_overdrive_events
@@ -1007,21 +1009,9 @@ class AudioManager:
                     mono_peak, c)
 
         # ── THE single normalization + SINGLE gain stage in the pipeline ──
-        # ROOT-CAUSE FIX (do NOT revert to np.clip): the verified failure
-        # was an OS/hardware-overdriven microphone (+50 dB analog gain →
-        # ADC saturation, 22.9 % of raw samples at the rail). Hard-clipping
-        # here destroyed the waveform BEFORE inference — openWakeWord still
-        # fired (log-mel is clip-robust) but Whisper hallucinated and every
-        # wake verification was rejected. The AGC repairs what is
-        # repairable: leveler steers RMS to 0.08–0.12, limiter guarantees
-        # peak ≤ 0.95, and the signal is NEVER clipped.
         try:
             mono_f = np.asarray(mono, dtype=np.float32)
-            # Raw-source measurement (NO assertion — overdriven input is
-            # legal here; it is exactly what the AGC repairs). This trace
-            # answers "where does clipping first appear?" at runtime.
             peak_monitor.observe("mic_raw", mono_f)
-            # Saturation accounting for the startup mixer calibration.
             if mono_f.size:
                 self._sat_rail_samples += int(
                     np.count_nonzero(np.abs(mono_f) >= 1.0 - 1.0 / 32768.0))
@@ -1033,16 +1023,10 @@ class AudioManager:
             # Resample to 16 kHz in the FLOAT domain (no int16 round-trip).
             if self._actual_sample_rate != SAMPLE_RATE:
                 audio_float = self._resample_to_16k(audio_float)
-                # The polyphase FIR rings on hot signals (Gibbs overshoot).
-                # The AGC limits input to ≤0.95 so this containment now
-                # engages only on benign filter ringing, never on speech.
                 audio_float = np.clip(audio_float, -1.0, 1.0, out=audio_float)
                 peak_monitor.log("resampling", audio_float)
 
         except GainError:
-
-            # GAIN ERROR already logged (stage, caller, stack trace).
-            # ABORT this frame — corrupt audio never reaches the buffer.
             logger.critical("[GAIN] Audio frame aborted due to gain error")
             return
 
@@ -1051,14 +1035,35 @@ class AudioManager:
             self._raw_dump_buffer = deque(maxlen=int(6 * SAMPLE_RATE / FRAME_SAMPLES))
         self._raw_dump_buffer.append(audio_float)
 
-        # NO high-pass in the callback. The duplicate "light" high-pass
-        # stage was removed: the single 4th-order high-pass lives in
-        # AudioPreprocessor (read path), so the signal is filtered ONCE.
-        self._ring_buffer.put(audio_float)
+        # ── UNIFIED PREPROCESSING: high-pass filter ONCE in the callback ──
+        # ROOT CAUSE FIX (2026-08-04): the verification path ran a SECOND
+        # high-pass filter with zero initial conditions, producing IIR
+        # transient ringing that diverged from the streaming path and
+        # dropped Pearson correlation to ~0.50. The ring buffer now stores
+        # PREPROCESSED audio — openWakeWord and Whisper both consume
+        # bit-identical samples from the same buffer. No duplicate
+        # high-pass, no second noise suppression, no reconstruction.
+        if self._hp_sos is None:
+            nyquist = SAMPLE_RATE / 2
+            self._hp_sos = scipy_signal.butter(
+                HIGH_PASS_ORDER, HIGH_PASS_CUTOFF / nyquist,
+                btype="highpass", output="sos")
+            self._hp_zi = scipy_signal.sosfilt_zi(self._hp_sos) * 0
+            logger.info("[AUDIO] Unified high-pass filter built: "
+                        "order=%d cutoff=%.0fHz rate=%dHz "
+                        "ring buffer → PREPROCESSED audio for ALL consumers",
+                        HIGH_PASS_ORDER, HIGH_PASS_CUTOFF, SAMPLE_RATE)
+
+        audio_hp, self._hp_zi = scipy_signal.sosfilt(
+            self._hp_sos, audio_float.astype(np.float64), zi=self._hp_zi)
+        audio_hp = np.clip(audio_hp.astype(np.float32), -1.0, 1.0)
+        peak_monitor.log("callback_highpass", audio_hp)
+
+        self._ring_buffer.put(audio_hp)
 
         # VAD: lightweight energy check. Thresholds stay on the int16
         # scale (300 default) — measured float RMS is scaled ×32768.
-        rms = float(np.sqrt(np.mean(audio_float.astype(np.float64) ** 2))) * 32768.0
+        rms = float(np.sqrt(np.mean(audio_hp.astype(np.float64) ** 2))) * 32768.0
         now = time.time()
 
         if rms > self._energy_threshold:
@@ -1068,7 +1073,7 @@ class AudioManager:
                 self._vad.speech_buffer = []
                 logger.debug("[VAD] Speech started (RMS=%.1f > threshold=%.1f)", rms, self._energy_threshold)
             self._vad.last_voice = now
-            self._vad.speech_buffer.append(audio_float.copy())
+            self._vad.speech_buffer.append(audio_hp.copy())
         else:
             if self._vad.state == VADState.SPEECH:
                 if now - self._vad.last_voice > VAD_SILENCE_DURATION:
@@ -1113,12 +1118,7 @@ class AudioManager:
         # normal devices, by exact name for capture-by-name physical codecs.
         open_target = self._open_target if self._open_target is not None else self._device_index
         try:
-            # Open with the probe-verified channel count (capped at 4) so the
-            # callback can use the probe-detected speech channel (never
-            # assume channel 0).
             self._stream_channels = max(1, min(self._open_channels, 4))
-            # Blocksize must match the DEVICE sample rate to produce FRAME_DURATION
-            # of audio. After resampling to 16 kHz, this yields FRAME_SAMPLES samples.
             device_blocksize = int(self._actual_sample_rate * FRAME_DURATION)
             self._stream = self._sd.InputStream(
                 samplerate=self._actual_sample_rate,
@@ -1142,7 +1142,6 @@ class AudioManager:
 
 
         except Exception as e:
-            # If the probed channel count fails, retry with mono.
             logger.warning("[AUDIO] Open with %d ch failed (%s) — retrying mono",
                            getattr(self, "_stream_channels", 1), e)
             try:
@@ -1178,7 +1177,6 @@ class AudioManager:
         """After the stream opens: dump the full audio configuration and
         verify the live signal. ABORTS (stop + return False) on digital
         silence instead of letting the pipeline run on a dead device."""
-        # ── TASK 1: full stream configuration trace ──
         logger.info(
             "[AUDIO-CONFIG] device_index=%s device='%s' "
             "native_channels=%d opened_channels=%d sample_rate=%d "
@@ -1189,7 +1187,6 @@ class AudioManager:
             int(self._actual_sample_rate * FRAME_DURATION),
             FRAME_DURATION * 1000.0, self._speech_channel)
 
-        # ── TASK 2: digital-silence watchdog — abort, never continue ──
         deadline = time.time() + 4.0
         while time.time() < deadline:
             if self._digital_silence:
@@ -1209,7 +1206,6 @@ class AudioManager:
             return False
 
         if self._callback_count < 5:
-            # The callback itself never ran — a dead stream, not just silence.
             logger.error("[AUDIO] Stream produced no callbacks in 4s — "
                          "aborting (dead stream on device '%s')",
                          self._device_name)
@@ -1225,24 +1221,13 @@ class AudioManager:
     # ──────────────────────────────────────────────────────────
     # STEP 6b — OS/hardware capture-gain calibration (ROOT FIX)
     # ──────────────────────────────────────────────────────────
-    #
-    # Forensically verified failure: ALSA 'Capture' at 100 % (+30 dB) with
-    # 'Internal Mic Boost' at +20 dB over-drives the ADC — 22.9 % of RAW
-    # probe samples were nailed to the rail (crest factor 1.95). Audio
-    # clipped at the ADC CANNOT be repaired by any software stage, so the
-    # capture gain is stepped DOWN here until the raw signal has healthy
-    # headroom. The runtime AGC then handles normal loudness variation.
-    #
-    # This is NOT "lowering a threshold" — it is removing destructive
-    # analog overdrive so the waveform reaching openWakeWord / Whisper is
-    # the waveform the user actually produced.
 
-    MIXER_CAL_MAX_STEPS = 5        # at most this many volume reductions
-    MIXER_CAL_MEASURE_S = 1.0      # seconds measured per step
-    MIXER_CAL_REDUCE_FACTOR = 0.55 # each step keeps 55 % of current volume
-    MIXER_CAL_MIN_VOLUME = 0.05    # never drive the source to zero
-    MIXER_CAL_HEALTHY_RAIL_PCT = 0.2   # ≤0.2 % of raw samples at the rail
-    MIXER_CAL_HEALTHY_RMS = 0.35       # raw RMS ceiling (float scale)
+    MIXER_CAL_MAX_STEPS = 5
+    MIXER_CAL_MEASURE_S = 1.0
+    MIXER_CAL_REDUCE_FACTOR = 0.55
+    MIXER_CAL_MIN_VOLUME = 0.05
+    MIXER_CAL_HEALTHY_RAIL_PCT = 0.2
+    MIXER_CAL_HEALTHY_RMS = 0.35
 
     def _measure_raw_saturation(self, seconds: float):
         """Measure the RAW (pre-AGC) signal for `seconds`.
@@ -1265,11 +1250,7 @@ class AudioManager:
         return rail_pct, rms
 
     def _alsa_card_for_device(self) -> Optional[int]:
-        """Resolve the ALSA card number for the verified device.
-
-        Capture-by-name devices carry "hw:C,D" in their name; otherwise the
-        first card exposing a 'Capture' simple control wins.
-        """
+        """Resolve the ALSA card number for the verified device."""
         m = re.search(r"hw:(\d+),\d+", self._device_name or "")
         if m:
             return int(m.group(1))
@@ -1294,8 +1275,7 @@ class AudioManager:
         return None
 
     def _get_capture_volume(self) -> Optional[float]:
-        """Current source volume as a fraction (1.0 = 100 %). None if
-        no mixer backend is available."""
+        """Current source volume as a fraction (1.0 = 100 %)."""
         wpctl = shutil.which("wpctl")
         if wpctl:
             try:
@@ -1333,8 +1313,7 @@ class AudioManager:
         return None
 
     def _set_capture_volume(self, fraction: float) -> bool:
-        """Set the source volume (0.05–1.0) via wpctl → pactl → amixer.
-        Returns True when a backend accepted the change."""
+        """Set the source volume. Returns True when a backend accepted."""
         fraction = min(max(fraction, 0.0), 1.0)
         pct = int(round(fraction * 100))
         wpctl = shutil.which("wpctl")
@@ -1378,14 +1357,7 @@ class AudioManager:
 
     def _calibrate_capture_gain(self) -> None:
         """Step the OS/hardware capture volume DOWN until the RAW signal
-        stops saturating the ADC.
-
-        Runs ONCE at startup, after the stream is verified. Every step is
-        logged; if no mixer backend exists (or saturation persists at the
-        volume floor) a loud manual instruction is printed. The pipeline
-        continues either way — the AGC still guarantees peak ≤ 0.95 — but
-        only a non-saturated ADC delivers a repairable waveform.
-        """
+        stops saturating the ADC."""
         rail_pct, rms = self._measure_raw_saturation(self.MIXER_CAL_MEASURE_S)
         logger.info("[MIXER] Capture-gain calibration: raw RMS=%.3f "
                     "rail=%.2f%% (targets: RMS≤%.2f, rail≤%.1f%%)",
@@ -1423,7 +1395,7 @@ class AudioManager:
                 logger.warning("[MIXER] Volume reduction failed — keeping "
                                "current gain (AGC limiter still active)")
                 return
-            time.sleep(0.4)  # let the mixer settle before re-measuring
+            time.sleep(0.4)
             rail_pct, rms = self._measure_raw_saturation(
                 self.MIXER_CAL_MEASURE_S)
 
@@ -1444,7 +1416,6 @@ class AudioManager:
 
 
     def stop(self) -> None:
-
         """Stop and close the audio stream."""
         if not self._running:
             return
@@ -1476,11 +1447,15 @@ class AudioManager:
         """
         Get recent audio from the ring buffer as numpy array.
 
+        UNIFIED PIPELINE: returns PREPROCESSED float32 (AGC + high-pass),
+        the same audio that openWakeWord scored. Whisper verification
+        consumes these exact samples — NO second filter pass.
+
         Args:
             duration_seconds: How many seconds of audio to retrieve.
 
         Returns:
-            numpy array of float32 samples in [-1, 1].
+            numpy array of PREPROCESSED float32 samples in [-1, 1].
         """
         if self._access_forbidden("get_recent_audio"):
             return np.array([], dtype=np.float32)
@@ -1493,6 +1468,8 @@ class AudioManager:
 
     def read_since(self, last_total: int):
         """Return (new_audio_float32, new_total) written after last_total.
+
+        UNIFIED PIPELINE: returns PREPROCESSED float32 (AGC + high-pass).
 
         NON-OVERLAPPING: each sample is returned exactly once across calls.
         Used by the continuous wake loop to feed openWakeWord streaming frames.
@@ -1564,12 +1541,6 @@ class AudioManager:
             logger.debug("[AUDIO] Shutdown in progress — record_command aborted")
             return None
 
-        # ── Re-entrancy guard ──────────────────────────────────────
-        # asyncio.wait_for() does NOT kill executor threads: a timed-out
-        # listen() keeps running while the main loop retries, and the retry
-        # would start a SECOND recorder draining the same ring buffer.
-        # Overlapping recorders are why "recording" appeared to run for
-        # 39.6s with timeout=8s / phrase_limit=7s. Refuse overlaps.
         if not self._record_lock.acquire(blocking=False):
             logger.warning("[AUDIO] record_command already active — "
                            "refusing overlapping recording")
@@ -1586,18 +1557,17 @@ class AudioManager:
           - every exit logs its stop reason
         """
         t_record_start = time.time()
-        record_deadline = t_record_start + timeout  # HARD wall-clock limit
+        record_deadline = t_record_start + timeout
         max_samples = int(phrase_limit * SAMPLE_RATE)
 
         command_buffer: list = []
         buffered_samples = 0
         speech_detected = False
-        speech_start: Optional[float] = None   # wall time speech started
-        speech_end: Optional[float] = None     # wall time speech ended
+        speech_start: Optional[float] = None
+        speech_end: Optional[float] = None
         silence_start = 0.0
-        stop_reason = "timeout"                # refined as we exit
+        stop_reason = "timeout"
 
-        # Read only NEW audio from this point forward (non-overlapping).
         last_total = self._ring_buffer.total_samples
 
         logger.info(
@@ -1613,7 +1583,6 @@ class AudioManager:
 
             now = time.time()
 
-            # ── HARD timeout: the loop can NEVER pass the deadline ──
             if now >= record_deadline:
                 stop_reason = "timeout"
                 logger.info(
@@ -1621,7 +1590,6 @@ class AudioManager:
                     now - t_record_start, timeout, speech_detected)
                 break
 
-            # ── phrase_limit: measured from actual speech start ──
             if speech_start is not None and (now - speech_start) >= phrase_limit:
                 speech_end = now
                 stop_reason = "phrase_limit"
@@ -1630,14 +1598,11 @@ class AudioManager:
                     now - t_record_start, now - speech_start, phrase_limit)
                 break
 
-            # Non-overlapping read of new audio
             new_audio, last_total = self._ring_buffer.get_since(last_total)
             if len(new_audio) == 0:
                 time.sleep(0.01)
                 continue
 
-            # Ring-buffer samples are float32 [-1, 1]; the energy
-            # threshold stays on the int16 scale (300 default).
             rms = float(np.sqrt(np.mean(new_audio.astype(np.float64) ** 2))) * 32768.0
 
             if rms > self._energy_threshold:
@@ -1651,7 +1616,6 @@ class AudioManager:
                 buffered_samples += len(new_audio)
                 silence_start = 0.0
             elif speech_detected:
-                # silence: stop when it exceeds the configured threshold
                 if silence_start == 0.0:
                     silence_start = now
                 elif now - silence_start > VAD_SILENCE_DURATION:
@@ -1665,7 +1629,7 @@ class AudioManager:
                 command_buffer.append(new_audio.copy())
                 buffered_samples += len(new_audio)
 
-            time.sleep(0.01)  # 10ms polling
+            time.sleep(0.01)
 
         t_record_stop = time.time()
         wall_duration = t_record_stop - t_record_start
@@ -1685,14 +1649,11 @@ class AudioManager:
 
         audio = np.concatenate(command_buffer)
 
-        # NEVER return audio longer than phrase_limit.
         if len(audio) > max_samples:
             logger.warning("[AUDIO] Trimming %.2fs -> %.2fs (phrase_limit invariant)",
                            len(audio) / SAMPLE_RATE, phrase_limit)
             audio = audio[:max_samples]
 
-        # SINK BOUNDARY: the buffered command is float32 [-1, 1]; convert
-        # to PCM16 ONCE, immediately before the STT consumer.
         audio_bytes = float32_to_int16(audio).tobytes()
         if len(audio_bytes) < 512:
             logger.info("[AUDIO] Command too short (%d bytes) — returning None",
@@ -1701,7 +1662,6 @@ class AudioManager:
 
         duration = len(audio_bytes) / SAMPLE_RATE / 2
 
-        # ── HARD INVARIANT: recorded duration must NEVER exceed phrase_limit ──
         if duration > phrase_limit + 1e-6:
             logger.error(
                 "[AUDIO] INVARIANT VIOLATION: duration=%.3fs > phrase_limit=%.3fs "
@@ -1759,18 +1719,16 @@ class AudioManager:
             return False
 
         logger.info("[AUDIO] Calibrating ambient noise (%.1fs)...", duration)
-        time.sleep(0.1)  # Let buffer fill
+        time.sleep(0.1)
 
         audio = self._ring_buffer.get_recent(duration)
         if len(audio) == 0:
             logger.warning("[AUDIO] No audio for calibration")
             return False
 
-        # float32 [-1, 1] → int16-scale metrics for the threshold logic.
         rms = float(np.sqrt(np.mean(audio.astype(np.float64) ** 2))) * 32768.0
         peak = float(np.max(np.abs(audio))) * 32768.0
 
-        # ── Silence validation: RMS ≈ 0 means no real mic signal ──
         if rms < 1.0:
             logger.error(
                 "[AUDIO] CALIBRATION INVALID: RMS=%.2f (≈ digital silence). "
@@ -1829,7 +1787,6 @@ class AudioManager:
             max_n = int(duration * SAMPLE_RATE)
             if len(audio) > max_n:
                 audio = audio[-max_n:]
-            # float32 [-1, 1] → int16-scale metrics for the report.
             rms = float(np.sqrt(np.mean(audio.astype(np.float64) ** 2))) * 32768.0
             peak = (float(np.max(np.abs(audio))) * 32768.0) if len(audio) else 0.0
             dbg = Path(__file__).resolve().parent.parent / "debug"
@@ -1840,7 +1797,6 @@ class AudioManager:
                 w.setnchannels(1)
                 w.setsampwidth(2)
                 w.setframerate(SAMPLE_RATE)
-                # WAV EXPORT sink: single int16 conversion, here only.
                 w.writeframes(float32_to_int16(audio).tobytes())
             dur = len(audio) / SAMPLE_RATE
             logger.info(
