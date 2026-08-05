@@ -32,6 +32,15 @@ KEY DIFFERENCES from the old pipeline:
   - Speech corrector runs on final transcript only
   - Comprehensive logging of every decision
 
+ROOT CAUSE FIX (2026-08-05):
+  nonoverlap_idx was computed as i // FRAME_SAMPLES where i is the
+  per-chunk offset.  After the first chunk, every subsequent chunk
+  had i=0 → nonoverlap_idx=0 → NOT > _last_nonoverlap_idx → no new
+  frames were ever added to audio_buffer.  The utterance stayed at
+  1 frame, silence expired, and every utterance was discarded as
+  too_short.  Fixed by using a GLOBAL sample offset
+  (_chunk_base_sample + i) so frame indices are unique across chunks.
+
 Usage:
     from voice.streaming_stt import streaming_stt
 
@@ -804,8 +813,13 @@ class StreamingSTT:
         _last_chunk_time = time.time()
         _chunk_durations: list = []
 
-        # Track the last non-overlapping frame index to avoid double-counting
-        _last_nonoverlap_idx = -1
+        # ── ROOT CAUSE FIX (2026-08-05): nonoverlap_idx must use a GLOBAL
+        # sample offset so frame indices are unique across read_since() chunks.
+        # The old per-chunk i // FRAME_SAMPLES reset to 0 on every chunk,
+        # so after the first chunk every subsequent frame was rejected as
+        # "already seen" and audio_buffer never grew beyond 1 frame.
+        _last_nonoverlap_idx: int = -1
+        _chunk_base_sample: int = 0  # absolute sample offset of new_audio[0]
 
         while not self._cancel.is_set():
             await self._listen_enabled.wait()
@@ -830,6 +844,11 @@ class StreamingSTT:
                 new_audio = np.concatenate([_frame_remainder, new_audio])
                 _frame_remainder = np.array([], dtype=np.float32)
 
+            # ── Compute absolute sample base for this chunk ──
+            # last_total is the ring buffer's monotonic sample counter AFTER
+            # this read, so the chunk starts at last_total - len(new_audio).
+            _chunk_base_sample = last_total - len(new_audio)
+
             # ── VAD: overlapping frames for smooth detection ──
             # ── Audio buffer: NON-overlapping frames for Whisper ──
             last_vad_idx = -1
@@ -840,16 +859,22 @@ class StreamingSTT:
                 now = time.time()
 
                 # ── Collect NON-overlapping frame for audio buffer ──
-                nonoverlap_idx = i // FRAME_SAMPLES
+                # ROOT CAUSE FIX: use GLOBAL sample position so indices are
+                # unique across read_since() chunks.  Without this, i resets
+                # to 0 on every chunk and _last_nonoverlap_idx blocks all
+                # subsequent frames.
+                global_sample = _chunk_base_sample + i
+                nonoverlap_idx = global_sample // FRAME_SAMPLES
                 is_new_nonoverlap = nonoverlap_idx > _last_nonoverlap_idx
                 if is_new_nonoverlap:
                     _last_nonoverlap_idx = nonoverlap_idx
+                    # Extract the non-overlapping frame from new_audio
                     frame_start = i
                     frame_end = i + FRAME_SAMPLES
                     if frame_end <= len(new_audio):
                         clean_frame = new_audio[frame_start:frame_end].copy()
                     else:
-                        clean_frame = frame.copy()
+                        clean_frame = frame.copy()  # fallback
 
                     # Maintain pre-roll buffer (non-overlapping)
                     pre_roll.append(clean_frame)
@@ -876,8 +901,10 @@ class StreamingSTT:
                         _stabilized_at = 0.0
                         _finalized_by_stability = False
                         logger.info("[STREAM-STT] Speech start "
-                                    "(VAD_prob=%.2f audio_frames=%d pre_roll_frames=%d)",
-                                    prob, len(audio_buffer), len(pre_roll))
+                                    "(VAD_prob=%.2f audio_frames=%d pre_roll_frames=%d "
+                                    "chunk_base=%d global_nonoverlap=%d)",
+                                    prob, len(audio_buffer), len(pre_roll),
+                                    _chunk_base_sample, nonoverlap_idx)
                         yield UtteranceEvent(
                             kind="speech_start", started_at=now)
                     last_voice_time = now
@@ -981,12 +1008,12 @@ class StreamingSTT:
                             logger.info(
                                 "[STREAM-STT] Partial #%d (%.0fms): '%s' "
                                 "(raw='%s' stability=%.2f stable_count=%d/%d "
-                                "whisper_latency=%.0fms)",
+                                "whisper_latency=%.0fms frames=%d)",
                                 _partial_index,
                                 (now - speech_start_time) * 1000,
                                 merged, text, stability_score,
                                 _stable_count, STABILITY_WINDOW,
-                                t_partial_elapsed)
+                                t_partial_elapsed, len(audio_buffer))
 
                             yield UtteranceEvent(
                                 kind="partial", text=merged, is_final=False,
