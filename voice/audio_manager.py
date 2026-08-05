@@ -663,6 +663,9 @@ class AudioManager:
         # NEVER assume channel 0 contains the microphone. The probe detects
         # the channel that carries speech; the callback keeps verifying it.
         self._speech_channel: Optional[int] = None
+        # ISSUE-3: Speech-channel locking state
+        self._speech_channel_locked_at: float = 0.0
+        self._speech_channel_silent_since: float = 0.0
         self._callback_count: int = 0
         self._dropped_frames: int = 0
         self._last_callback_time: float = 0.0
@@ -953,24 +956,47 @@ class AudioManager:
         for c, r in enumerate(chan_rms):
             self._channel_rms[c] = r
 
+        # ── ISSUE-3: Speech-channel locking ──
+        # After startup calibration chooses the best speech channel, LOCK it.
+        # Only reselect if the locked channel remains silent for several
+        # seconds. Never alternate channels during normal conversation.
         # The probe already identified the speech channel; re-verify only
         # when the locked channel is silent but another channel is hot.
         if self._speech_channel is None:
             best_c = int(np.argmax(chan_rms)) if chan_rms else 0
             if chan_rms and chan_rms[best_c] > 1e-4:
                 self._speech_channel = best_c
+                self._speech_channel_locked_at = time.time()
+                self._speech_channel_silent_since = 0.0
                 logger.info("[AUDIO] Speech channel auto-detected: ch%d "
-                            "(rms=%.4f of %d channels)",
+                            "(rms=%.4f of %d channels) — LOCKED",
                             best_c, chan_rms[best_c], n_channels)
             else:
                 self._speech_channel = 0  # silent so far — default, re-checked later
+                self._speech_channel_locked_at = time.time()
+                self._speech_channel_silent_since = 0.0
         elif 0 <= self._speech_channel < n_channels and chan_rms:
             locked = chan_rms[self._speech_channel]
             best_c = int(np.argmax(chan_rms))
-            if locked < 1e-5 and chan_rms[best_c] > 1e-3:
-                logger.info("[AUDIO] Speech channel re-mapped: ch%d → ch%d",
-                            self._speech_channel, best_c)
-                self._speech_channel = best_c
+            # ISSUE-3: Only re-map if the locked channel has been silent
+            # for >= 5 seconds AND another channel is clearly active.
+            # This prevents channel oscillation during normal conversation.
+            CHANNEL_RESELECT_SILENCE_S = 5.0
+            if locked < 1e-5:
+                if self._speech_channel_silent_since == 0.0:
+                    self._speech_channel_silent_since = time.time()
+                silent_dur = time.time() - self._speech_channel_silent_since
+                if silent_dur >= CHANNEL_RESELECT_SILENCE_S and chan_rms[best_c] > 1e-3:
+                    logger.info("[AUDIO] Speech channel re-mapped: ch%d → ch%d "
+                                "(ch%d silent for %.1fs)",
+                                self._speech_channel, best_c,
+                                self._speech_channel, silent_dur)
+                    self._speech_channel = best_c
+                    self._speech_channel_locked_at = time.time()
+                    self._speech_channel_silent_since = 0.0
+            else:
+                # Channel is active — reset silence timer
+                self._speech_channel_silent_since = 0.0
         src_channel = self._speech_channel if (
             self._speech_channel is not None and self._speech_channel < n_channels
         ) else 0

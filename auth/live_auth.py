@@ -4,18 +4,21 @@ LiveAuth — Face authentication with a live popup UI.
 This is the NEW authentication flow. It runs ONLY after the wake word,
 NEVER at startup, and NEVER blocks Leo from booting.
 
-Behaviour:
+NEW BEHAVIOUR (single-capture):
   - Opens the FaceAuthPopup and streams the webcam at ~30 FPS.
-  - WAITS FOREVER for a face to enter the frame (no "no face" timeout).
-    If the user walks away, it keeps showing "No face detected".
-  - Runs face-quality checks and shows GUIDANCE instead of failing:
-      "Move closer", "Too dark", "Too blurry", "Look at camera",
-      "Center your face", "Face too small".
-  - Collects MULTI_FRAME consecutive good frames, votes by majority,
-    averages confidence, and authenticates only on a stable identity.
-  - On success: shows "Identity verified — welcome <name>", closes, returns name.
-  - On failure/cancel: returns None. Leo then DENIES the interaction and
-    returns to WAIT_WAKE — it NEVER exits.
+  - Shows "Looking for your face..." while waiting.
+  - As soon as ONE high-quality face is detected:
+      • Face is centered
+      • Face is sharp (not blurry)
+      • Eyes open
+      • Lighting acceptable
+      • Face large enough
+  - Captures ONE high-quality image.
+  - Closes popup IMMEDIATELY.
+  - Runs face recognition on the captured image.
+  - If match: returns name → conversation continues.
+  - If no match: returns None → "Sorry, I couldn't verify you."
+  - If no face ever appears: popup stays open forever (no timeout).
 
 Public API:
     authenticate_live(stop_event=None) -> Optional[str]
@@ -26,8 +29,7 @@ Designed to be run inside an executor thread (it blocks on the camera).
 import logging
 import threading
 import time
-from collections import Counter
-from typing import List, Optional, Tuple
+from typing import Optional, Tuple
 
 import cv2 as cv
 import numpy as np
@@ -37,19 +39,17 @@ from auth.face_popup import FaceAuthPopup, FaceStatus
 
 logger = logging.getLogger(__name__)
 
-# ── Quality gates (guidance, not failure) ────────────────
+# ── Quality gates (single best frame) ───────────────────
 MIN_FACE_WIDTH = 110           # px — below this: "Move closer"
-CENTER_TOL = 0.28              # face center must be within ±28% of frame center
+CENTER_TOL = 0.25              # face center must be within ±25% of frame center
 BRIGHTNESS_MIN = 70.0          # below: "Too dark"
-BLUR_MIN = 22.0                # below: "Too blurry"
-MAX_YAW_DEG = 20.0
-MAX_PITCH_DEG = 20.0
-MAX_ROLL_DEG = 15.0
+BLUR_MIN = 30.0                # below: "Too blurry" (raised for single-capture quality)
+MAX_YAW_DEG = 18.0             # tightened for single-capture
+MAX_PITCH_DEG = 18.0
+MAX_ROLL_DEG = 12.0
 
-# ── Multi-frame verification ─────────────────────────────
-VOTE_FRAMES = 15               # consecutive good frames to collect
-MAJORITY = 8                   # votes needed to accept identity
-VERIFY_CONFIDENCE = 0.62       # (1 - distance) threshold for a frame to "count"
+# Eye aspect ratio: below this → eyes likely closed
+EAR_THRESHOLD = 0.22
 
 # Frame pacing
 FRAME_DELAY = 0.033            # ~30 FPS
@@ -61,6 +61,36 @@ def _tolerance() -> float:
         return FACE_TOLERANCE
     except Exception:
         return 0.55
+
+
+# ═══════════════════════════════════════════════════════════
+# Eye Aspect Ratio (EAR) — detects closed eyes
+# ═══════════════════════════════════════════════════════════
+
+def _eye_aspect_ratio(eye_points: np.ndarray) -> float:
+    """Compute the eye aspect ratio (EAR). Lower = eyes more closed."""
+    if len(eye_points) < 6:
+        return 1.0  # can't compute → assume open
+    # Vertical distances
+    v1 = np.linalg.norm(eye_points[1] - eye_points[5])
+    v2 = np.linalg.norm(eye_points[2] - eye_points[4])
+    # Horizontal distance
+    h = np.linalg.norm(eye_points[0] - eye_points[3])
+    if h < 1e-6:
+        return 0.0
+    return float((v1 + v2) / (2.0 * h))
+
+
+def _eyes_open(lm: dict) -> Tuple[bool, float]:
+    """Check if both eyes are open using EAR. Returns (open, min_ear)."""
+    left = lm.get("left_eye", [])
+    right = lm.get("right_eye", [])
+    if len(left) < 6 or len(right) < 6:
+        return True, 1.0  # can't compute → don't block
+    left_ear = _eye_aspect_ratio(np.array(left))
+    right_ear = _eye_aspect_ratio(np.array(right))
+    min_ear = min(left_ear, right_ear)
+    return min_ear >= EAR_THRESHOLD, min_ear
 
 
 # ═══════════════════════════════════════════════════════════
@@ -150,7 +180,6 @@ def _encode(frame_bgr: np.ndarray, face) -> Optional[np.ndarray]:
         return None
 
 
-
 def _closest(known_encs, known_names, enc) -> Tuple[Optional[str], float]:
     import face_recognition
     if not known_encs:
@@ -163,7 +192,7 @@ def _closest(known_encs, known_names, enc) -> Tuple[Optional[str], float]:
 
 
 # ═══════════════════════════════════════════════════════════
-# Main live authentication
+# Main live authentication — SINGLE CAPTURE flow
 # ═══════════════════════════════════════════════════════════
 
 def authenticate_live(stop_event: Optional[threading.Event] = None,
@@ -171,12 +200,20 @@ def authenticate_live(stop_event: Optional[threading.Event] = None,
     """
     Run live face authentication with popup UI.
 
-    Blocks until a face is verified (no "no face" timeout) or stop_event set.
+    NEW SINGLE-CAPTURE FLOW:
+      1. Open popup → "Looking for your face..."
+      2. Wait for ONE frame meeting ALL quality gates:
+         - Face centered, sharp, eyes open, good lighting, large enough
+      3. Capture that ONE high-quality image
+      4. Close popup IMMEDIATELY
+      5. Run face recognition on the captured image
+      6. Match → return name; No match → return None
 
-    Returns the verified user's name, or None if cancelled/unavailable.
+    Blocks until a face is verified or stop_event set.
+    No timeout on "no face" — popup stays open forever.
     """
     t0 = time.time()
-    logger.info("[LIVE-AUTH] Opening authentication popup...")
+    logger.info("[LIVE-AUTH] Opening authentication popup (single-capture mode)...")
 
     # Load known encodings
     try:
@@ -209,12 +246,10 @@ def authenticate_live(stop_event: Optional[threading.Event] = None,
             popup = None
 
     tolerance = _tolerance()
-    votes: List[Tuple[str, float]] = []
-    good_streak = 0
-    frame_i = 0
+    captured_frame: Optional[np.ndarray] = None
+    captured_face = None
     name_result: Optional[str] = None
-    last_landmarks: Optional[list] = None   # 68-pt overlay for the popup
-    last_conf: float = -1.0                 # latest recognition confidence
+    last_landmarks: Optional[list] = None
 
     def _ui(frame, state, msg, box=None, sub="", landmarks=None, confidence=-1.0):
         if popup is not None:
@@ -222,15 +257,12 @@ def authenticate_live(stop_event: Optional[threading.Event] = None,
                 state, msg, box, sub,
                 landmarks=landmarks, confidence=confidence))
 
-
     try:
-        # Initial state: the popup shows "Searching for face..." while the
-        # camera warms up — the user always sees WHERE the flow is.
-        _ui(None, "searching", "Searching for face...",
-            sub="Look at the camera to begin")
+        # ── Show initial "Looking for your face..." ──
+        _ui(None, "searching", "Looking for your face...",
+            sub="Face centered • sharp • eyes open • good lighting")
 
-        # ── WAIT FOREVER for a face + verification ──
-        # No timeout on "no face". Only stop_event or success breaks the loop.
+        # ── WAIT FOREVER for ONE high-quality face ──
         while True:
             if stop_event is not None and stop_event.is_set():
                 logger.info("[LIVE-AUTH] Cancelled by stop_event")
@@ -243,133 +275,99 @@ def authenticate_live(stop_event: Optional[threading.Event] = None,
             if not ret or frame is None:
                 time.sleep(FRAME_DELAY)
                 continue
-            frame_i += 1
 
             faces, quality = face_detector.detect(frame, return_quality=True)
             H, W = frame.shape[:2]
 
-            # ── No face → guidance, keep waiting (NO timeout) ──
-            # TASK 6: if the face disappears mid-verification the assistant
-            # PAUSES — votes and streak reset, camera stays open forever.
+            # ── No face → guidance, keep waiting ──
             if not faces:
-                good_streak = 0
-                votes.clear()
                 last_landmarks = None
-                last_conf = -1.0
                 _ui(frame, "no_face", "No face detected",
                     sub="Please look at the camera")
                 time.sleep(FRAME_DELAY)
                 continue
 
-
             face = max(faces, key=lambda f: f.w * f.h)
             box = (face.x, face.y, face.w, face.h)
 
-            # ── Quality gates → guidance instead of failure ──
-            # Brightness
+            # ── Quality gate: brightness ──
             bright = quality.brightness if quality else measure_brightness(frame)
             if bright < BRIGHTNESS_MIN:
-                good_streak = 0
                 _ui(frame, "guidance", "Too dark", box, "Increase lighting")
-                time.sleep(FRAME_DELAY); continue
+                time.sleep(FRAME_DELAY)
+                continue
 
-            # Face size
+            # ── Quality gate: face size ──
             if face.w < MIN_FACE_WIDTH:
-                good_streak = 0
                 _ui(frame, "guidance", "Move closer", box, "Face too small")
-                time.sleep(FRAME_DELAY); continue
+                time.sleep(FRAME_DELAY)
+                continue
 
-            # Centering
-            cx = face.x + face.w/2
-            cy = face.y + face.h/2
-            if abs(cx - W/2) > W*CENTER_TOL or abs(cy - H/2) > H*CENTER_TOL:
-                good_streak = 0
+            # ── Quality gate: centering ──
+            cx = face.x + face.w / 2
+            cy = face.y + face.h / 2
+            if abs(cx - W / 2) > W * CENTER_TOL or abs(cy - H / 2) > H * CENTER_TOL:
                 _ui(frame, "guidance", "Center your face", box)
-                time.sleep(FRAME_DELAY); continue
+                time.sleep(FRAME_DELAY)
+                continue
 
-            # Blur
+            # ── Quality gate: sharpness ──
             blur = getattr(quality, "proc_blur", None) or (quality.blur if quality else measure_blur(frame))
             if blur < BLUR_MIN:
-                good_streak = 0
                 _ui(frame, "guidance", "Too blurry", box, "Hold still")
-                time.sleep(FRAME_DELAY); continue
+                time.sleep(FRAME_DELAY)
+                continue
 
-            # Head pose
-            pose, reason = _head_pose_deg(frame, face)
-            if reason != "ok":
-                good_streak = 0
-                _ui(frame, "guidance", "Look at the camera", box,
-                    reason.split("(")[0].replace("_", " "))
-                time.sleep(FRAME_DELAY); continue
+            # ── Quality gate: head pose + eyes open ──
+            # Get landmarks once for both checks
+            try:
+                import face_recognition
+                rgb = cv.cvtColor(frame, cv.COLOR_BGR2RGB)
+                loc = face.to_face_recognition_format()
+                lms_list = face_recognition.face_landmarks(rgb, [loc])
+                if lms_list:
+                    lm = lms_list[0]
+                    # Check eyes open
+                    eyes_ok, ear = _eyes_open(lm)
+                    if not eyes_ok:
+                        _ui(frame, "guidance", "Eyes closed", box,
+                            "Please open your eyes")
+                        time.sleep(FRAME_DELAY)
+                        continue
 
-            # ── Good frame → landmarks + encode + vote ──
-            good_streak += 1
-            last_landmarks = _landmark_points(frame, face)
+                    # Check head pose
+                    pose_ok, pose_reason = _check_pose_from_landmarks(lm, face)
+                    if not pose_ok:
+                        _ui(frame, "guidance", "Look at the camera", box,
+                            pose_reason.split("(")[0].replace("_", " "))
+                        time.sleep(FRAME_DELAY)
+                        continue
 
-            enc = _encode(frame, face)
-            if enc is not None:
-                name, dist = _closest(known_encs, known_names, enc)
-                if name is not None:
-                    last_conf = 1.0 - dist
-                    if dist < tolerance:
-                        votes.append((name, dist))
-                        logger.info("[LIVE-AUTH] vote %d: %s conf=%.2f",
-                                    len(votes), name, last_conf)
-                    else:
-                        logger.debug("[LIVE-AUTH] candidate=%s conf=%.2f < tolerance",
-                                     name, last_conf)
+                    # Landmarks for overlay
+                    last_landmarks = []
+                    for feature_points in lm.values():
+                        last_landmarks.extend(feature_points)
+            except Exception:
+                pass  # can't check eyes/pose → proceed anyway
 
-            # TASK 6: GREEN box + landmarks + live confidence while verifying.
-            _ui(frame, "detected", "Face detected — hold still...", box,
-                f"Verifying {min(good_streak, VOTE_FRAMES)}/{VOTE_FRAMES}",
-                landmarks=last_landmarks, confidence=last_conf)
+            # ── ALL QUALITY GATES PASSED — capture this frame ──
+            captured_frame = frame.copy()
+            captured_face = face
+            logger.info("[LIVE-AUTH] ✓ High-quality face captured "
+                        "(w=%d bright=%.1f blur=%.1f)",
+                        face.w, bright, blur)
 
-            # ── Decision once enough good frames collected ──
-            if good_streak >= VOTE_FRAMES:
-                if votes:
-                    counts = Counter(n for n, _ in votes)
-                    top, top_n = counts.most_common(1)[0]
-                    avg_dist = float(np.mean([d for n, d in votes if n == top]))
-                    if top_n >= MAJORITY and avg_dist < tolerance:
-                        name_result = top
-                        # TASK 6: continue ONLY after recognized face AND
-                        # confidence above threshold (majority + tolerance).
-                        _ui(frame, "verified", "Identity verified",
-                            box, f"Welcome {top}",
-                            landmarks=last_landmarks,
-                            confidence=1.0 - avg_dist)
-                        logger.info("[LIVE-AUTH] Identity verified: %s "
-                                    "(votes=%d/%d avg=%.3f conf=%.2f %.1fs)",
-                                    top, top_n, len(votes), avg_dist,
-                                    1.0 - avg_dist, time.time()-t0)
-                        break
+            # Show verified briefly
+            _ui(frame, "detected", "Face captured — verifying...", box,
+                "Processing...", landmarks=last_landmarks)
 
-                    else:
-                        # Not a stable known identity → show "Unknown user",
-                        # keep searching forever (NEVER silently continue).
-                        logger.info("[LIVE-AUTH] Unknown user (top=%s %d/%d) — resuming",
-                                    top, top_n, len(votes))
-                        _ui(frame, "guidance", "Unknown user", box,
-                            "Face not recognized — still searching")
-                        votes.clear()
-                        good_streak = 0
-                else:
-                    # A face was tracked for VOTE_FRAMES frames but never
-                    # matched a registered user → "Unknown user", keep going.
-                    _ui(frame, "guidance", "Unknown user", box,
-                        "Face not recognized — still searching")
-                    votes.clear()
-                    good_streak = 0
-
-            time.sleep(FRAME_DELAY)
+            # ── Close popup IMMEDIATELY ──
+            break
 
     except Exception as e:
         logger.warning("[LIVE-AUTH] error: %s", e, exc_info=True)
     finally:
         # ── GUI + camera teardown — STRICT ORDER ─────────────────
-        # On success, let the popup show "Identity verified" briefly first.
-        if popup is not None and name_result:
-            time.sleep(1.2)
         # 1. Release the camera FIRST (no more frames will be read).
         try:
             _fa._release_camera()
@@ -383,15 +381,77 @@ def authenticate_live(stop_event: Optional[threading.Event] = None,
                 logger.info("[LIVE-AUTH] Popup destroyed")
             except Exception as e:
                 logger.warning("[LIVE-AUTH] Popup destroy error: %s", e)
-        # 3. Teardown fully complete — safe to enter WAKE_LISTEN.
+        # 3. Teardown fully complete.
         logger.info("[LIVE-AUTH] GUI cleanup complete")
 
+    # ── Run face recognition on the captured image ──
+    if captured_frame is not None and captured_face is not None:
+        logger.info("[LIVE-AUTH] Running face recognition on captured image...")
+        enc = _encode(captured_frame, captured_face)
+        if enc is not None:
+            name, dist = _closest(known_encs, known_names, enc)
+            conf = 1.0 - dist
+            logger.info("[LIVE-AUTH] Recognition result: name=%s dist=%.4f conf=%.2f tol=%.2f",
+                        name or "unknown", dist, conf, tolerance)
+            if name is not None and dist < tolerance:
+                name_result = name
+                logger.info("[LIVE-AUTH] ✅ AUTHENTICATED '%s' (conf=%.2f, %.1fs)",
+                            name, conf, time.time() - t0)
+            else:
+                logger.warning("[LIVE-AUTH] ❌ Face not recognized "
+                               "(best=%s dist=%.4f tol=%.2f)",
+                               name or "unknown", dist, tolerance)
+        else:
+            logger.warning("[LIVE-AUTH] ❌ Failed to encode captured face")
+    else:
+        logger.info("[LIVE-AUTH] No face captured — authentication not completed")
 
     if name_result:
-        logger.info("[LIVE-AUTH] Greeting")
+        logger.info("[LIVE-AUTH] Authentication successful")
     else:
-        logger.info("[LIVE-AUTH] Authentication not completed (denied) — returning to wake")
+        logger.info("[LIVE-AUTH] Authentication failed — 'Sorry, I couldn't verify you.'")
     return name_result
+
+
+def _check_pose_from_landmarks(lm: dict, face) -> Tuple[bool, str]:
+    """Check head pose using pre-computed landmarks. Returns (ok, reason)."""
+    try:
+        le = np.array(lm.get("left_eye", []))
+        re_ = np.array(lm.get("right_eye", []))
+        nose = np.array(lm.get("nose_tip", []))
+        chin = np.array(lm.get("chin", []))
+        if le.size == 0 or re_.size == 0:
+            return True, "ok"
+
+        le_c = le.mean(axis=0)
+        re_c = re_.mean(axis=0)
+        dx = re_c[0] - le_c[0]
+        dy = re_c[1] - le_c[1]
+        roll = float(np.degrees(np.arctan2(dy, dx)))
+
+        yaw = 0.0
+        if nose.size:
+            nose_c = nose.mean(axis=0)
+            eye_mid_x = (le_c[0] + re_c[0]) / 2.0
+            inter_eye = max(np.hypot(dx, dy), 1.0)
+            yaw = float(np.degrees(np.arcsin(np.clip((nose_c[0] - eye_mid_x) / inter_eye, -1, 1))) * 0.8)
+
+        pitch = 0.0
+        if chin.size and nose.size:
+            chin_c = chin.mean(axis=0)
+            nose_c = nose.mean(axis=0)
+            face_h = max(face.h, 1)
+            pitch = float(np.degrees(np.arctan2((chin_c[1] - nose_c[1]) - face_h * 0.35, face_h)) * 0.5)
+
+        if abs(yaw) > MAX_YAW_DEG:
+            return False, f"turn_too_much(yaw={yaw:.0f})"
+        if abs(pitch) > MAX_PITCH_DEG:
+            return False, f"tilt_too_much(pitch={pitch:.0f})"
+        if abs(roll) > MAX_ROLL_DEG:
+            return False, f"head_tilted(roll={roll:.0f})"
+        return True, "ok"
+    except Exception:
+        return True, "ok"
 
 
 if __name__ == "__main__":

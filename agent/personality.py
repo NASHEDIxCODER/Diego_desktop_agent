@@ -38,11 +38,11 @@ class LeoPersonality:
         self._recent_greetings: List[str] = []
         self._recent_acks: List[str] = []
         self._recent_results: List[str] = []
+        self._recent_observations: List[str] = []
         self._max_recent = 8     # Don't repeat last N phrases
         self._session_greeting_count = 0
-        self._used_greetings_today: List[str] = []
 
-        # ── Greetings: varied by time of day ──────────────
+        # ── Greetings: varied by time of day + mood ──────
         self._greetings_morning = [
             "Good morning.",
             "Morning. Ready when you are.",
@@ -51,6 +51,8 @@ class LeoPersonality:
             "Morning. Coffee's on you though.",
             "Rise and shine. What are we working on?",
             "Good morning. Let's get to it.",
+            "Morning. Got anything fun lined up?",
+            "Hey. Fresh day, fresh code.",
         ]
 
         self._greetings_afternoon = [
@@ -61,6 +63,8 @@ class LeoPersonality:
             "Hey there. What are we working on?",
             "Afternoon. How's it going?",
             "Hey hey. What's on the docket?",
+            "Afternoon. Anything interesting?",
+            "Hey. How can I help?",
         ]
 
         self._greetings_evening = [
@@ -71,6 +75,7 @@ class LeoPersonality:
             "Hey. Still going strong, I see.",
             "Evening. Late session today?",
             "Good to see you. How was the day?",
+            "Evening. Got something to wrap up?",
         ]
 
         self._greetings_night = [
@@ -80,6 +85,8 @@ class LeoPersonality:
             "Hey. Couldn't sleep?",
             "Still up? I'm here.",
             "Late shift. What do you need?",
+            "Night owl mode. What's up?",
+            "It's late. Everything okay?",
         ]
 
         self._greetings_returning = [
@@ -90,6 +97,8 @@ class LeoPersonality:
             "Good to see you again. What's up?",
             "Back so soon? What's up?",
             "There you are. How's it going?",
+            "You're back. Everything good?",
+            "Hey again. What's going on?",
         ]
 
         self._greetings_generic = [
@@ -103,6 +112,8 @@ class LeoPersonality:
             "Listening.",
             "I'm all ears.",
             "Present.",
+            "Here.",
+            "What can I do?",
         ]
 
         # ── Acknowledgments: short and natural ────────────
@@ -122,6 +133,11 @@ class LeoPersonality:
             "Noted.",
             "Consider it done.",
             "I'm on it.",
+            "One sec.",
+            "Will do.",
+            "You got it.",
+            "No problem.",
+            "Alright, let me handle it.",
         ]
 
         # ── Thinking fillers ──────────────────────────────
@@ -133,6 +149,9 @@ class LeoPersonality:
             "Thinking...",
             "Hang on, let me process that.",
             "Just a sec...",
+            "Let me look...",
+            "Processing...",
+            "Give me a moment...",
         ]
 
         # ── Farewells: varied ─────────────────────────────
@@ -145,6 +164,10 @@ class LeoPersonality:
             "I'll be here when you need me.",
             "Until next time.",
             "Have a good one.",
+            "Bye. Don't break anything while I'm gone.",
+            "See you around.",
+            "Peace.",
+            "Alright, I'll be listening.",
         ]
 
         # ── Error responses: natural, not robotic ─────────
@@ -156,6 +179,9 @@ class LeoPersonality:
             "Something went sideways. Working on it.",
             "Ah, that failed. Let me take another approach.",
             "Didn't work. Trying a different way.",
+            "That failed. But I've got other ideas.",
+            "Nope, that didn't work. Let me try plan B.",
+            "Struck out on that one. Let me switch tactics.",
         ]
 
         # ── Task confirmation: natural, never "Task completed" ──
@@ -169,15 +195,20 @@ class LeoPersonality:
             "Finished. {detail}",
             "It's done.",
             "Sorted.",
+            "{detail}. Done.",
+            "All good. {detail}",
+            "Handled. {detail}",
         ]
 
-        # ── Status observations: for when Leo notices something ──
+        # ── Status observations ──────────────────────────
         self._observations = [
             "Looks like you're working on {detail}.",
             "I see {detail}.",
             "Looks like {detail}.",
             "Noticed {detail}.",
             "Ah, {detail}.",
+            "I see you have {detail}.",
+            "Looks like {detail} is going on.",
         ]
 
     def greeting(self, returning: bool = False) -> str:
@@ -197,6 +228,8 @@ class LeoPersonality:
                 pool = self._greetings_afternoon
             elif 17 <= hour < 22:
                 pool = self._greetings_evening
+            elif 22 <= hour or hour < 3:
+                pool = self._greetings_night
             else:
                 pool = self._greetings_generic
 
@@ -214,15 +247,17 @@ class LeoPersonality:
         """Generate a varied farewell."""
         return random.choice(self._farewells)
 
-    def error_response(self) -> str:
-        """Generate a varied error response."""
-        return random.choice(self._errors)
+    def error_response(self, detail: str = "") -> str:
+        """Generate a varied error response, optionally with detail."""
+        response = random.choice(self._errors)
+        if detail:
+            response = response.rstrip(".") + f" ({detail})."
+        return response
 
     def _pick_varied(self, pool: List[str], recent: List[str]) -> str:
         """Pick a phrase from pool, avoiding recent ones."""
         available = [p for p in pool if p not in recent]
         if not available:
-            # All used recently — reset and pick from full pool
             available = pool
             recent.clear()
 
@@ -252,7 +287,7 @@ class LeoPersonality:
         Args:
             detail: What Leo noticed (e.g. "you're on GhostLine", "two failing tests")
         """
-        template = random.choice(self._observations)
+        template = self._pick_varied(self._observations, self._recent_observations)
         return template.format(detail=detail)
 
     def contextual_response(self, user_text: str) -> Optional[str]:
@@ -274,6 +309,8 @@ class LeoPersonality:
                 "All good here. What do you need?",
                 "Can't complain. What's up?",
                 "Running smoothly. What are we doing?",
+                "Pretty good. What can I help with?",
+                "Solid. What's on your mind?",
             ]
             return random.choice(responses)
 
@@ -285,6 +322,8 @@ class LeoPersonality:
                 "You got it.",
                 "Don't mention it.",
                 "Happy to help.",
+                "Glad I could help.",
+                "That's what I'm here for.",
             ]
             return random.choice(responses)
 
@@ -301,9 +340,11 @@ class LeoPersonality:
         """Quick sentiment detection from user input. Returns 'positive', 'negative', or 'neutral'."""
         t = text.lower()
         positive_words = ("great", "awesome", "thanks", "love", "perfect",
-                          "nice", "good", "cool", "amazing", "excellent")
+                          "nice", "good", "cool", "amazing", "excellent",
+                          "wow", "fantastic", "brilliant", "wonderful")
         negative_words = ("bad", "terrible", "awful", "hate", "wrong",
-                          "broken", "fails", "doesn't work", "stupid")
+                          "broken", "fails", "doesn't work", "stupid",
+                          "annoying", "frustrating", "useless", "worst")
         pos = sum(1 for w in positive_words if w in t)
         neg = sum(1 for w in negative_words if w in t)
         if pos > neg:
@@ -316,14 +357,66 @@ class LeoPersonality:
     def tone_match(response: str, sentiment: str) -> str:
         """Adjust response tone to match the user's sentiment."""
         if sentiment == "negative":
-            acknowledgments = ["I hear you.", "Got it. Let me fix that.",
-                               "Understood. Working on it.", "Alright, let's sort this out."]
+            acknowledgments = [
+                "I hear you.",
+                "Got it. Let me fix that.",
+                "Understood. Working on it.",
+                "Alright, let's sort this out.",
+                "That's frustrating. Let me help.",
+            ]
             if not any(response.startswith(a.rstrip(".")) for a in acknowledgments):
                 return random.choice(acknowledgments) + " " + response
         elif sentiment == "positive":
-            if not any(w in response.lower() for w in ("great", "awesome", "love", "glad")):
-                pass  # LLM should handle positive tone
+            # Don't modify — LLM should already be upbeat
+            pass
         return response
+
+    def proactive_comment(self, event_type: str, detail: str = "") -> Optional[str]:
+        """
+        Generate a proactive comment for desktop events.
+
+        Args:
+            event_type: "download_complete", "build_failure", "git_conflict",
+                        "terminal_error", "low_battery", "docker_failure"
+            detail: Specific detail about the event.
+        """
+        templates = {
+            "download_complete": [
+                "Looks like that download finished.",
+                "Download complete, by the way.",
+                "That download wrapped up.",
+            ],
+            "build_failure": [
+                "Hey, that build didn't go through. Want me to look at it?",
+                "Build failed. I can check the error if you want.",
+                "Hit a build error there. Need a hand?",
+            ],
+            "git_conflict": [
+                "There's a merge conflict. Want me to help sort it out?",
+                "Git conflict in {detail}. I can take a look.",
+                "Looks like a merge conflict. Need a second pair of eyes?",
+            ],
+            "terminal_error": [
+                "Saw an error in the terminal. Everything okay?",
+                "Terminal threw an error. Want me to investigate?",
+                "Error in the terminal. I can help debug if you want.",
+            ],
+            "low_battery": [
+                "Battery's getting low. Might want to plug in soon.",
+                "Running low on battery. Just a heads up.",
+                "Battery's at {detail}. You might want to find a charger.",
+            ],
+            "docker_failure": [
+                "Docker seems unhappy. Want me to check the logs?",
+                "Docker failed. I can inspect the container if you want.",
+                "Docker issue detected. Need me to troubleshoot?",
+            ],
+        }
+        pool = templates.get(event_type, [])
+        if not pool:
+            return None
+        template = random.choice(pool)
+        return template.format(detail=detail) if detail else template
 
 
 # Global singleton

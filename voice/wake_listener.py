@@ -215,6 +215,7 @@ class WakeListener:
         self._trigger_model = ""
         self._trigger_frames = 0
         self._trigger_below = 0
+        self._trigger_gate_open_at_onset = True
         self.last_score = 0.0
         self.last_transcript = ""
         self.last_decision = "WAIT_WAKE"
@@ -337,15 +338,26 @@ class WakeListener:
                 continue
             if now < self._cooldown_until:
                 continue
+            # ISSUE-2 FIX: VAD gate check is DEFERRED to trigger settlement.
+            # The VAD uses 512-sample windows; openWakeWord uses 1280-sample
+            # frames. The VAD gate can transiently close between frames even
+            # during continuous speech (e.g. between syllables). Rejecting a
+            # score=1.00 wake because the VAD gate flickered closed for one
+            # 32ms window is a false negative. Instead, we record the VAD
+            # state at trigger onset and verify at settlement that speech was
+            # present for the MAJORITY of the trigger window.
             if not gate_open:
-                logger.info("[WAKE] Score %.2f ≥ %.2f but VAD gate closed "
-                            "(no speech) — rejected", score, threshold)
-                continue
+                logger.info("[WAKE] Score %.2f ≥ %.2f — VAD gate currently "
+                            "closed but trigger tracked for settlement "
+                            "(VAD uses 32ms windows, wake uses 80ms frames "
+                            "— transient gate closure is expected)",
+                            score, threshold)
             if now - self._last_verify < VERIFY_MIN_INTERVAL_S:
                 continue
-            # Score crossed the threshold with the gate open: track the peak
+            # Score crossed the threshold: track the peak
             # and verify when the event settles.
             self._trigger_active = True
+            self._trigger_gate_open_at_onset = gate_open
             self._trigger_peak = score
             self._trigger_model = wake_model_manager.model_name or "wake"
             self._trigger_frames = 0

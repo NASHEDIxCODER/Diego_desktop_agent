@@ -457,10 +457,10 @@ class MusicAgent:
             except Exception as e:
                 logger.debug("[Music] spotify CLI failed: %s", e)
 
-        # Fallback: open Spotify web
+        # Fallback: open Spotify web search
         encoded = query.replace(" ", "%20")
         url = f"https://open.spotify.com/search/{encoded}"
-        return await self._play_browser(url)
+        return await self._play_browser(query)
 
     async def _play_local(self, query: str) -> str:
         """Play local music files."""

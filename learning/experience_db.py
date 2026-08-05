@@ -344,18 +344,18 @@ class ExperienceDB:
         """Store the experience via the learning engine for persistence."""
         try:
             from learning.learning_engine import learning_engine
-            learning_engine.skills.record(
-                goal=record.goal,
-                action="|".join(record.plan_actions[:5]) or "unknown",
-                success=record.success,
-                latency_ms=record.latency_ms,
-                error=record.error,
-                recovery=record.recovery_action,
+            # Use record_action which is the stable public API
+            learning_engine.record_action(
+                action_name="|".join(record.plan_actions[:5]) or "unknown",
                 params={
+                    "goal": record.goal,
                     "plan_steps": record.plan_steps,
                     "result": record.result,
                     "used_fallback": record.used_fallback,
                 },
+                success=record.success,
+                latency_ms=record.latency_ms,
+                error=record.error,
             )
         except Exception:
             pass

@@ -13,6 +13,7 @@ Failed steps are retried with visual search recovery.
 
 import json
 import logging
+import shutil
 import time
 from typing import Optional, Dict, Any, List
 
@@ -346,7 +347,6 @@ class AgentPlanner:
         # Firefox failed → try Chrome
         if action == "desktop_open" and params.get("app", "").lower() in ("firefox", "firefox-esr", "firefox-bin"):
             alternatives = ["google-chrome", "chromium", "brave", "chromium-browser"]
-            import shutil
             for alt in alternatives:
                 if shutil.which(alt):
                     logger.info("[Planner] Firefox failed → trying %s", alt)
@@ -375,9 +375,13 @@ class AgentPlanner:
 
         # For browser click failures, try taking a screenshot first
         if "browser_click" in action and "timeout" in error.lower():
-            path = browser_controller.screenshot()
-            if path:
-                return f"Element not found. Screenshot saved to {path}. Try a different selector."
+            try:
+                from agent.browser import browser_controller
+                path = browser_controller.screenshot()
+                if path:
+                    return f"Element not found. Screenshot saved to {path}. Try a different selector."
+            except Exception:
+                pass
 
         # For navigation failures, wait and retry
         if action == "browser_navigate":

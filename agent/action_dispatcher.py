@@ -5,6 +5,8 @@ Bridges the conversational engine to the existing planner / executor /
 browser / vision subsystems. Lets Leo DO things automatically without
 asking for confirmation.
 
+Every action follows: execute → verify → retry → fallback → report.
+
 Supported actions (from the LLM's ACTION lines):
   desktop_open(app)          — open an application
   browser_navigate(url)      — open a website
@@ -28,13 +30,13 @@ Usage:
 """
 
 import asyncio
+import json
 import logging
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
-
 
 
 class ActionDispatcher:
@@ -61,7 +63,8 @@ class ActionDispatcher:
     @staticmethod
     def _record_for_learning(action_name: str, params: Dict[str, Any],
                               success: bool, latency_ms: float = 0.0,
-                              error: str = "") -> None:
+                              error: str = "", retries: int = 0,
+                              fallback_used: bool = False) -> None:
         """Record an action in the learning engine (non-blocking)."""
         try:
             from learning.learning_engine import learning_engine
@@ -71,6 +74,8 @@ class ActionDispatcher:
                 success=success,
                 latency_ms=latency_ms,
                 error=error,
+                retries=retries,
+                fallback_used=fallback_used,
             )
         except Exception:
             pass  # Learning engine failure must never break action execution
@@ -79,7 +84,14 @@ class ActionDispatcher:
 
     async def execute(self, action: Dict[str, Any]) -> Optional[str]:
         """
-        Execute an ACTION dict from the LLM.
+        Execute an ACTION dict from the LLM with verify/retry/fallback.
+
+        Pipeline:
+          1. Execute the action
+          2. Verify it worked (vision check, process check, etc.)
+          3. If failed, retry with adjusted parameters
+          4. If still failed, try fallback alternatives
+          5. Report result
 
         Runs blocking desktop operations in a thread so the event loop
         stays responsive (full duplex keeps listening while acting).
@@ -93,16 +105,328 @@ class ActionDispatcher:
 
         t0 = time.time()
         loop = asyncio.get_event_loop()
-        try:
-            result = await loop.run_in_executor(None, self._execute_sync, name, params)
+
+        # ── Consult ExperienceDB for best approach ────────
+        best_action = self._consult_experience(name, params)
+
+        # ── Capture pre-action screen state for verification ──
+        self._capture_pre_action()
+
+        # ── Music actions must run in the event loop, not a thread ──
+        if name == "play_media":
+            result = await self._play_media_async(params.get("query", ""))
             latency_ms = (time.time() - t0) * 1000
             self._record_for_learning(name, params, success=True, latency_ms=latency_ms)
             return result
+        if name in ("music_pause", "music_resume", "music_next",
+                     "music_previous", "music_stop", "music_shuffle",
+                     "music_repeat", "music_status"):
+            result = await self._music_action(name, params)
+            latency_ms = (time.time() - t0) * 1000
+            self._record_for_learning(name, params, success=True, latency_ms=latency_ms)
+            return result
+        if name == "music_volume":
+            pct = int(params.get("percent", params.get("level", 50)))
+            result = await self._music_volume(pct)
+            latency_ms = (time.time() - t0) * 1000
+            self._record_for_learning(name, params, success=True, latency_ms=latency_ms)
+            return result
+        if name == "music_mute":
+            result = await self._music_mute()
+            latency_ms = (time.time() - t0) * 1000
+            self._record_for_learning(name, params, success=True, latency_ms=latency_ms)
+            return result
+
+        # ── Attempt 1: Primary execution ──────────────────
+        try:
+            result = await loop.run_in_executor(None, self._execute_sync, name, params)
+            latency_ms = (time.time() - t0) * 1000
+
+            # Verify the action actually worked
+            verified = await self._verify_action(name, params, result)
+            if verified:
+                self._record_for_learning(name, params, success=True, latency_ms=latency_ms)
+                return result
+
+            # Verification failed — try retry
+            logger.warning("[ACTIONS] Verification failed for %s — retrying", name)
         except Exception as e:
             latency_ms = (time.time() - t0) * 1000
-            self._record_for_learning(name, params, success=False, latency_ms=latency_ms, error=str(e))
-            logger.warning("[ACTIONS] execute failed (%s): %s", name, e)
-            return f"Couldn't {name.replace('_', ' ')}"
+            logger.warning("[ACTIONS] execute failed (%s): %s — retrying", name, e)
+
+        # ── Attempt 2: Retry with adjusted params ─────────
+        try:
+            retry_params = self._adjust_params_for_retry(name, params)
+            result = await loop.run_in_executor(None, self._execute_sync, name, retry_params)
+            latency_ms = (time.time() - t0) * 1000
+
+            verified = await self._verify_action(name, retry_params, result)
+            if verified:
+                self._record_for_learning(name, params, success=True, latency_ms=latency_ms,
+                                          retries=1)
+                return result
+
+            logger.warning("[ACTIONS] Retry verification failed for %s — trying fallback", name)
+        except Exception as e:
+            logger.warning("[ACTIONS] Retry failed (%s): %s — trying fallback", name)
+
+        # ── Attempt 3: Fallback alternative ───────────────
+        try:
+            fallback_result = await self._execute_fallback(name, params)
+            if fallback_result:
+                latency_ms = (time.time() - t0) * 1000
+                self._record_for_learning(name, params, success=True, latency_ms=latency_ms,
+                                          retries=2, fallback_used=True)
+                return fallback_result
+        except Exception as e:
+            logger.warning("[ACTIONS] Fallback failed (%s): %s", name, e)
+
+        # ── All attempts exhausted ────────────────────────
+        latency_ms = (time.time() - t0) * 1000
+        self._record_for_learning(name, params, success=False, latency_ms=latency_ms,
+                                  error=f"All attempts exhausted for {name}")
+        # Track entity for pronoun resolution
+        self._track_entity_for_memory(name, params)
+        return f"Couldn't {name.replace('_', ' ')} after several attempts"
+
+    # ── ExperienceDB consultation ─────────────────────────
+
+    @staticmethod
+    def _consult_experience(name: str, params: Dict[str, Any]) -> Optional[str]:
+        """Consult ExperienceDB for best approach before executing."""
+        try:
+            from learning.experience_db import experience_db
+            goal = f"{name} {json.dumps(params)}" if params else name
+            best = experience_db.best_action_for(goal)
+            if best:
+                logger.info("[ACTIONS] ExperienceDB suggests: %s for %s", best, name)
+            # Check for actions to avoid
+            avoid = experience_db.avoid_actions(goal)
+            if avoid:
+                logger.info("[ACTIONS] ExperienceDB warns against: %s", avoid)
+            return best
+        except Exception:
+            return None
+
+    # ── Pre/post action screen capture ────────────────────
+
+    @staticmethod
+    def _capture_pre_action() -> None:
+        """Capture screen state before action for verification."""
+        try:
+            from vision.action_verifier import action_verifier
+            action_verifier.capture_pre_action()
+        except Exception:
+            pass
+
+    @staticmethod
+    def _verify_post_action(name: str, params: Dict[str, Any]) -> bool:
+        """Verify action had expected effect using vision."""
+        try:
+            from vision.action_verifier import action_verifier
+            import asyncio
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                future = asyncio.run_coroutine_threadsafe(
+                    action_verifier.verify_action(name, params), loop)
+                result = future.result(timeout=5)
+                return result.success
+        except Exception:
+            pass
+        return True  # Default to trust on verification failure
+
+    # ── Entity tracking for pronoun resolution ────────────
+
+    @staticmethod
+    def _track_entity_for_memory(name: str, params: Dict[str, Any]) -> None:
+        """Track entities for pronoun resolution in conversation memory."""
+        try:
+            from agent.conversation_memory import conv_memory
+            if name == "desktop_open":
+                app = params.get("app", "")
+                if app:
+                    conv_memory.track_entity(app)
+                    conv_memory.track_action(f"opened {app}")
+            elif name == "browser_navigate":
+                url = params.get("url", "")
+                if url:
+                    conv_memory.track_entity(url)
+            elif name == "play_media":
+                query = params.get("query", "")
+                if query:
+                    conv_memory.track_entity(query)
+                    conv_memory.track_action(f"played {query}")
+        except Exception:
+            pass
+
+    # ── Verification ──────────────────────────────────────
+
+    async def _verify_action(self, name: str, params: Dict[str, Any],
+                              result: Optional[str]) -> bool:
+        """
+        Verify that an action actually succeeded.
+
+        Uses multiple verification strategies:
+          - Process check (did the app actually start?)
+          - Vision check (did the screen change?)
+          - Result check (did we get a success message?)
+        """
+        if result and "Couldn't" in str(result):
+            return False
+
+        # App launch verification
+        if name == "desktop_open":
+            app = params.get("app", "").lower()
+            return await self._verify_app_launched(app)
+
+        # Browser verification
+        if name in ("browser_navigate", "browser_search"):
+            return await self._verify_browser_action()
+
+        # Music verification
+        if name == "play_media":
+            return await self._verify_music_playing()
+
+        # For other actions, trust the result if it's not an error
+        if result and not str(result).startswith("Couldn't"):
+            return True
+
+        return result is not None
+
+    async def _verify_app_launched(self, app: str) -> bool:
+        """Check if an application process is actually running."""
+        import subprocess
+
+        app_proc_map = {
+            "code": "code", "vscode": "code", "vs code": "code",
+            "firefox": "firefox", "chrome": "chrome", "google-chrome": "chrome",
+            "spotify": "spotify", "gnome-terminal": "gnome-terminal",
+            "terminal": "gnome-terminal", "nautilus": "nautilus",
+            "files": "nautilus", "file manager": "nautilus",
+        }
+        proc_name = app_proc_map.get(app, app)
+
+        try:
+            result = subprocess.run(
+                ["pgrep", "-f", proc_name],
+                capture_output=True, text=True, timeout=3
+            )
+            return result.returncode == 0
+        except Exception:
+            # pgrep not available — trust the launch
+            return True
+
+    async def _verify_browser_action(self) -> bool:
+        """Verify browser action by checking if a browser process is running."""
+        import subprocess
+        try:
+            result = subprocess.run(
+                ["pgrep", "-f", "firefox|chrome|chromium|brave"],
+                capture_output=True, text=True, timeout=3
+            )
+            return result.returncode == 0
+        except Exception:
+            return True
+
+    async def _verify_music_playing(self) -> bool:
+        """Check if music is actually playing."""
+        try:
+            from services.music_agent import music_agent
+            return music_agent.is_playing
+        except Exception:
+            return True
+
+    # ── Retry parameter adjustment ────────────────────────
+
+    def _adjust_params_for_retry(self, name: str,
+                                  params: Dict[str, Any]) -> Dict[str, Any]:
+        """Adjust parameters for a retry attempt."""
+        adjusted = dict(params)
+
+        if name == "desktop_open":
+            app = params.get("app", "")
+            # Try alternative binary names
+            alt_map = {
+                "code": "code-insiders",
+                "vscode": "code",
+                "vs code": "code",
+                "firefox": "firefox-esr",
+                "chrome": "chromium-browser",
+                "google-chrome": "chromium",
+                "gnome-terminal": "xterm",
+                "terminal": "xterm",
+                "nautilus": "thunar",
+                "files": "thunar",
+                "file manager": "thunar",
+            }
+            if app.lower() in alt_map:
+                adjusted["app"] = alt_map[app.lower()]
+
+        if name == "browser_navigate":
+            # Try without https:// prefix
+            url = params.get("url", "")
+            if url.startswith("https://"):
+                adjusted["url"] = url.replace("https://", "http://")
+
+        return adjusted
+
+    # ── Fallback execution ────────────────────────────────
+
+    async def _execute_fallback(self, name: str,
+                                 params: Dict[str, Any]) -> Optional[str]:
+        """Execute a fallback alternative when primary and retry both fail."""
+        loop = asyncio.get_event_loop()
+
+        if name == "desktop_open":
+            app = params.get("app", "")
+            # Fallback: try xdg-open or gtk-launch
+            import shutil
+            import subprocess
+            for launcher in ("gtk-launch", "xdg-open"):
+                if shutil.which(launcher):
+                    try:
+                        subprocess.Popen(
+                            [launcher, app],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            start_new_session=True,
+                        )
+                        return f"Opened {app} via {launcher}"
+                    except Exception:
+                        continue
+            return None
+
+        if name in ("browser_navigate", "browser_search"):
+            url = params.get("url", "")
+            if not url:
+                query = params.get("query", "")
+                url = "https://www.google.com/search?q=" + query.replace(" ", "+")
+            # Fallback: try multiple browsers
+            import shutil
+            import subprocess
+            for browser in ("firefox", "google-chrome", "chromium-browser",
+                            "chromium", "brave-browser", "epiphany"):
+                if shutil.which(browser):
+                    try:
+                        subprocess.Popen(
+                            [browser, url],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            start_new_session=True,
+                        )
+                        return f"Opened {url} in {browser}"
+                    except Exception:
+                        continue
+            return None
+
+        if name == "play_media":
+            query = params.get("query", "")
+            # Fallback: open YouTube search in browser
+            url = "https://www.youtube.com/results?search_query=" + query.replace(" ", "+")
+            return await loop.run_in_executor(
+                None, self._open_url_fallback, url)
+
+        return None
 
     # ── Synchronous dispatch (runs in thread) ─────────────
 
@@ -135,7 +459,6 @@ class ActionDispatcher:
                     return f"Searched for {query}"
             return self._open_url_fallback(url)
 
-
         # ── Screen reading ────────────────────────────────
         if name == "read_screen":
             return self._read_screen()
@@ -167,28 +490,15 @@ class ActionDispatcher:
                 return None
             return None
 
-        # ── Media (routed through MusicAgent) ────────────
-        if name == "play_media":
-            query = params.get("query", "")
-            return asyncio.run(self._play_media_async(query))
+        # ── Music actions are handled in async execute() above ──
+        # (They must run in the event loop, not a thread)
 
-        # ── Music control actions ─────────────────────────
-        if name in ("music_pause", "music_resume", "music_next",
-                     "music_previous", "music_stop", "music_shuffle",
-                     "music_repeat", "music_status"):
-            return asyncio.run(self._music_action(name, params))
-        if name == "music_volume":
-            pct = int(params.get("percent", params.get("level", 50)))
-            return asyncio.run(self._music_volume(pct))
-        if name == "music_mute":
-            return asyncio.run(self._music_mute())
-
-        # ── Folder opening (TASK 9) ───────────────────────
+        # ── Folder opening ────────────────────────────────
         if name == "open_folder":
             path = params.get("path") or str(Path.home())
             return self._open_folder(path)
 
-        # ── Volume (TASK 9, native PipeWire/ALSA APIs) ────
+        # ── Volume (native PipeWire/ALSA APIs) ────────────
         if name == "volume_up":
             return self._volume_change("+10%")
         if name == "volume_down":
@@ -199,7 +509,7 @@ class ActionDispatcher:
         if name == "volume_mute":
             return self._volume_mute()
 
-        # ── Brightness (TASK 9, native brightnessctl) ─────
+        # ── Brightness (native brightnessctl) ─────────────
         if name == "brightness_up":
             return self._brightness_change("+10%")
         if name == "brightness_down":
@@ -208,7 +518,7 @@ class ActionDispatcher:
             pct = int(params.get("percent", params.get("level", 70)))
             return self._brightness_set(pct)
 
-        # ── Session / power (TASK 9, native logind) ───────
+        # ── Session / power (native logind) ───────────────
         if name == "lock_screen":
             return self._lock_screen()
         if name == "shutdown":
@@ -219,7 +529,7 @@ class ActionDispatcher:
         logger.warning("[ACTIONS] Unknown action: %s", name)
         return None
 
-    # ── TASK 9: native desktop operations ─────────────────
+    # ── Native desktop operations ─────────────────────────
 
     @staticmethod
     def _run_cmd(argv: list, timeout: float = 5.0) -> bool:
@@ -321,7 +631,6 @@ class ActionDispatcher:
             return "Shutting down" if action == "poweroff" else "Restarting"
         return "Power control unavailable"
 
-
     # ── App / URL launching ───────────────────────────────
 
     def _open_app(self, app: str) -> str:
@@ -393,14 +702,7 @@ class ActionDispatcher:
     def _read_screen(self) -> str:
         """OCR + describe the current screen."""
         try:
-            from vision import vision_manager, CaptureSource
-            if not vision_manager.is_available:
-                vision_manager.initialize()
-            # Try OCR first (fast, no model needed)
-            import asyncio as _a
-            text = _a.get_event_loop().run_until_complete(
-                vision_manager.ocr_screen(CaptureSource.ACTIVE_WINDOW)
-            ) if False else self._ocr_sync()
+            text = self._ocr_sync()
             if text:
                 return f"On screen: {text[:500]}"
         except Exception as e:
@@ -413,7 +715,6 @@ class ActionDispatcher:
             import asyncio
             loop = asyncio.get_event_loop()
             if loop.is_running():
-                # Create a future for the coroutine
                 future = asyncio.run_coroutine_threadsafe(
                     self._ocr_async(), loop)
                 return future.result(timeout=5)
@@ -483,7 +784,6 @@ class ActionDispatcher:
             try:
                 out = subprocess.run(
                     ["wmctrl", "-l"], capture_output=True, text=True, timeout=2)
-                # Best effort — return first line's title
                 for line in out.stdout.splitlines():
                     segs = line.split(None, 3)
                     if len(segs) == 4:

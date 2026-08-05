@@ -100,6 +100,8 @@ from voice.wake_model_manager import wake_model_manager
 from agent.streaming_llm import streaming_llm
 from agent.conversation_memory import conv_memory
 from agent.personality import personality
+from core.command_router import command_router, RouteKind
+from core.benchmark import benchmark
 
 logger = logging.getLogger(__name__)
 
@@ -435,8 +437,16 @@ class ConversationEngine:
         """
         WAKE_DETECTED: play the wake chime, interrupt current buffers,
         then (re-)auth if the session expired → GREETING → conversation.
+
+        ISSUE-1 FIX: STT streaming starts IMMEDIATELY after wake chime.
+        Face authentication and greeting playback run ASYNCHRONOUSLY in
+        the background. The user can speak at any time — if speech is
+        detected during the greeting, TTS is interrupted instantly and
+        the utterance is processed. Never delay COMMAND_LISTEN because
+        of greeting playback.
         """
         loop = asyncio.get_event_loop()
+        t_wake = time.time()
 
         # Interrupt current buffers: drop everything captured up to now so
         # neither the wake phrase nor the chime leaks into Whisper.
@@ -446,37 +456,86 @@ class ConversationEngine:
         # Play wake chime.
         await loop.run_in_executor(None, self._play_wake_chime)
 
-        # Face auth — only when the session expired (never blocks a valid one).
-        fresh_auth = False
-        if self._needs_auth():
-            self._set_state(EngineState.FACE_AUTH)
-            name = await self._run_auth()
-            if not name:
-                logger.warning("[FACE_AUTH] Denied — returning to WAKE_LISTEN")
-                await self._speak_line(
-                    "I couldn't verify your identity. Please try again.")
-                self._set_state(EngineState.WAKE_LISTEN)
-                return
-            self._auth_user = name
-            self._last_auth_time = time.time()
-            conv_memory.set_user_name(name)
-            fresh_auth = True
-            logger.info("[FACE_AUTH] Authenticated: %s", name)
+        # ── ISSUE-1: Launch face auth in background, do NOT block STT ──
+        needs_auth = self._needs_auth()
+        face_auth_task: Optional[asyncio.Task] = None
+        face_auth_ok = asyncio.Event()
+        face_auth_name: Optional[str] = None
 
-        # ── STATE: GREETING ───────────────────────────────
+        if needs_auth:
+            self._set_state(EngineState.FACE_AUTH)
+            logger.info("[FACE_AUTH] Starting background verification — "
+                        "STT streaming begins immediately in parallel")
+
+            async def _background_auth():
+                nonlocal face_auth_name
+                try:
+                    face_auth_name = await self._run_auth()
+                except Exception as e:
+                    logger.warning("[FACE_AUTH] Background auth error: %s", e)
+                finally:
+                    face_auth_ok.set()
+                    if face_auth_name:
+                        logger.info("[FACE_AUTH] Background verification SUCCEEDED: %s",
+                                    face_auth_name)
+                    else:
+                        logger.warning("[FACE_AUTH] Background verification FAILED")
+
+            face_auth_task = asyncio.create_task(_background_auth())
+
+        # ── ISSUE-1: Start STT streaming IMMEDIATELY (before greeting) ──
+        # The user can speak at any time. The greeting plays asynchronously
+        # and is interrupted if the user begins speaking.
+        t_stt_start = time.time()
+        logger.info("[PERF] wake→STT latency: %.0fms", (t_stt_start - t_wake) * 1000)
+
+        # ── STATE: GREETING (plays asynchronously, does NOT block STT) ──
         self._set_state(EngineState.GREETING)
         name = conv_memory.user_name or self._auth_user
-        if fresh_auth and name:
-            greeting = f"Welcome back, {name}."
+        if needs_auth:
+            greeting = personality.greeting(returning=conv_memory.turn_count > 0)
+        elif name and conv_memory.turn_count == 0:
+            greeting = personality.greeting(returning=False).rstrip(".") + f", {name}."
         else:
             greeting = personality.greeting(returning=conv_memory.turn_count > 0)
-            if name and conv_memory.turn_count == 0:
-                greeting = greeting.rstrip(".") + f", {name}."
         logger.info("[GREETING] '%s'", greeting)
-        await self._speak_line(greeting)
+
+        # Play greeting asynchronously — do NOT await it. The conversation
+        # session starts immediately and the greeting is interrupted if the
+        # user speaks.
+        greeting_task = asyncio.create_task(self._speak_line(greeting))
 
         # ── STATE: COMMAND_LISTEN … (full session) ───────
-        await self._conversation_session()
+        # Pass the pending face auth task so action execution can gate on it.
+        t_cmd_start = time.time()
+        logger.info("[PERF] wake→COMMAND_LISTEN latency: %.0fms",
+                    (t_cmd_start - t_wake) * 1000)
+        await self._conversation_session(
+            face_auth_task=face_auth_task,
+            face_auth_ok=face_auth_ok,
+            greeting_task=greeting_task,
+        )
+
+        # ── Resolve face auth result after the session ──
+        if face_auth_task is not None:
+            if not face_auth_task.done():
+                await face_auth_ok.wait()
+            if face_auth_name:
+                self._auth_user = face_auth_name
+                self._last_auth_time = time.time()
+                conv_memory.set_user_name(face_auth_name)
+                logger.info("[FACE_AUTH] Session authenticated: %s", face_auth_name)
+            else:
+                logger.warning("[FACE_AUTH] Session unauthenticated — "
+                               "actions were blocked this turn")
+
+        # Ensure greeting task is cleaned up
+        if not greeting_task.done():
+            greeting_task.cancel()
+            try:
+                await greeting_task
+            except (asyncio.CancelledError, Exception):
+                pass
 
     @staticmethod
     def _play_wake_chime() -> None:
@@ -505,7 +564,12 @@ class ConversationEngine:
 
     # ── STATE: COMMAND_LISTEN / THINKING / SPEAKING / FOLLOWUP ──
 
-    async def _conversation_session(self) -> None:
+    async def _conversation_session(
+        self,
+        face_auth_task: Optional[asyncio.Task] = None,
+        face_auth_ok: Optional[asyncio.Event] = None,
+        greeting_task: Optional[asyncio.Task] = None,
+    ) -> None:
         """
         Run one conversation session:
 
@@ -515,6 +579,11 @@ class ConversationEngine:
 
         Streaming Whisper is created here and DESTROYED when the session
         ends — it never exists outside COMMAND_LISTEN-family states.
+
+        ISSUE-1: face_auth_task runs in parallel with STT. Desktop actions
+        are gated on face_auth_ok — if auth fails, actions are cancelled.
+        greeting_task is the async greeting TTS — it is interrupted the
+        moment the user begins speaking.
         """
         loop = asyncio.get_event_loop()
 
@@ -537,6 +606,9 @@ class ConversationEngine:
         self._set_state(EngineState.COMMAND_LISTEN)
         exit_state = EngineState.WAKE_LISTEN
 
+        # ISSUE-1: Track whether the greeting has been interrupted
+        _greeting_interrupted = False
+
         try:
             while self._running:
                 remaining = self._session_deadline - time.monotonic()
@@ -553,10 +625,30 @@ class ConversationEngine:
 
                 if ev.kind == "speech_start":
                     logger.info("Speech detected")
+                    # ISSUE-1: Interrupt greeting TTS immediately on first speech
+                    if not _greeting_interrupted and greeting_task is not None and not greeting_task.done():
+                        _greeting_interrupted = True
+                        logger.info("[GREETING] User spoke — interrupting greeting TTS")
+                        streaming_tts.stop()
+                        greeting_task.cancel()
+                        try:
+                            await greeting_task
+                        except (asyncio.CancelledError, Exception):
+                            pass
                     self._session_deadline = time.monotonic() + CONVERSATION_TIMEOUT_S
                     continue
 
                 if ev.kind == "partial":
+                    # ISSUE-1: Also interrupt greeting on first partial transcript
+                    if not _greeting_interrupted and greeting_task is not None and not greeting_task.done():
+                        _greeting_interrupted = True
+                        logger.info("[GREETING] Partial transcript received — interrupting greeting TTS")
+                        streaming_tts.stop()
+                        greeting_task.cancel()
+                        try:
+                            await greeting_task
+                        except (asyncio.CancelledError, Exception):
+                            pass
                     # TASK 8: partial transcripts are VISIBLE while the user
                     # speaks (streaming Whisper, not batch-after-recording).
                     logger.info("Partial: '%s'", ev.text)
@@ -589,11 +681,9 @@ class ConversationEngine:
                     logger.info("[COMMAND_LISTEN] Filler '%s' — turn stays open", text)
                     continue
 
-                # ── STATE: THINKING ───────────────────────
-                self._set_state(EngineState.THINKING)
-
                 if self._is_goodbye(lower):
                     # Canned farewell: THINKING → SPEAKING → FOLLOWUP → WAKE_LISTEN
+                    self._set_state(EngineState.THINKING)
                     await self._think_and_speak(personality.farewell(), events, canned=True)
                     self._set_state(EngineState.FOLLOWUP)
                     exit_state = EngineState.WAKE_LISTEN
@@ -603,7 +693,95 @@ class ConversationEngine:
                 self._turn_count += 1
                 logger.info("[THINKING] Turn #%d: '%s'", self._turn_count, text)
 
+                # ── HIERARCHICAL DECISION ENGINE: think before LLM ──
+                t_turn_start = time.time()
+
+                # Collect autonomous context for "fix this" / "help" type queries
+                from core.autonomous_reasoning import auto_context
+                auto_ctx = await auto_context.collect()
+
+                # Run the hierarchical decision engine (L1→L7)
+                from core.decision_engine import decision_engine, DecisionPath
+                decision = await decision_engine.decide(
+                    text,
+                    vision_context=None,  # Will be fetched by LLM path if needed
+                    search_context=None,   # Will be fetched by LLM path if needed
+                    desktop_context=auto_ctx.summary if auto_ctx else "",
+                )
+
+                if decision.resolved:
+                    # Decision engine handled it — no LLM needed
+                    logger.info("[DECIDE] Bypassed LLM — path=%s confidence=%.2f latency=%.0fµs",
+                                decision.path.value, decision.confidence, decision.latency_us)
+
+                    # Execute action if present
+                    if decision.action and self._action_executor:
+                        try:
+                            await self._action_executor(decision.action)
+                        except Exception as e:
+                            logger.warning("[DECIDE] Action execution failed: %s", e)
+
+                    # Execute multi-step actions if present
+                    if decision.actions and self._action_executor:
+                        for action in decision.actions:
+                            try:
+                                await self._action_executor(action)
+                            except Exception as e:
+                                logger.warning("[DECIDE] Workflow action failed: %s", e)
+
+                    # Speak response if present
+                    if decision.response:
+                        self._set_state(EngineState.THINKING)
+                        await self._think_and_speak(decision.response, events, canned=True)
+
+                    self._set_state(EngineState.FOLLOWUP)
+
+                    # Record benchmark: LLM bypassed
+                    benchmark.record_turn(
+                        text=text,
+                        llm_used=False,
+                        router_kind=decision.path.value,
+                        latency_ms=(time.time() - t_turn_start) * 1000,
+                        cache_hit=(decision.path == DecisionPath.WORKING_MEMORY),
+                        action_executed=(decision.action is not None or decision.actions is not None),
+                        action_success=(decision.action is not None or decision.actions is not None),
+                    )
+
+                    # Cache the response for future use
+                    if decision.response and decision.path in (
+                        DecisionPath.WORKING_MEMORY,
+                        DecisionPath.SESSION_MEMORY,
+                        DecisionPath.DIRECT_EXECUTION,
+                    ):
+                        command_router.cache_llm_response(text, decision.response, ttl_s=86400)
+
+                    # Drain stale events and continue
+                    drained = 0
+                    while True:
+                        try:
+                            events.get_nowait()
+                            drained += 1
+                        except asyncio.QueueEmpty:
+                            break
+                    if drained:
+                        logger.info("[FOLLOWUP] Drained %d stale STT events", drained)
+                    self._set_state(EngineState.COMMAND_LISTEN)
+                    continue
+
+                # ── STATE: THINKING (LLM path) ─────────────
+                self._set_state(EngineState.THINKING)
+                t_llm_start = time.time()
                 actions = await self._think_and_speak(text, events)
+                # Record benchmark: LLM used
+                benchmark.record_turn(
+                    text=text,
+                    llm_used=True,
+                    router_kind=RouteKind.COMPLEX.value,
+                    latency_ms=(time.time() - t_turn_start) * 1000,
+                    llm_latency_ms=(time.time() - t_llm_start) * 1000,
+                    action_executed=len(actions) > 0,
+                    action_success=len(actions) > 0,
+                )
 
                 # ── STATE: FOLLOWUP ───────────────────────
                 self._set_state(EngineState.FOLLOWUP)
@@ -770,55 +948,192 @@ class ConversationEngine:
     async def _llm_sentences(
         self, user_text: str, interrupt: asyncio.Event) -> AsyncIterator[str]:
         """Yield LLM sentences, adding vision/search/desktop/learn/music context."""
-        # ── Desktop state injection (always) ───────────────
-        try:
-            from services.desktop_state import desktop_state
-            loop = asyncio.get_event_loop()
-            ds_ctx = await loop.run_in_executor(None, desktop_state.quick_context)
-            if ds_ctx:
-                user_text = f"{user_text}\n[Desktop: {ds_ctx}]"
-        except Exception as e:
-            logger.debug("[LLM] desktop state failed: %s", e)
+        from core.cache_manager import cache_manager
 
-        # ── Screen context injection ───────────────────────
-        if self._references_screen(user_text) and self._vision_context_fn:
+        # Build context parts list instead of mutating user_text in-place
+        # (prevents cascading prompt corruption where later stages see
+        #  earlier stages' injected text)
+        context_parts: list = []
+
+        # ── Pre-populate async caches before LLM call ─────
+        # These must run as coroutines so they don't block the event loop.
+        # We run them in parallel where possible.
+        async def _prepopulate_caches() -> None:
+            nonlocal context_parts
+
+            # Desktop state (sync, fast)
             try:
-                ctx = await self._vision_context_fn()
-                if ctx:
-                    user_text = f"{user_text}\n[Screen context: {ctx}]"
+                dk = cache_manager.desktop_key("quick_context")
+                ds_ctx = cache_manager.get_or_compute(
+                    "desktop", dk,
+                    lambda: self._get_desktop_context_sync(),
+                    ttl_s=1.0,
+                )
+                if ds_ctx:
+                    context_parts.append(f"[Desktop: {ds_ctx}]")
             except Exception as e:
-                logger.debug("[LLM] vision context failed: %s", e)
+                logger.debug("[LLM] desktop state failed: %s", e)
 
-        # ── Search context injection ───────────────────────
-        if self._references_search(user_text) and self._search_provider_fn:
+            # Screen context (async via vision_context_fn)
+            if self._references_screen(user_text) and self._vision_context_fn:
+                try:
+                    vk = cache_manager.vision_key("screen")
+                    entry = cache_manager.get("vision", vk)
+                    if entry is None:
+                        ctx = await self._vision_context_fn()
+                        cache_manager.set("vision", vk, ctx, ttl_s=2.0)
+                    else:
+                        ctx = entry.value
+                    if ctx:
+                        context_parts.append(f"[Screen context: {ctx}]")
+                except Exception as e:
+                    logger.debug("[LLM] vision context failed: %s", e)
+
+            # Search context (async via search_provider_fn)
+            if self._references_search(user_text) and self._search_provider_fn:
+                try:
+                    sk = cache_manager.search_key(user_text)
+                    entry = cache_manager.get("search", sk)
+                    if entry is None:
+                        search_ctx = await self._search_provider_fn(user_text)
+                        cache_manager.set("search", sk, search_ctx, ttl_s=300.0)
+                    else:
+                        search_ctx = entry.value
+                    if search_ctx:
+                        context_parts.append(f"[Web search results: {search_ctx}]")
+                except Exception as e:
+                    logger.debug("[LLM] search context failed: %s", e)
+
+            # Music status (async via music_agent.status())
             try:
-                search_ctx = await self._search_provider_fn(user_text)
-                if search_ctx:
-                    user_text = f"{user_text}\n[Web search results: {search_ctx}]"
+                from services.music_agent import music_agent
+                if music_agent.is_playing:
+                    mk = cache_manager.make_key("music", "status")
+                    entry = cache_manager.get("music", mk)
+                    if entry is None:
+                        status = await music_agent.status()
+                        cache_manager.set("music", mk, status, ttl_s=5.0)
+                    else:
+                        status = entry.value
+                    if status and "Nothing" not in status:
+                        context_parts.append(f"[Music: {status}]")
             except Exception as e:
-                logger.debug("[LLM] search context failed: %s", e)
+                logger.debug("[LLM] music agent failed: %s", e)
 
-        # ── Context Composer (smart memory injection) ──────
-        try:
-            from agent.context_composer import context_composer
-            composed = context_composer.compose(user_text, max_tokens=800)
-            if composed:
-                user_text = f"{user_text}\n[{composed}]"
-        except Exception as e:
-            logger.debug("[LLM] context composer failed: %s", e)
+            # Context Composer (sync, fast)
+            try:
+                mk = cache_manager.memory_key(user_text)
+                composed = cache_manager.get_or_compute(
+                    "memory", mk,
+                    lambda: self._get_composed_context(user_text),
+                    ttl_s=10.0,
+                )
+                if composed:
+                    context_parts.append(f"[{composed}]")
+            except Exception as e:
+                logger.debug("[LLM] context composer failed: %s", e)
 
-        # ── Music agent status (if music is playing) ───────
-        try:
-            from services.music_agent import music_agent
-            if music_agent.is_playing:
-                status = await music_agent.status()
-                if status and "Nothing" not in status:
-                    user_text = f"{user_text}\n[Music: {status}]"
-        except Exception as e:
-            logger.debug("[LLM] music agent failed: %s", e)
+            # ── ProjectMode auto-detection ────────────────
+            try:
+                from agent.project_mode import project_mode
+                proj_ctx = project_mode.context_for_llm()
+                if proj_ctx:
+                    context_parts.append(f"[Project: {proj_ctx}]")
+            except Exception as e:
+                logger.debug("[LLM] project mode failed: %s", e)
+
+            # ── DesktopObserver rich context ───────────────
+            try:
+                from services.desktop_state import desktop_state
+                snap = desktop_state.snapshot()
+                observer_parts = []
+                if snap.focused_window and snap.focused_window.title:
+                    observer_parts.append(f"Focused: {snap.focused_window.title}")
+                if snap.terminal and snap.terminal.cwd:
+                    observer_parts.append(f"Terminal: {snap.terminal.cwd}")
+                if snap.terminal and snap.terminal.git_branch:
+                    observer_parts.append(f"Git: {snap.terminal.git_branch}")
+                if snap.browser and snap.browser.current_url:
+                    observer_parts.append(f"Browser: {snap.browser.current_url}")
+                if observer_parts:
+                    context_parts.append("[Observer: " + " | ".join(observer_parts) + "]")
+            except Exception as e:
+                logger.debug("[LLM] desktop observer failed: %s", e)
+
+        # Populate all caches before starting LLM generation
+        await _prepopulate_caches()
+
+        # Build final prompt: user text + all context parts joined
+        if context_parts:
+            user_text = f"{user_text}\n" + "\n".join(context_parts)
 
         async for sentence in streaming_llm.generate(user_text, interrupt):
             yield sentence
+
+    # ── Cache helper methods ──────────────────────────────
+
+    @staticmethod
+    def _get_desktop_context_sync() -> str:
+        """Synchronous wrapper for desktop state context."""
+        try:
+            from services.desktop_state import desktop_state
+            return desktop_state.quick_context()
+        except Exception:
+            return ""
+
+    def _get_vision_context_sync(self) -> str:
+        """Synchronous wrapper for vision context."""
+        if not self._vision_context_fn:
+            return ""
+        try:
+            import asyncio
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                future = asyncio.run_coroutine_threadsafe(
+                    self._vision_context_fn(), loop)
+                return future.result(timeout=3)
+            return ""
+        except Exception:
+            return ""
+
+    def _get_search_context_sync(self, user_text: str) -> str:
+        """Synchronous wrapper for search context."""
+        if not self._search_provider_fn:
+            return ""
+        try:
+            import asyncio
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                future = asyncio.run_coroutine_threadsafe(
+                    self._search_provider_fn(user_text), loop)
+                return future.result(timeout=5)
+            return ""
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _get_composed_context(user_text: str) -> str:
+        """Synchronous wrapper for context composer."""
+        try:
+            from agent.context_composer import context_composer
+            return context_composer.compose(user_text, max_tokens=800)
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _get_music_status_sync() -> str:
+        """Synchronous wrapper for music status."""
+        try:
+            from services.music_agent import music_agent
+            import asyncio
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                future = asyncio.run_coroutine_threadsafe(
+                    music_agent.status(), loop)
+                return future.result(timeout=2)
+            return ""
+        except Exception:
+            return ""
 
     @staticmethod
     async def _one_line_stream(text: str) -> AsyncIterator[str]:

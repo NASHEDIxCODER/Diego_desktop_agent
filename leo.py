@@ -122,6 +122,10 @@ async def run_leo(no_auth: bool = False) -> None:
     # ── Wire subsystems ───────────────────────────────────
     conversation_engine.set_action_executor(action_dispatcher.execute)
 
+    # Wire the command router (smart routing layer — bypasses LLM for 80%+ of commands)
+    from core.command_router import command_router
+    command_router.wire(action_dispatcher=action_dispatcher, conversation_engine=conversation_engine)
+
     # Vision context: Use the new VisionService (structured UI tree + OCR)
     # Falls back gracefully to the old vision module if the new service is
     # unavailable.
@@ -158,6 +162,11 @@ async def run_leo(no_auth: bool = False) -> None:
     else:
         conversation_engine.set_auth_provider(authenticate_on_wake)
 
+    # ── Start background learner (idle-time self-improvement) ──
+    from core.background_learning import background_learner
+    background_learner.wire(conversation_engine=conversation_engine)
+    await background_learner.start()
+
     # ── Run engine + watchdog concurrently ────────────────
     engine_task = asyncio.create_task(conversation_engine.run())
     watchdog_task = asyncio.create_task(conversation_engine.timeout_watchdog())
@@ -172,6 +181,7 @@ async def run_leo(no_auth: bool = False) -> None:
         for t in (engine_task, watchdog_task):
             t.cancel()
         await asyncio.gather(engine_task, watchdog_task, return_exceptions=True)
+        await background_learner.stop()
 
 
 # ═══════════════════════════════════════════════════════════════

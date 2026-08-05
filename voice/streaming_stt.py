@@ -31,11 +31,13 @@ Usage:
 """
 
 import asyncio
+import json
 import logging
 import re
 import time
 from dataclasses import dataclass, field
-from typing import AsyncIterator, List, Optional
+from pathlib import Path
+from typing import AsyncIterator, List, Optional, Tuple
 
 import numpy as np
 
@@ -49,9 +51,12 @@ MIN_PAUSE_MS = getattr(voice_settings, "conv_min_pause_ms", 600)        # <600ms
 ENDPOINT_SILENCE_MS = getattr(voice_settings, "conv_endpoint_ms", 900)  # trailing silence finalizes the turn
 MIN_UTTERANCE_MS = 250        # ignore blips shorter than this
 MAX_UTTERANCE_S = 20.0        # hard cap on a single utterance
-PARTIAL_INTERVAL_S = 0.4      # run partial Whisper every N seconds of new audio
-PRE_ROLL_MS = 300             # audio kept before speech onset
+PARTIAL_INTERVAL_S = 0.25     # ISSUE-3: run partial Whisper every 250ms (was 400ms) for faster first token
+PRE_ROLL_MS = 500             # ISSUE-3: 500ms pre-roll (was 300ms) to avoid cutting off the first word
 INTERRUPT_MIN_MS = getattr(voice_settings, "conv_interrupt_min_ms", 90)  # sustained speech to interrupt
+# ISSUE-3: Rolling context — maintain the last partial transcript as prompt
+# context for the next partial, reducing hallucination cascades.
+MAX_ROLLING_CONTEXT_CHARS = 200
 
 # Filler words that must NOT finalize or reset the conversation
 FILLERS = {
@@ -166,13 +171,52 @@ class _SileroVAD:
 class _WhisperTranscriber:
     """faster-whisper transcriber for partial + final transcription."""
 
+    # ISSUE-4: Backend cache path — persists the working device/compute
+    # across restarts so CUDA is never re-probed on every startup.
+    _BACKEND_CACHE = Path(__file__).resolve().parent.parent / "data" / "whisper_backend.json"
+
     def __init__(self):
         self._model = None
         self._ready = False
         self._lock = asyncio.Lock()
+        self._device: str = "cpu"
+        self._compute: str = "int8"
+
+    @classmethod
+    def _load_cached_backend(cls) -> Optional[Tuple[str, str]]:
+        """Return (device, compute_type) from the cache file, or None."""
+        try:
+            if cls._BACKEND_CACHE.exists():
+                data = json.loads(cls._BACKEND_CACHE.read_text(encoding="utf-8"))
+                device = data.get("device")
+                compute = data.get("compute_type")
+                if device and compute:
+                    logger.info("[STREAM-STT] Cached Whisper backend: %s/%s "
+                                "(skipping CUDA probe)", device, compute)
+                    return device, compute
+        except Exception:
+            pass
+        return None
+
+    @classmethod
+    def _save_backend_cache(cls, device: str, compute: str) -> None:
+        """Persist the working backend so next startup skips probing."""
+        try:
+            cls._BACKEND_CACHE.parent.mkdir(parents=True, exist_ok=True)
+            cls._BACKEND_CACHE.write_text(
+                json.dumps({"device": device, "compute_type": compute,
+                            "saved_at": time.time()}),
+                encoding="utf-8")
+        except Exception as e:
+            logger.debug("[STREAM-STT] Failed to cache backend: %s", e)
 
     def load(self) -> bool:
         """Load faster-whisper with a PROVEN backend.
+
+        ISSUE-4 FIX: The working backend (cuda/cpu) is cached to disk.
+        On restart, the cached backend is tried FIRST. If it works, CUDA
+        is never probed again. If it fails (driver update, hardware change),
+        the full probe runs and the cache is updated.
 
         CUDA libraries (libcublas) load lazily at FIRST INFERENCE, so a
         model that "loaded" on cuda can still fail every transcribe call
@@ -185,10 +229,17 @@ class _WhisperTranscriber:
         try:
             from faster_whisper import WhisperModel
             import torch
+
+            # ── ISSUE-4: Try cached backend FIRST ──
+            cached = self._load_cached_backend()
             candidates = []
+            if cached:
+                candidates.append(cached)
+            # Only probe CUDA if no cache or cache failed
             if torch.cuda.is_available():
                 candidates.append(("cuda", "float16"))
             candidates.append(("cpu", "int8"))
+
             for device, compute in candidates:
                 try:
                     # tiny/base gives the best latency for partials
@@ -202,6 +253,10 @@ class _WhisperTranscriber:
                     list(segments)  # consume the generator (runs inference)
                     self._model = model
                     self._ready = True
+                    self._device = device
+                    self._compute = compute
+                    # Persist the working backend
+                    self._save_backend_cache(device, compute)
                     logger.info("[STREAM-STT] faster-whisper loaded "
                                 "(device=%s, compute=%s, warmup OK)",
                                 device, compute)
@@ -216,6 +271,21 @@ class _WhisperTranscriber:
             logger.warning("[STREAM-STT] faster-whisper unavailable: %s", e)
             return False
 
+    @property
+    def gpu_available(self) -> bool:
+        """True if the active backend is CUDA."""
+        return self._ready and self._device == "cuda"
+
+    @property
+    def backend_info(self) -> dict:
+        """Return the active backend details for diagnostics."""
+        return {
+            "device": self._device,
+            "compute_type": self._compute,
+            "ready": self._ready,
+            "gpu_available": self.gpu_available,
+        }
+
     def transcribe(self, pcm_int16: bytes, sample_rate: int = SAMPLE_RATE,
                    use_vad_filter: bool = True) -> str:
         """Transcribe int16 PCM to text. Returns '' on failure.
@@ -227,6 +297,49 @@ class _WhisperTranscriber:
         """
         return self.transcribe_detailed(
             pcm_int16, sample_rate, use_vad_filter).get("text") or ""
+
+    def transcribe_with_context(self, pcm_int16: bytes,
+                                sample_rate: int = SAMPLE_RATE,
+                                prompt_context: str = "") -> str:
+        """ISSUE-2: Transcribe with a prompt prefix for rolling context.
+
+        The previous partial transcript is fed as initial_prompt to
+        faster-whisper, which biases the decoder toward continuing the
+        same phrase rather than hallucinating unrelated words. This
+        reduces the "you" → "and" → "in" → "in the" drift seen in
+        partial transcripts.
+
+        Falls back to standard transcribe() if the model doesn't support
+        initial_prompt or if no context is provided.
+        """
+        if not self._ready or not pcm_int16:
+            return ""
+        if not prompt_context:
+            return self.transcribe(pcm_int16, sample_rate, use_vad_filter=False)
+        try:
+            from voice.audio_processing import peak_monitor
+            audio = np.frombuffer(pcm_int16, dtype=np.int16).astype(np.float32) / 32768.0
+            if len(audio) < sample_rate * 0.2:
+                return ""
+            segments, _ = self._model.transcribe(
+                audio,
+                beam_size=1,
+                language="en",
+                temperature=0.0,
+                best_of=1,
+                condition_on_previous_text=False,
+                compression_ratio_threshold=None,
+                no_speech_threshold=0.9,
+                vad_filter=False,
+                without_timestamps=True,
+                initial_prompt=prompt_context,
+            )
+            segs = list(segments)
+            text = " ".join(s.text.strip() for s in segs).strip()
+            return text
+        except Exception as e:
+            logger.debug("[STREAM-STT] transcribe_with_context failed: %s", e)
+            return self.transcribe(pcm_int16, sample_rate, use_vad_filter=False)
 
     def transcribe_detailed(self, pcm_int16: bytes,
                             sample_rate: int = SAMPLE_RATE,
@@ -451,16 +564,27 @@ class StreamingSTT:
         silence_run_ms = 0.0
         last_partial_len = 0
         last_partial_time = 0.0
+        # ISSUE-2: Rolling context — the last partial transcript is fed as
+        # prompt prefix for the next partial, reducing hallucination drift.
+        _rolling_context: str = ""
         loop = asyncio.get_event_loop()
         # ── ROOT CAUSE FIX: frame remainder tracking ──
         # _iter_frames() silently discards samples that don't fill a
-        # complete 480-sample frame at chunk boundaries. This remainder
+        # complete 512-sample frame at chunk boundaries. This remainder
         # is carried forward to the next chunk — NO sample is ever lost.
         _frame_remainder: np.ndarray = np.array([], dtype=np.float32)
 
+        # ISSUE-2: Frame overlap for VAD — 50% overlap (16ms step) gives
+        # smoother speech detection and prevents word-boundary clipping.
+        FRAME_STEP_SAMPLES = FRAME_SAMPLES // 2  # 256 samples = 16ms step
+
         logger.info("[STREAM-STT] Listening started (endpoint=%dms, min_pause=%dms "
-                    "total_samples=%d)",
-                    ENDPOINT_SILENCE_MS, MIN_PAUSE_MS, drain_start)
+                    "total_samples=%d frame_step=%d samples)",
+                    ENDPOINT_SILENCE_MS, MIN_PAUSE_MS, drain_start, FRAME_STEP_SAMPLES)
+
+        # ISSUE-2: Track chunk timing for diagnostics
+        _last_chunk_time = time.time()
+        _chunk_durations: list = []
 
         while not self._cancel.is_set():
             await self._listen_enabled.wait()
@@ -473,16 +597,28 @@ class StreamingSTT:
                 await asyncio.sleep(0.01)
                 continue
 
+            # ISSUE-2: Track chunk duration for diagnostics
+            now_chunk = time.time()
+            chunk_dur_ms = (now_chunk - _last_chunk_time) * 1000
+            _last_chunk_time = now_chunk
+            _chunk_durations.append(chunk_dur_ms)
+            if len(_chunk_durations) > 50:
+                _chunk_durations.pop(0)
+            if len(new_audio) > FRAME_SAMPLES * 2:
+                avg_chunk = sum(_chunk_durations) / len(_chunk_durations) if _chunk_durations else 0
+                logger.debug("[STREAM-STT] Chunk: %d samples (%.0fms), avg interval=%.0fms",
+                            len(new_audio), chunk_dur_ms, avg_chunk)
+
             # Prepend any frame remainder from the previous chunk so NO
             # sample is ever discarded at chunk boundaries.
             if len(_frame_remainder) > 0:
                 new_audio = np.concatenate([_frame_remainder, new_audio])
                 _frame_remainder = np.array([], dtype=np.float32)
 
-            # Process in 30ms frames. _iter_frames_with_remainder yields
-            # (index, frame) pairs so we can compute the leftover samples.
+            # ISSUE-2: Process with 50% frame overlap for smoother VAD.
+            # Each 512-sample frame steps by 256 samples instead of 512.
             last_full_idx = -1
-            for i, frame in self._iter_frames_with_remainder(new_audio):
+            for i, frame in self._iter_frames_overlap(new_audio, FRAME_STEP_SAMPLES):
                 last_full_idx = i
                 prob = await loop.run_in_executor(None, self._vad.speech_prob, frame)
                 is_speech = prob > 0.5
@@ -490,7 +626,7 @@ class StreamingSTT:
 
                 # Maintain pre-roll buffer (audio just before speech onset)
                 pre_roll.append(frame)
-                max_pre = max(1, int((PRE_ROLL_MS / 1000.0) / 0.03))
+                max_pre = max(1, int((PRE_ROLL_MS / 1000.0) / (FRAME_STEP_SAMPLES / SAMPLE_RATE * 1000)))
                 if len(pre_roll) > max_pre:
                     pre_roll.pop(0)
 
@@ -514,18 +650,22 @@ class StreamingSTT:
                         speech_frames.append(frame)  # keep trailing audio for context
                         silence_run_ms = (now - last_voice_time) * 1000.0
 
-                        # Check endpoint
+                        # ISSUE-2: Endpoint detection with min_pause guard.
+                        # Pauses shorter than MIN_PAUSE_MS do NOT finalize.
                         if silence_run_ms >= ENDPOINT_SILENCE_MS:
-                            dur_so_far = len(speech_frames) * 30
+                            dur_so_far = len(speech_frames) * (FRAME_STEP_SAMPLES / SAMPLE_RATE * 1000)
                             logger.info("[STREAM-STT] Endpoint detected "
-                                        "(duration=%dms silence=%dms frames=%d)",
+                                        "(duration=%.0fms silence=%dms frames=%d "
+                                        "chunk_avg=%.0fms)",
                                         dur_so_far, int(silence_run_ms),
-                                        len(speech_frames))
+                                        len(speech_frames),
+                                        sum(_chunk_durations) / len(_chunk_durations) if _chunk_durations else 0)
                             final = await self._finalize(speech_frames, speech_start_time)
                             # Reset state
                             in_speech = False
                             speech_frames = []
                             silence_run_ms = 0.0
+                            _rolling_context = ""  # Reset rolling context for next utterance
                             if final is not None:
                                 # Filler-only utterance: keep turn open
                                 if is_filler(final.text):
@@ -536,17 +676,26 @@ class StreamingSTT:
                                 yield final
                             continue
 
-                # Partial transcription while in speech
+                # ISSUE-2: Partial transcription with rolling context
                 if in_speech:
-                    audio_len_ms = len(speech_frames) * 30
-                    new_since_partial = (len(speech_frames) - last_partial_len) * 30
+                    audio_len_ms = len(speech_frames) * (FRAME_STEP_SAMPLES / SAMPLE_RATE * 1000)
+                    new_since_partial = (len(speech_frames) - last_partial_len) * (FRAME_STEP_SAMPLES / SAMPLE_RATE * 1000)
                     if (now - last_partial_time) >= PARTIAL_INTERVAL_S and new_since_partial >= 300:
                         pcm = self._frames_to_bytes(speech_frames)
+                        # ISSUE-2: Use rolling context as prompt prefix to
+                        # reduce hallucination drift across partials.
                         text = await loop.run_in_executor(
-                            None, self._whisper.transcribe, pcm, SAMPLE_RATE)
+                            None, self._whisper.transcribe_with_context,
+                            pcm, SAMPLE_RATE, _rolling_context)
                         last_partial_len = len(speech_frames)
                         last_partial_time = now
                         if text and not is_filler(text):
+                            # Update rolling context (keep last N chars)
+                            _rolling_context = text.strip()
+                            if len(_rolling_context) > MAX_ROLLING_CONTEXT_CHARS:
+                                _rolling_context = _rolling_context[-MAX_ROLLING_CONTEXT_CHARS:]
+                            logger.info("[STREAM-STT] Partial (rolling_ctx=%d chars): '%s'",
+                                       len(_rolling_context), text)
                             yield UtteranceEvent(
                                 kind="partial", text=text, is_final=False,
                                 started_at=speech_start_time)
@@ -558,6 +707,7 @@ class StreamingSTT:
                         final = await self._finalize(speech_frames, speech_start_time)
                         in_speech = False
                         speech_frames = []
+                        _rolling_context = ""
                         if final is not None and not is_filler(final.text):
                             yield final
 
@@ -565,7 +715,7 @@ class StreamingSTT:
             # After the frame loop, any samples beyond the last full frame
             # are the remainder. Carry them to the next chunk.
             if last_full_idx >= 0:
-                remainder_start = last_full_idx + FRAME_SAMPLES
+                remainder_start = last_full_idx + FRAME_STEP_SAMPLES
                 if remainder_start < len(new_audio):
                     _frame_remainder = new_audio[remainder_start:].copy()
 
@@ -643,6 +793,22 @@ class StreamingSTT:
         """
         n = len(audio)
         for i in range(0, n - FRAME_SAMPLES + 1, FRAME_SAMPLES):
+            yield i, audio[i:i + FRAME_SAMPLES]
+
+    @staticmethod
+    def _iter_frames_overlap(audio: np.ndarray, step: int):
+        """ISSUE-2: Yield (index, frame) pairs with configurable step size.
+
+        Uses 512-sample frames (32ms @ 16kHz) but steps by `step` samples
+        (default 256 = 16ms = 50% overlap). This gives smoother VAD
+        transitions and prevents word-boundary clipping that occurs with
+        non-overlapping 32ms frames.
+
+        The remainder (samples after the last full frame) MUST be carried
+        forward by the caller.
+        """
+        n = len(audio)
+        for i in range(0, n - FRAME_SAMPLES + 1, step):
             yield i, audio[i:i + FRAME_SAMPLES]
 
     # ── Interruption detection while Leo speaks ───────────
