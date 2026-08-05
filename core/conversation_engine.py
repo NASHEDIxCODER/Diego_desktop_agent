@@ -327,11 +327,27 @@ class ConversationEngine:
         # The LLM is still NOT contacted until THINKING.
         await loop.run_in_executor(None, streaming_stt.initialize)
 
-        logger.info("[BOOT] Models loaded (wake=%s, vad_gate=%s, whisper=%s) — "
-                    "LLM deferred to THINKING",
+        # Speech corrector — local fuzzy matching dictionary (apps, projects,
+        # repos, bookmarks, folders, commands). Loaded once at boot in a
+        # background thread; corrections are applied to final transcripts
+        # without ever invoking the LLM.
+        try:
+            from voice.speech_corrector import speech_corrector
+            await loop.run_in_executor(None, speech_corrector.initialize)
+            logger.info("[BOOT] Speech corrector loaded (%d terms in %.1fs)",
+                        speech_corrector.term_count, speech_corrector._load_time)
+        except Exception as e:
+            logger.debug("[BOOT] Speech corrector init skipped: %s", e)
+
+        logger.info("[BOOT] Models loaded (wake=%s, vad_gate=%s, whisper=%s, "
+                    "corrector=%s) — LLM deferred to THINKING",
                     wake_model_manager.model_name or "unavailable",
                     "on" if self._wake_listener.vad.ready else "off",
-                    "ready" if streaming_stt.ready else "unavailable")
+                    "ready" if streaming_stt.ready else "unavailable",
+                    "ready" if (
+                        __import__("voice.speech_corrector", fromlist=["speech_corrector"])
+                        .speech_corrector.loaded
+                    ) else "unavailable")
 
 
         # ── STATE: IDLE ───────────────────────────────────
