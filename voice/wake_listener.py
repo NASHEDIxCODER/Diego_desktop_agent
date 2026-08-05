@@ -370,7 +370,7 @@ class WakeListener:
 
     # ── Whisper verification (ONLY after an openWakeWord trigger) ──
 
-    def verify_with_whisper(self) -> Tuple[bool, str, float, str, str]:
+    def verify_with_whisper(self, wake_score: float = 0.0) -> Tuple[bool, str, float, str, str]:
         """UNIFIED PIPELINE VERIFICATION — transcribe a frozen ring-buffer
         snapshot with bit-identical-preprocessing guarantees.
 
@@ -385,6 +385,12 @@ class WakeListener:
           - Buffer timestamps, write index, sample count
           - WAV export of verification audio
           - Latency between wake trigger and snapshot
+
+        Args:
+          wake_score: The openWakeWord confidence score that triggered
+                      verification.  Passed through to the transcript
+                      verifier so high-certainty model scores (≥0.995)
+                      can override Whisper transcription errors.
 
         SYNCHRONOUS (call in an executor). NEVER raises.
 
@@ -524,7 +530,7 @@ class WakeListener:
                 wav_path.name if wav_path else "none",
                 tid)
 
-            ok = verify_wake_transcript(text)
+            ok = verify_wake_transcript(text, wake_score)
             self.last_transcript = text
             return bool(ok), text, correlation, verify_sha, wake_sha
         except Exception as e:
@@ -602,7 +608,7 @@ class WakeListener:
                                     "verifying transcript…",
                                     score, wake_model_manager.threshold)
                         result = await loop.run_in_executor(
-                            None, self.verify_with_whisper)
+                            None, self.verify_with_whisper, score)
                         verified, transcript, correlation, verify_sha, wake_sha = result
 
                         # ── RESUME the wake detector ──

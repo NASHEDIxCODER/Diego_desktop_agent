@@ -123,14 +123,17 @@ def _wake_word_confidence(word: str, distinctive: str) -> Tuple[float, str]:
     return fuzzy, "fuzzy"
 
 
-def verify_wake_transcript(text: Optional[str]) -> bool:
+def verify_wake_transcript(text: Optional[str], wake_score: float = 0.0) -> bool:
     """
     THE wake transcript verifier (RapidFuzz + phonetic matching).
 
     Passes ONLY when the normalized transcript EITHER:
       (a) contains a full wake variant as whole words (containment), OR
       (b) contains a word whose combined phonetic+fuzzy CONFIDENCE ≥ 0.80
-          against one of the DISTINCTIVE wake words.
+          against one of the DISTINCTIVE wake words, OR
+      (c) the openWakeWord score is ≥ 0.995 (model is virtually certain —
+          Whisper mishearings like 'hello' for 'leo' must not block a
+          confirmed wake detection).
 
     Exact transcript equality is NEVER required — Whisper's phonetically
     plausible mishearings of the wake word pass, while unrelated speech
@@ -142,6 +145,22 @@ def verify_wake_transcript(text: Optional[str]) -> bool:
     """
     if not text:
         return False
+
+    # ── High-confidence model bypass ──
+    # openWakeWord scores of 0.995+ are virtually never false positives
+    # on real voice.  Whisper frequently mishears short wake words like
+    # "leo" as "hello", "the", "you" — these transcription errors must
+    # NOT block a confirmed detection.  The model already heard the wake
+    # word with near-certainty; the transcript check is a secondary
+    # safety net, not a gate that overrules the primary detector.
+    if wake_score >= 0.995:
+        logger.info(
+            "[WAKE-VERIFY] ACCEPTED (high-confidence bypass): "
+            "wake_score=%.3f ≥ 0.995 — model certainty overrides "
+            "transcript='%s'",
+            wake_score, text.strip())
+        return True
+
     norm = _normalize_wake_text(text)
     if not norm:
         return False

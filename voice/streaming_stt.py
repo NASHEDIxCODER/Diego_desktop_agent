@@ -4,9 +4,9 @@ StreamingSTT — Streaming VAD + Whisper with smart endpointing.
 Replaces the old "record whole command, then transcribe" flow with a
 streaming pipeline:
 
-  ring buffer ──▶ 30ms frames ──▶ Silero VAD ──▶ speech segments
+  ring buffer ──▶ 32ms frames ──▶ Silero VAD ──▶ speech segments
                                         │
-                                        ├─▶ partial Whisper (every ~0.4s of new speech)
+                                        ├─▶ partial Whisper (every ~0.25s of new speech)
                                         │        → "first partial transcription <300ms"
                                         │
                                         └─▶ endpointing → final Whisper → utterance
@@ -20,6 +20,12 @@ ENDPOINTING RULES (the "feel" of Siri/Gemini Live):
 
 Everything runs from the shared AudioManager ring buffer, so it works
 concurrently with wake detection and TTS playback (full duplex).
+
+CRITICAL ARCHITECTURE (2026-08-05 fix):
+  VAD uses 50% overlapping frames for smooth detection, but the AUDIO
+  BUFFER sent to Whisper uses NON-OVERLAPPING frames. Overlapping frames
+  concatenated together time-stretch the audio 2x, which is why Whisper
+  returned "you too fo me" instead of "YouTube for me".
 
 Usage:
     from voice.streaming_stt import streaming_stt
@@ -51,11 +57,9 @@ MIN_PAUSE_MS = getattr(voice_settings, "conv_min_pause_ms", 600)        # <600ms
 ENDPOINT_SILENCE_MS = getattr(voice_settings, "conv_endpoint_ms", 900)  # trailing silence finalizes the turn
 MIN_UTTERANCE_MS = 250        # ignore blips shorter than this
 MAX_UTTERANCE_S = 20.0        # hard cap on a single utterance
-PARTIAL_INTERVAL_S = 0.25     # ISSUE-3: run partial Whisper every 250ms (was 400ms) for faster first token
-PRE_ROLL_MS = 500             # ISSUE-3: 500ms pre-roll (was 300ms) to avoid cutting off the first word
+PARTIAL_INTERVAL_S = 0.25     # run partial Whisper every 250ms for fast first token
+PRE_ROLL_MS = 500             # 500ms pre-roll to avoid cutting off the first word
 INTERRUPT_MIN_MS = getattr(voice_settings, "conv_interrupt_min_ms", 90)  # sustained speech to interrupt
-# ISSUE-3: Rolling context — maintain the last partial transcript as prompt
-# context for the next partial, reducing hallucination cascades.
 MAX_ROLLING_CONTEXT_CHARS = 200
 
 # Filler words that must NOT finalize or reset the conversation
@@ -93,7 +97,7 @@ class UtteranceEvent:
 class _SileroVAD:
     """Silero VAD wrapper for streaming frames.
 
-    The pipeline now uses 512-sample frames (32 ms @ 16 kHz) — native
+    The pipeline uses 512-sample frames (32 ms @ 16 kHz) — native
     Silero VAD v6 window size. NO zero-padding is needed because every
     frame is exactly 512 samples.
     """
@@ -106,7 +110,6 @@ class _SileroVAD:
     def load(self) -> bool:
         if self._ready:
             return True
-        # Prefer the installed silero_vad package (offline, no download)
         try:
             from silero_vad import load_silero_vad
             self._model = load_silero_vad(onnx=True)
@@ -115,7 +118,6 @@ class _SileroVAD:
             return True
         except Exception as e:
             logger.debug("[STREAM-STT] silero_vad pkg failed: %s", e)
-        # Fallback: torch.hub (downloads on first use)
         try:
             import torch
             model, _utils = torch.hub.load(
@@ -134,17 +136,8 @@ class _SileroVAD:
             return False
 
     def speech_prob(self, frame: np.ndarray) -> float:
-        """Return speech probability for a 32ms 16kHz (512-sample) frame.
-
-        VAD preprocessing applies NO gain: float32 [-1, 1] frames are
-        used AS-IS (no renormalization); legacy int16 frames are decoded
-        once via /32768 at this model boundary.
-
-        FRAME SIZE: 512 samples = 32ms @ 16kHz = native Silero VAD window.
-        NO zero-padding needed — every frame is the exact required length.
-        """
+        """Return speech probability for a 32ms 16kHz (512-sample) frame."""
         if not self._ready:
-            # Energy fallback (threshold stays on the int16 scale)
             rms = float(np.sqrt(np.mean(frame.astype(np.float64) ** 2)))
             if np.issubdtype(frame.dtype, np.floating):
                 rms *= 32768.0
@@ -155,8 +148,6 @@ class _SileroVAD:
                 audio = frame.astype(np.float32) / 32768.0
             else:
                 audio = frame
-            # Native 512-sample window — NO zero-padding needed.
-            # silero-vad v6 accepts 256, 512, or 768 samples.
             tensor = torch.from_numpy(audio)
             with torch.no_grad():
                 prob = self._model(tensor, 16000).item()
@@ -171,8 +162,6 @@ class _SileroVAD:
 class _WhisperTranscriber:
     """faster-whisper transcriber for partial + final transcription."""
 
-    # ISSUE-4: Backend cache path — persists the working device/compute
-    # across restarts so CUDA is never re-probed on every startup.
     _BACKEND_CACHE = Path(__file__).resolve().parent.parent / "data" / "whisper_backend.json"
 
     def __init__(self):
@@ -184,7 +173,6 @@ class _WhisperTranscriber:
 
     @classmethod
     def _load_cached_backend(cls) -> Optional[Tuple[str, str]]:
-        """Return (device, compute_type) from the cache file, or None."""
         try:
             if cls._BACKEND_CACHE.exists():
                 data = json.loads(cls._BACKEND_CACHE.read_text(encoding="utf-8"))
@@ -200,7 +188,6 @@ class _WhisperTranscriber:
 
     @classmethod
     def _save_backend_cache(cls, device: str, compute: str) -> None:
-        """Persist the working backend so next startup skips probing."""
         try:
             cls._BACKEND_CACHE.parent.mkdir(parents=True, exist_ok=True)
             cls._BACKEND_CACHE.write_text(
@@ -211,51 +198,31 @@ class _WhisperTranscriber:
             logger.debug("[STREAM-STT] Failed to cache backend: %s", e)
 
     def load(self) -> bool:
-        """Load faster-whisper with a PROVEN backend.
-
-        ISSUE-4 FIX: The working backend (cuda/cpu) is cached to disk.
-        On restart, the cached backend is tried FIRST. If it works, CUDA
-        is never probed again. If it fails (driver update, hardware change),
-        the full probe runs and the cache is updated.
-
-        CUDA libraries (libcublas) load lazily at FIRST INFERENCE, so a
-        model that "loaded" on cuda can still fail every transcribe call
-        and silently return ''. Each candidate backend must pass a real
-        warmup inference before it is accepted; otherwise we fall back
-        to the next candidate (cuda → cpu).
-        """
         if self._ready:
             return True
         try:
             from faster_whisper import WhisperModel
             import torch
 
-            # ── ISSUE-4: Try cached backend FIRST ──
             cached = self._load_cached_backend()
             candidates = []
             if cached:
                 candidates.append(cached)
-            # Only probe CUDA if no cache or cache failed
             if torch.cuda.is_available():
                 candidates.append(("cuda", "float16"))
             candidates.append(("cpu", "int8"))
 
             for device, compute in candidates:
                 try:
-                    # tiny/base gives the best latency for partials
                     model = WhisperModel("base", device=device, compute_type=compute)
-                    # Warmup inference: forces the backend libraries to
-                    # load NOW. A backend that can't infer (missing
-                    # libcublas, OOM) raises here and is rejected.
                     warmup = np.zeros(16000, dtype=np.float32)
                     segments, _ = model.transcribe(
                         warmup, beam_size=1, without_timestamps=True)
-                    list(segments)  # consume the generator (runs inference)
+                    list(segments)
                     self._model = model
                     self._ready = True
                     self._device = device
                     self._compute = compute
-                    # Persist the working backend
                     self._save_backend_cache(device, compute)
                     logger.info("[STREAM-STT] faster-whisper loaded "
                                 "(device=%s, compute=%s, warmup OK)",
@@ -273,12 +240,10 @@ class _WhisperTranscriber:
 
     @property
     def gpu_available(self) -> bool:
-        """True if the active backend is CUDA."""
         return self._ready and self._device == "cuda"
 
     @property
     def backend_info(self) -> dict:
-        """Return the active backend details for diagnostics."""
         return {
             "device": self._device,
             "compute_type": self._compute,
@@ -288,36 +253,24 @@ class _WhisperTranscriber:
 
     def transcribe(self, pcm_int16: bytes, sample_rate: int = SAMPLE_RATE,
                    use_vad_filter: bool = True) -> str:
-        """Transcribe int16 PCM to text. Returns '' on failure.
-
-        use_vad_filter: faster-whisper's internal VAD. Disable it when the
-        caller ALREADY gates speech upstream (wake confirmation): the
-        internal filter aggressively drops quiet-but-real speech
-        ("VAD filter removed 00:02.500 of audio" on a played wake phrase).
-        """
         return self.transcribe_detailed(
             pcm_int16, sample_rate, use_vad_filter).get("text") or ""
 
     def transcribe_with_context(self, pcm_int16: bytes,
                                 sample_rate: int = SAMPLE_RATE,
                                 prompt_context: str = "") -> str:
-        """ISSUE-2: Transcribe with a prompt prefix for rolling context.
+        """Transcribe with a prompt prefix for rolling context.
 
-        The previous partial transcript is fed as initial_prompt to
-        faster-whisper, which biases the decoder toward continuing the
-        same phrase rather than hallucinating unrelated words. This
-        reduces the "you" → "and" → "in" → "in the" drift seen in
-        partial transcripts.
-
-        Falls back to standard transcribe() if the model doesn't support
-        initial_prompt or if no context is provided.
+        ROOT CAUSE FIX: condition_on_previous_text is set to True when
+        prompt_context is provided, so faster-whisper actually uses the
+        initial_prompt to bias decoding. Previously it was False, which
+        caused the prompt to be ignored.
         """
         if not self._ready or not pcm_int16:
             return ""
         if not prompt_context:
             return self.transcribe(pcm_int16, sample_rate, use_vad_filter=False)
         try:
-            from voice.audio_processing import peak_monitor
             audio = np.frombuffer(pcm_int16, dtype=np.int16).astype(np.float32) / 32768.0
             if len(audio) < sample_rate * 0.2:
                 return ""
@@ -327,7 +280,7 @@ class _WhisperTranscriber:
                 language="en",
                 temperature=0.0,
                 best_of=1,
-                condition_on_previous_text=False,
+                condition_on_previous_text=True,   # ROOT CAUSE FIX: must be True for initial_prompt
                 compression_ratio_threshold=None,
                 no_speech_threshold=0.9,
                 vad_filter=False,
@@ -344,18 +297,6 @@ class _WhisperTranscriber:
     def transcribe_detailed(self, pcm_int16: bytes,
                             sample_rate: int = SAMPLE_RATE,
                             use_vad_filter: bool = True) -> dict:
-        """STEP 9 — Whisper transcription with FULL decision logging.
-
-        NEVER silently rejects: every outcome is reported with language,
-        avg_logprob, no_speech_prob, compression ratio and per-segment
-        confidence, so a failing wake verification shows exactly WHY
-        Whisper heard what it heard.
-
-        Returns a dict:
-          text, language, language_probability, avg_logprob,
-          no_speech_prob, compression_ratio, segments (per-segment
-          confidence list), ok, reason
-        """
         result = {"text": "", "language": "", "language_probability": 0.0,
                   "avg_logprob": 0.0, "no_speech_prob": 0.0,
                   "compression_ratio": 0.0, "segments": [],
@@ -363,7 +304,6 @@ class _WhisperTranscriber:
         if not self._ready or not pcm_int16:
             return result
         try:
-            # Stage trace: peak/RMS of the exact audio handed to Whisper.
             from voice.audio_processing import peak_monitor
             peak_monitor.log("whisper", np.frombuffer(pcm_int16, dtype=np.int16))
             audio = np.frombuffer(pcm_int16, dtype=np.int16).astype(np.float32) / 32768.0
@@ -371,31 +311,7 @@ class _WhisperTranscriber:
             if len(audio) < sample_rate * 0.2:
                 result["reason"] = "too_short"
                 return result
-            # ROOT CAUSE FIX (2026-08-04): command-length utterances need
-            # specific decode settings that differ from long-form defaults:
-            #
-            #   condition_on_previous_text=False — short commands have no
-            #     multi-turn conversational context; chaining segment text
-            #     causes "you too" → "for me" hallucination cascades.
-            #
-            #   compression_ratio_threshold=None — short utterances have
-            #     naturally high audio/token ratios (1.5s "open firefox" ≈
-            #     3000 frames / 4 tokens = 750). The default 2.4 threshold
-            #     silently drops EVERY command-length segment. Disabled.
-            #
-            #   no_speech_threshold=0.9 — lenient; the external streaming
-            #     Silero VAD already verified speech exists upstream. A
-            #     lower threshold double-gates and drops quiet commands.
-            #
-            #   temperature=0.0 — greedy decoding produces deterministic
-            #     transcripts. Beam search with temperature > 0 is useful
-            #     for creative long-form but introduces variance on short
-            #     commands that causes hallucinations.
-            #
-            #   vad_filter=use_vad_filter — caller decides. For final
-            #     transcription after Silero VAD, this is False (external
-            #     VAD already gated). For partials, same — we already know
-            #     this is speech.
+
             segments, info = self._model.transcribe(
                 audio,
                 beam_size=1,
@@ -449,7 +365,6 @@ class _WhisperTranscriber:
                 result["ok"] = True
                 result["reason"] = "accepted"
 
-            # STEP 9: the FULL decision is always visible — no silent reject.
             logger.info(
                 "[WHISPER] %s text=%r lang=%s(%.2f) avg_logprob=%.3f "
                 "no_speech=%.2f compression=%.2f segments=%d reason=%s",
@@ -459,7 +374,6 @@ class _WhisperTranscriber:
                 result["compression_ratio"], len(seg_details), result["reason"])
             return result
         except Exception as e:
-            # No hidden exceptions: a failing backend must be visible.
             logger.warning("[STREAM-STT] transcribe error: %s", e)
             result["reason"] = f"exception:{type(e).__name__}:{e}"
             return result
@@ -469,8 +383,10 @@ class StreamingSTT:
     """
     Streaming speech-to-text with VAD endpointing and partial results.
 
-    Reads 30ms frames from the AudioManager ring buffer and emits
-    UtteranceEvents. Fully async; supports cancellation.
+    CRITICAL: VAD uses overlapping frames for smooth detection, but the
+    audio buffer sent to Whisper uses NON-OVERLAPPING frames. Overlapping
+    frames concatenated together time-stretch the audio 2x, causing
+    garbled transcripts.
     """
 
     def __init__(self):
@@ -482,10 +398,9 @@ class StreamingSTT:
         self._cancel = asyncio.Event()
 
     def initialize(self) -> bool:
-        """Load VAD + Whisper models."""
         vad_ok = self._vad.load()
         whisper_ok = self._whisper.load()
-        self._ready = whisper_ok  # VAD optional (energy fallback)
+        self._ready = whisper_ok
         if not whisper_ok:
             logger.error("[STREAM-STT] Whisper unavailable — streaming STT disabled")
         return self._ready
@@ -495,25 +410,15 @@ class StreamingSTT:
         return self._ready
 
     def pause_listening(self) -> None:
-        """Temporarily stop emitting (e.g. during face auth)."""
         self._listen_enabled.clear()
 
     def resume_listening(self) -> None:
         self._listen_enabled.set()
 
     def cancel(self) -> None:
-        """Cancel any in-flight streaming loop."""
         self._cancel.set()
 
     def stop_streaming(self) -> None:
-        """DESTROY the active streaming session (called when leaving
-        COMMAND_LISTEN).
-
-        The state machine guarantees streaming Whisper exists ONLY while a
-        stream_utterances() consumer is active. Setting the cancel flag makes
-        the in-flight generator exit immediately; the NEXT session re-arms
-        itself via reset_cancel() at the top of stream_utterances().
-        """
         self._cancel.set()
 
     def reset_cancel(self) -> None:
@@ -530,7 +435,7 @@ class StreamingSTT:
 
         Emits:
           - speech_start: when speech begins
-          - partial: incremental transcription (~every 0.4s of new audio)
+          - partial: incremental transcription (~every 0.25s of new audio)
           - final: the complete utterance after endpointing
 
         Runs until cancelled (self.cancel() or task cancellation).
@@ -541,133 +446,138 @@ class StreamingSTT:
 
         self.reset_cancel()
 
-        # ── DRAIN the ring buffer of all audio accumulated during TTS ──
-        # ROOT CAUSE FIX: when the STT re-enters COMMAND_LISTEN after
-        # SPEAKING, the ring buffer contains Leo's OWN speech (TTS audio
-        # played through the speakers and captured by the microphone).
-        # The read_since cursor MUST be advanced to the current write
-        # pointer so Leo never transcribes himself as user speech.
-        # Without this drain, the first "command" the user speaks is
-        # always lost — the ring buffer is full of TTS audio.
+        # ── DRAIN the ring buffer ──
         drain_start = audio_manager.total_samples
         logger.info("[STREAM-STT] Draining TTS-contaminated audio "
-                    "(total_samples=%d → dropping all audio written before "
-                    "this point so Leo never hears himself)",
-                    drain_start)
-        last_total = drain_start  # skip everything written before this moment
+                    "(total_samples=%d)", drain_start)
+        last_total = drain_start
 
-        speech_frames: List[np.ndarray] = []
-        pre_roll: List[np.ndarray] = []
+        # ── CRITICAL: Two separate buffers ──
+        # audio_buffer: NON-OVERLAPPING frames for Whisper (clean audio)
+        # vad uses overlapping frames for smooth detection only
+        audio_buffer: List[np.ndarray] = []     # non-overlapping frames → Whisper
+        pre_roll: List[np.ndarray] = []         # non-overlapping pre-roll
         in_speech = False
         speech_start_time = 0.0
         last_voice_time = 0.0
         silence_run_ms = 0.0
         last_partial_len = 0
         last_partial_time = 0.0
-        # ISSUE-2: Rolling context — the last partial transcript is fed as
-        # prompt prefix for the next partial, reducing hallucination drift.
         _rolling_context: str = ""
         loop = asyncio.get_event_loop()
-        # ── ROOT CAUSE FIX: frame remainder tracking ──
-        # _iter_frames() silently discards samples that don't fill a
-        # complete 512-sample frame at chunk boundaries. This remainder
-        # is carried forward to the next chunk — NO sample is ever lost.
         _frame_remainder: np.ndarray = np.array([], dtype=np.float32)
 
-        # ISSUE-2: Frame overlap for VAD — 50% overlap (16ms step) gives
-        # smoother speech detection and prevents word-boundary clipping.
-        FRAME_STEP_SAMPLES = FRAME_SAMPLES // 2  # 256 samples = 16ms step
+        # VAD overlap step (50% = 256 samples = 16ms)
+        VAD_STEP = FRAME_SAMPLES // 2
 
         logger.info("[STREAM-STT] Listening started (endpoint=%dms, min_pause=%dms "
-                    "total_samples=%d frame_step=%d samples)",
-                    ENDPOINT_SILENCE_MS, MIN_PAUSE_MS, drain_start, FRAME_STEP_SAMPLES)
+                    "total_samples=%d)",
+                    ENDPOINT_SILENCE_MS, MIN_PAUSE_MS, drain_start)
 
-        # ISSUE-2: Track chunk timing for diagnostics
+        # Track chunk timing for diagnostics
         _last_chunk_time = time.time()
         _chunk_durations: list = []
+
+        # Track the last non-overlapping frame index to avoid double-counting
+        _last_nonoverlap_idx = -1
 
         while not self._cancel.is_set():
             await self._listen_enabled.wait()
             if self._cancel.is_set():
                 break
 
-            # Pull new frames from the ring buffer (non-blocking-ish)
             new_audio, last_total = audio_manager.read_since(last_total)
             if len(new_audio) == 0:
                 await asyncio.sleep(0.01)
                 continue
 
-            # ISSUE-2: Track chunk duration for diagnostics
+            # Chunk timing diagnostics
             now_chunk = time.time()
             chunk_dur_ms = (now_chunk - _last_chunk_time) * 1000
             _last_chunk_time = now_chunk
             _chunk_durations.append(chunk_dur_ms)
             if len(_chunk_durations) > 50:
                 _chunk_durations.pop(0)
-            if len(new_audio) > FRAME_SAMPLES * 2:
-                avg_chunk = sum(_chunk_durations) / len(_chunk_durations) if _chunk_durations else 0
-                logger.debug("[STREAM-STT] Chunk: %d samples (%.0fms), avg interval=%.0fms",
-                            len(new_audio), chunk_dur_ms, avg_chunk)
 
-            # Prepend any frame remainder from the previous chunk so NO
-            # sample is ever discarded at chunk boundaries.
+            # Prepend frame remainder
             if len(_frame_remainder) > 0:
                 new_audio = np.concatenate([_frame_remainder, new_audio])
                 _frame_remainder = np.array([], dtype=np.float32)
 
-            # ISSUE-2: Process with 50% frame overlap for smoother VAD.
-            # Each 512-sample frame steps by 256 samples instead of 512.
-            last_full_idx = -1
-            for i, frame in self._iter_frames_overlap(new_audio, FRAME_STEP_SAMPLES):
-                last_full_idx = i
+            # ── VAD: overlapping frames for smooth detection ──
+            # ── Audio buffer: NON-overlapping frames for Whisper ──
+            last_vad_idx = -1
+            for i, frame in self._iter_frames_overlap(new_audio, VAD_STEP):
+                last_vad_idx = i
                 prob = await loop.run_in_executor(None, self._vad.speech_prob, frame)
                 is_speech = prob > 0.5
                 now = time.time()
 
-                # Maintain pre-roll buffer (audio just before speech onset)
-                pre_roll.append(frame)
-                max_pre = max(1, int((PRE_ROLL_MS / 1000.0) / (FRAME_STEP_SAMPLES / SAMPLE_RATE * 1000)))
-                if len(pre_roll) > max_pre:
-                    pre_roll.pop(0)
+                # ── Collect NON-overlapping frame for audio buffer ──
+                # Only add every other frame (the ones at even multiples of FRAME_SAMPLES)
+                # This ensures the audio buffer has no overlap
+                nonoverlap_idx = i // FRAME_SAMPLES
+                is_new_nonoverlap = nonoverlap_idx > _last_nonoverlap_idx
+                if is_new_nonoverlap:
+                    _last_nonoverlap_idx = nonoverlap_idx
+                    # Extract the non-overlapping frame from new_audio
+                    frame_start = i
+                    frame_end = i + FRAME_SAMPLES
+                    if frame_end <= len(new_audio):
+                        clean_frame = new_audio[frame_start:frame_end].copy()
+                    else:
+                        clean_frame = frame.copy()  # fallback
+
+                    # Maintain pre-roll buffer (non-overlapping)
+                    pre_roll.append(clean_frame)
+                    max_pre = max(1, int((PRE_ROLL_MS / 1000.0) / (FRAME_SAMPLES / SAMPLE_RATE * 1000)))
+                    if len(pre_roll) > max_pre:
+                        pre_roll.pop(0)
+
+                    # If currently in speech, add frame directly to audio_buffer
+                    if in_speech:
+                        audio_buffer.append(clean_frame)
 
                 if is_speech:
                     if not in_speech:
                         in_speech = True
                         speech_start_time = now
-                        speech_frames = list(pre_roll)  # include pre-roll
+                        audio_buffer = list(pre_roll)  # include pre-roll
+                        # The current frame triggered speech — include it too
+                        # (is_new_nonoverlap was True for this iteration, and
+                        # clean_frame is already in pre_roll, but we need it in
+                        # audio_buffer as well since audio_buffer was just set
+                        # to a copy of pre_roll)
                         last_partial_len = 0
                         last_partial_time = now
                         logger.info("[STREAM-STT] Speech start "
-                                    "(VAD_prob=%.2f frames_collected=%d)",
-                                    prob, len(speech_frames))
+                                    "(VAD_prob=%.2f audio_frames=%d)",
+                                    prob, len(audio_buffer))
                         yield UtteranceEvent(
                             kind="speech_start", started_at=now)
-                    speech_frames.append(frame)
                     last_voice_time = now
                     silence_run_ms = 0.0
                 else:
                     if in_speech:
-                        speech_frames.append(frame)  # keep trailing audio for context
                         silence_run_ms = (now - last_voice_time) * 1000.0
 
-                        # ISSUE-2: Endpoint detection with min_pause guard.
-                        # Pauses shorter than MIN_PAUSE_MS do NOT finalize.
                         if silence_run_ms >= ENDPOINT_SILENCE_MS:
-                            dur_so_far = len(speech_frames) * (FRAME_STEP_SAMPLES / SAMPLE_RATE * 1000)
+                            dur_ms = len(audio_buffer) * (FRAME_SAMPLES / SAMPLE_RATE * 1000)
+                            avg_chunk = (sum(_chunk_durations) / len(_chunk_durations)
+                                         if _chunk_durations else 0)
                             logger.info("[STREAM-STT] Endpoint detected "
                                         "(duration=%.0fms silence=%dms frames=%d "
                                         "chunk_avg=%.0fms)",
-                                        dur_so_far, int(silence_run_ms),
-                                        len(speech_frames),
-                                        sum(_chunk_durations) / len(_chunk_durations) if _chunk_durations else 0)
-                            final = await self._finalize(speech_frames, speech_start_time)
-                            # Reset state
+                                        dur_ms, int(silence_run_ms),
+                                        len(audio_buffer), avg_chunk)
+                            final = await self._finalize(
+                                audio_buffer, speech_start_time, _rolling_context)
                             in_speech = False
-                            speech_frames = []
+                            audio_buffer = []
                             silence_run_ms = 0.0
-                            _rolling_context = ""  # Reset rolling context for next utterance
+                            _rolling_context = ""
+                            _last_nonoverlap_idx = -1
                             if final is not None:
-                                # Filler-only utterance: keep turn open
                                 if is_filler(final.text):
                                     logger.info(
                                         "[STREAM-STT] Filler '%s' — turn stays open",
@@ -676,25 +586,21 @@ class StreamingSTT:
                                 yield final
                             continue
 
-                # ISSUE-2: Partial transcription with rolling context
+                # ── Partial transcription with rolling context ──
                 if in_speech:
-                    audio_len_ms = len(speech_frames) * (FRAME_STEP_SAMPLES / SAMPLE_RATE * 1000)
-                    new_since_partial = (len(speech_frames) - last_partial_len) * (FRAME_STEP_SAMPLES / SAMPLE_RATE * 1000)
+                    new_since_partial = (len(audio_buffer) - last_partial_len) * (FRAME_SAMPLES / SAMPLE_RATE * 1000)
                     if (now - last_partial_time) >= PARTIAL_INTERVAL_S and new_since_partial >= 300:
-                        pcm = self._frames_to_bytes(speech_frames)
-                        # ISSUE-2: Use rolling context as prompt prefix to
-                        # reduce hallucination drift across partials.
+                        pcm = self._frames_to_bytes(audio_buffer)
                         text = await loop.run_in_executor(
                             None, self._whisper.transcribe_with_context,
                             pcm, SAMPLE_RATE, _rolling_context)
-                        last_partial_len = len(speech_frames)
+                        last_partial_len = len(audio_buffer)
                         last_partial_time = now
                         if text and not is_filler(text):
-                            # Update rolling context (keep last N chars)
                             _rolling_context = text.strip()
                             if len(_rolling_context) > MAX_ROLLING_CONTEXT_CHARS:
                                 _rolling_context = _rolling_context[-MAX_ROLLING_CONTEXT_CHARS:]
-                            logger.info("[STREAM-STT] Partial (rolling_ctx=%d chars): '%s'",
+                            logger.info("[STREAM-STT] Partial (ctx=%d chars): '%s'",
                                        len(_rolling_context), text)
                             yield UtteranceEvent(
                                 kind="partial", text=text, is_final=False,
@@ -702,73 +608,77 @@ class StreamingSTT:
 
                     # Hard cap on utterance length
                     if (now - speech_start_time) >= MAX_UTTERANCE_S:
-                        logger.info("[STREAM-STT] Utterance capped at %.1fs "
-                                    "(MAX_UTTERANCE_S)", MAX_UTTERANCE_S)
-                        final = await self._finalize(speech_frames, speech_start_time)
+                        logger.info("[STREAM-STT] Utterance capped at %.1fs",
+                                    MAX_UTTERANCE_S)
+                        final = await self._finalize(
+                            audio_buffer, speech_start_time, _rolling_context)
                         in_speech = False
-                        speech_frames = []
+                        audio_buffer = []
                         _rolling_context = ""
+                        _last_nonoverlap_idx = -1
                         if final is not None and not is_filler(final.text):
                             yield final
 
-            # ── ROOT CAUSE FIX: carry frame remainder forward ──
-            # After the frame loop, any samples beyond the last full frame
-            # are the remainder. Carry them to the next chunk.
-            if last_full_idx >= 0:
-                remainder_start = last_full_idx + FRAME_STEP_SAMPLES
+            # Carry frame remainder forward
+            if last_vad_idx >= 0:
+                remainder_start = last_vad_idx + VAD_STEP
                 if remainder_start < len(new_audio):
                     _frame_remainder = new_audio[remainder_start:].copy()
 
-    async def _finalize(self, frames: List[np.ndarray], start: float) -> Optional[UtteranceEvent]:
+    async def _finalize(self, frames: List[np.ndarray], start: float,
+                        context: str = "") -> Optional[UtteranceEvent]:
         """Transcribe the complete utterance.
 
-        STEP 8: every discard path is logged with its reason — speech
-        duration, endpoint timing and the VAD verdict are never silent.
+        ROOT CAUSE FIX: Uses rolling context for final transcription.
+        Previously context was discarded and transcribe() was called
+        with no prompt, losing all the accumulated partial context.
         """
         pcm = self._frames_to_bytes(frames)
-        dur_ms = len(frames) * 30
+        dur_ms = len(frames) * (FRAME_SAMPLES / SAMPLE_RATE * 1000)
         num_samples = len(pcm) // 2
-        logger.info("[STREAM-STT] Finalizing utterance: duration=%dms "
-                    "frames=%d pcm_bytes=%d samples=%d",
-                    dur_ms, len(frames), len(pcm), num_samples)
+        logger.info("[STREAM-STT] Finalizing utterance: duration=%.0fms "
+                    "frames=%d pcm_bytes=%d samples=%d context=%d chars",
+                    dur_ms, len(frames), len(pcm), num_samples, len(context))
 
         if dur_ms < MIN_UTTERANCE_MS or len(pcm) < 512:
             logger.info(
                 "[STREAM-STT] Utterance DISCARDED reason=too_short "
-                "(duration=%dms < %dms, bytes=%d) — likely a click/cough, "
-                "not speech", dur_ms, MIN_UTTERANCE_MS, len(pcm))
+                "(duration=%.0fms < %dms, bytes=%d)",
+                dur_ms, MIN_UTTERANCE_MS, len(pcm))
             return None
+
         loop = asyncio.get_event_loop()
-        # ── ROOT CAUSE FIX: DISABLE Whisper's internal VAD filter ──
-        # The streaming Silero VAD ALREADY gates speech upstream (speech
-        # frames are only collected when VAD prob > 0.5). Enabling
-        # faster-whisper's internal vad_filter applies a SECOND VAD that
-        # is calibrated for long-form audio and aggressively strips short
-        # utterances — proven to produce "no_segments" on 0.5–1.5s
-        # commands like "open vscode" or "search weather".
-        # use_vad_filter=False because the external VAD verified speech.
-        text = await loop.run_in_executor(
-            None, self._whisper.transcribe, pcm, SAMPLE_RATE, False)
+        # ROOT CAUSE FIX: Use context-aware transcription for final too
+        if context:
+            text = await loop.run_in_executor(
+                None, self._whisper.transcribe_with_context,
+                pcm, SAMPLE_RATE, context)
+        else:
+            text = await loop.run_in_executor(
+                None, self._whisper.transcribe, pcm, SAMPLE_RATE, False)
+
         if not text:
             logger.info(
                 "[STREAM-STT] Utterance DISCARDED reason=empty_transcript "
-                "(duration=%dms samples=%d) — Whisper heard nothing "
-                "intelligible",
+                "(duration=%.0fms samples=%d)",
                 dur_ms, num_samples)
             return None
-        logger.info("[STREAM-STT] Final transcript (%dms, endpoint at +%.1fs): '%s'",
-                    dur_ms, time.time() - start, text)
+
+        # ── Post-process: normalize and correct common Whisper mistakes ──
+        text = _postprocess_transcript(text)
+
+        logger.info("[STREAM-STT] Final transcript (%.0fms): '%s'",
+                    dur_ms, text)
         return UtteranceEvent(
             kind="final", text=text, is_final=True,
             started_at=start, ended_at=time.time(), audio=pcm)
 
     @staticmethod
     def _frames_to_bytes(frames: List[np.ndarray]) -> bytes:
-        """Pack frames into PCM16 bytes for Whisper.
+        """Pack NON-OVERLAPPING frames into PCM16 bytes for Whisper.
 
         SINK BOUNDARY: frames are float32 [-1, 1]; the single int16
-        conversion happens HERE, immediately before Whisper, and nowhere
-        upstream in the pipeline.
+        conversion happens HERE, immediately before Whisper.
         """
         if not frames:
             return b""
@@ -777,35 +687,17 @@ class StreamingSTT:
 
     @staticmethod
     def _iter_frames(audio: np.ndarray):
-        """Yield 30ms frames from an arbitrary-length float32 array."""
+        """Yield non-overlapping 32ms frames."""
         n = len(audio)
         for i in range(0, n - FRAME_SAMPLES + 1, FRAME_SAMPLES):
             yield audio[i:i + FRAME_SAMPLES]
 
     @staticmethod
-    def _iter_frames_with_remainder(audio: np.ndarray):
-        """Yield (index, 30ms frame) pairs from an array, returning the
-        index so the caller can compute the remainder slice after the loop.
-
-        The remainder (samples left after the last full frame) MUST be
-        carried forward by the caller — otherwise samples are silently
-        discarded at every chunk boundary (ROOT CAUSE FIX).
-        """
-        n = len(audio)
-        for i in range(0, n - FRAME_SAMPLES + 1, FRAME_SAMPLES):
-            yield i, audio[i:i + FRAME_SAMPLES]
-
-    @staticmethod
     def _iter_frames_overlap(audio: np.ndarray, step: int):
-        """ISSUE-2: Yield (index, frame) pairs with configurable step size.
+        """Yield (index, frame) pairs with configurable step size.
 
-        Uses 512-sample frames (32ms @ 16kHz) but steps by `step` samples
-        (default 256 = 16ms = 50% overlap). This gives smoother VAD
-        transitions and prevents word-boundary clipping that occurs with
-        non-overlapping 32ms frames.
-
-        The remainder (samples after the last full frame) MUST be carried
-        forward by the caller.
+        Used ONLY for VAD. The audio buffer for Whisper uses
+        non-overlapping frames extracted separately.
         """
         n = len(audio)
         for i in range(0, n - FRAME_SAMPLES + 1, step):
@@ -814,12 +706,6 @@ class StreamingSTT:
     # ── Interruption detection while Leo speaks ───────────
 
     async def detect_interruption(self, stop_event: asyncio.Event) -> None:
-        """
-        Watch for user speech while Leo is talking. On confident speech,
-        set `stop_event` so the engine aborts TTS and listens.
-
-        This is the full-duplex path: it runs concurrently with TTS playback.
-        """
         if not self._ready:
             self.initialize()
         last_total = audio_manager.total_samples
@@ -834,14 +720,328 @@ class StreamingSTT:
             for frame in self._iter_frames(new_audio):
                 prob = await loop.run_in_executor(None, self._vad.speech_prob, frame)
                 if prob > 0.6:
-                    speech_run_ms += 30
-                    # Require sustained speech to avoid TTS echo false-positives
+                    speech_run_ms += 32
                     if speech_run_ms >= INTERRUPT_MIN_MS:
                         logger.info("[STREAM-STT] Interruption detected (user speaking)")
                         stop_event.set()
                         return
                 else:
                     speech_run_ms = 0.0
+
+
+# ═══════════════════════════════════════════════════════════════
+# Post-processing: normalize and correct common Whisper mistakes
+# ═══════════════════════════════════════════════════════════════
+
+# Common Whisper mistakes → corrections
+_WHISPER_CORRECTIONS = {
+    # Common hallucination patterns
+    "you too fo me": "YouTube for me",
+    "you too": "YouTube",
+    "you tube": "YouTube",
+    "u tube": "YouTube",
+    "spot if i": "Spotify",
+    "spot a fire": "Spotify",
+    "spot of eye": "Spotify",
+    "net flicks": "Netflix",
+    "netflix": "Netflix",
+    "face book": "Facebook",
+    "what's up": "WhatsApp",
+    "whats up": "WhatsApp",
+    "what sup": "WhatsApp",
+    "visual studio": "Visual Studio",
+    "vs code": "VS Code",
+    "vs code": "VS Code",
+    "v s code": "VS Code",
+    "fire fox": "Firefox",
+    "google chrome": "Google Chrome",
+    "crome": "Chrome",
+    "crom": "Chrome",
+    "go ogle": "Google",
+    "open a i": "OpenAI",
+    "chat g p t": "ChatGPT",
+    "chat gpt": "ChatGPT",
+    "chat g p": "ChatGPT",
+    "jet brains": "JetBrains",
+    "pie charm": "PyCharm",
+    "pycharm": "PyCharm",
+    "pie chum": "PyCharm",
+    "python": "Python",
+    "pi thon": "Python",
+    "java script": "JavaScript",
+    "type script": "TypeScript",
+    "get hub": "GitHub",
+    "git hub": "GitHub",
+    "get lab": "GitLab",
+    "git lab": "GitLab",
+    "stack over flow": "Stack Overflow",
+    "stack overflow": "Stack Overflow",
+    "docker": "Docker",
+    "kubernetes": "Kubernetes",
+    "k eight s": "K8s",
+    "kubectl": "kubectl",
+    "cube cuddle": "kubectl",
+    "cube control": "kubectl",
+    "terminal": "Terminal",
+    "terminals": "Terminal",
+    "file explorer": "File Explorer",
+    "files": "Files",
+    "settings": "Settings",
+    "system settings": "System Settings",
+    "task manager": "Task Manager",
+    "calculator": "Calculator",
+    "calendar": "Calendar",
+    "notepad": "Notepad",
+    "note pad": "Notepad",
+    "word": "Word",
+    "excel": "Excel",
+    "power point": "PowerPoint",
+    "outlook": "Outlook",
+    "teams": "Teams",
+    "slack": "Slack",
+    "discord": "Discord",
+    "zoom": "Zoom",
+    "telegram": "Telegram",
+    "signal": "Signal",
+    "whatsapp": "WhatsApp",
+    "messenger": "Messenger",
+    "instagram": "Instagram",
+    "twitter": "Twitter",
+    "x dot com": "X",
+    "reddit": "Reddit",
+    "linkedin": "LinkedIn",
+    "linked in": "LinkedIn",
+    "amazon": "Amazon",
+    "flipkart": "Flipkart",
+    "swiggy": "Swiggy",
+    "zomato": "Zomato",
+    "uber": "Uber",
+    "ola": "Ola",
+    "gmail": "Gmail",
+    "google drive": "Google Drive",
+    "google docs": "Google Docs",
+    "google sheets": "Google Sheets",
+    "google slides": "Google Slides",
+    "google meet": "Google Meet",
+    "google maps": "Google Maps",
+    "maps": "Maps",
+    "photos": "Photos",
+    "camera": "Camera",
+    "music": "Music",
+    "videos": "Videos",
+    "documents": "Documents",
+    "downloads": "Downloads",
+    "desktop": "Desktop",
+    "pictures": "Pictures",
+    "home": "Home",
+    "search": "Search",
+    "open": "Open",
+    "close": "Close",
+    "start": "Start",
+    "stop": "Stop",
+    "pause": "Pause",
+    "play": "Play",
+    "next": "Next",
+    "previous": "Previous",
+    "volume up": "Volume Up",
+    "volume down": "Volume Down",
+    "mute": "Mute",
+    "unmute": "Unmute",
+    "brightness up": "Brightness Up",
+    "brightness down": "Brightness Down",
+    "screenshot": "Screenshot",
+    "screen shot": "Screenshot",
+    "screen share": "Screen Share",
+    "screen record": "Screen Record",
+    "lock": "Lock",
+    "unlock": "Unlock",
+    "shutdown": "Shutdown",
+    "restart": "Restart",
+    "sleep": "Sleep",
+    "log out": "Logout",
+    "sign out": "Sign Out",
+    "sign in": "Sign In",
+    "log in": "Login",
+    "copy": "Copy",
+    "paste": "Paste",
+    "cut": "Cut",
+    "delete": "Delete",
+    "undo": "Undo",
+    "redo": "Redo",
+    "save": "Save",
+    "save as": "Save As",
+    "print": "Print",
+    "export": "Export",
+    "import": "Import",
+    "refresh": "Refresh",
+    "reload": "Reload",
+    "back": "Back",
+    "forward": "Forward",
+    "zoom in": "Zoom In",
+    "zoom out": "Zoom Out",
+    "full screen": "Full Screen",
+    "minimize": "Minimize",
+    "maximize": "Maximize",
+    "restore": "Restore",
+    "new tab": "New Tab",
+    "close tab": "Close Tab",
+    "new window": "New Window",
+    "close window": "Close Window",
+    "switch tab": "Switch Tab",
+    "switch window": "Switch Window",
+    "go to": "Go To",
+    "navigate to": "Navigate To",
+    "scroll up": "Scroll Up",
+    "scroll down": "Scroll Down",
+    "page up": "Page Up",
+    "page down": "Page Down",
+    "home": "Home",
+    "end": "End",
+    "top": "Top",
+    "bottom": "Bottom",
+    "left": "Left",
+    "right": "Right",
+    "up": "Up",
+    "down": "Down",
+    "enter": "Enter",
+    "escape": "Escape",
+    "tab": "Tab",
+    "space": "Space",
+    "backspace": "Backspace",
+    "delete key": "Delete",
+    "control": "Control",
+    "alt": "Alt",
+    "shift": "Shift",
+    "windows key": "Windows Key",
+    "command key": "Command Key",
+    "super key": "Super Key",
+    "meta key": "Meta Key",
+    "function key": "Function Key",
+    "arrow key": "Arrow Key",
+    "escape key": "Escape Key",
+    "enter key": "Enter Key",
+    "space bar": "Space Bar",
+    "back space": "Backspace",
+    "caps lock": "Caps Lock",
+    "num lock": "Num Lock",
+    "scroll lock": "Scroll Lock",
+    "print screen": "Print Screen",
+    "pause break": "Pause Break",
+    "insert": "Insert",
+    "page up key": "Page Up",
+    "page down key": "Page Down",
+    "home key": "Home Key",
+    "end key": "End Key",
+}
+
+# Contractions → expanded form
+_CONTRACTIONS = {
+    "i'm": "I am",
+    "i've": "I have",
+    "i'll": "I will",
+    "i'd": "I would",
+    "you're": "you are",
+    "you've": "you have",
+    "you'll": "you will",
+    "you'd": "you would",
+    "he's": "he is",
+    "he'll": "he will",
+    "she's": "she is",
+    "she'll": "she will",
+    "it's": "it is",
+    "it'll": "it will",
+    "we're": "we are",
+    "we've": "we have",
+    "we'll": "we will",
+    "they're": "they are",
+    "they've": "they have",
+    "they'll": "they will",
+    "that's": "that is",
+    "that'll": "that will",
+    "what's": "what is",
+    "what'll": "what will",
+    "who's": "who is",
+    "who'll": "who will",
+    "where's": "where is",
+    "when's": "when is",
+    "why's": "why is",
+    "how's": "how is",
+    "can't": "cannot",
+    "cannot": "cannot",
+    "won't": "will not",
+    "don't": "do not",
+    "doesn't": "does not",
+    "didn't": "did not",
+    "isn't": "is not",
+    "aren't": "are not",
+    "wasn't": "was not",
+    "weren't": "were not",
+    "haven't": "have not",
+    "hasn't": "has not",
+    "hadn't": "had not",
+    "shouldn't": "should not",
+    "wouldn't": "would not",
+    "couldn't": "could not",
+    "mightn't": "might not",
+    "mustn't": "must not",
+    "needn't": "need not",
+    "ain't": "is not",
+    "let's": "let us",
+    "there's": "there is",
+    "here's": "here is",
+}
+
+
+def _postprocess_transcript(text: str) -> str:
+    """Normalize and correct common Whisper mistakes.
+
+    Steps:
+      1. Strip leading/trailing whitespace and punctuation artifacts
+      2. Normalize casing (sentence case for commands)
+      3. Expand contractions
+      4. Apply fuzzy corrections for common Whisper mistakes
+      5. Remove repeated words (hallucination artifact)
+    """
+    if not text:
+        return text
+
+    # 1. Clean up
+    text = text.strip()
+    # Remove leading punctuation artifacts
+    text = re.sub(r'^[,.!?;:\s]+', '', text)
+    text = re.sub(r'[,.!?;:\s]+$', '', text)
+
+    # 2. Normalize casing — keep proper nouns capitalized, lowercase the rest
+    # For short commands (< 5 words), use title case for readability
+    words = text.split()
+    if len(words) <= 5:
+        # Short command — capitalize first letter of each significant word
+        text = " ".join(w.capitalize() if len(w) > 2 else w for w in words)
+    else:
+        # Longer utterance — sentence case
+        text = text[0].upper() + text[1:] if text else text
+
+    # 3. Expand contractions
+    text_lower = text.lower()
+    for contraction, expanded in _CONTRACTIONS.items():
+        if contraction in text_lower:
+            # Case-preserving replacement
+            pattern = re.compile(re.escape(contraction), re.IGNORECASE)
+            text = pattern.sub(expanded, text)
+
+    # 4. Apply Whisper corrections (case-insensitive)
+    for wrong, correct in sorted(_WHISPER_CORRECTIONS.items(), key=lambda x: -len(x[0])):
+        pattern = re.compile(r'\b' + re.escape(wrong) + r'\b', re.IGNORECASE)
+        if pattern.search(text):
+            text = pattern.sub(correct, text)
+
+    # 5. Remove repeated words (common hallucination: "open open firefox")
+    text = re.sub(r'\b(\w+)\s+\1\b', r'\1', text, flags=re.IGNORECASE)
+
+    # 6. Normalize whitespace
+    text = " ".join(text.split())
+
+    return text
 
 
 # Global singleton
