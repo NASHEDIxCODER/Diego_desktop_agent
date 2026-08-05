@@ -1,43 +1,55 @@
 """
-VisionService — Structured screen understanding for desktop automation.
+VisionService — Production-grade desktop vision pipeline (v3).
 
-Target latencies:
-  - Desktop capture:   <20ms  (via mss, delegated to ScreenCapture)
-  - Frame differencing: <1ms  (perceptual hash comparison)
-  - OCR:                <200ms (PaddleOCR/EasyOCR/Tesseract)
-  - UI tree building:   <800ms (element detection + heuristics)
-  - Vision model (VL):  <2s    (Qwen2.5-VL, optional)
+10-stage pipeline that understands the desktop like a human:
 
-Gating strategy (NEVER analyze every frame):
-  1. Capture screen (fast)
-  2. Frame differencing (hash check — skip if unchanged)
-  3. Active window check (skip if same window title)
-  4. User explicitly asked (always run)
+   1. Screen Capture     (<20ms)  — mss-backed, fullscreen or active window
+   2. Frame Hash         (<2ms)   — perceptual hash for gating
+   3. Motion Detection   (<5ms)   — grid-based motion regions (16×16 cells)
+   4. Gating Decision    (<1ms)   — skip if: frame unchanged + no input + cache valid
+   5. Layout Analysis    (<15ms)  — app type detection + region segmentation
+   6. OCR                (<150ms) — region-aware, box merged, deduped, self-healing
+   7. UI Detection       (<20ms)  — heuristics classify OCR boxes into UI elements
+   8. Semantic Reasoning (<80ms)  — page type, errors, interactive elements, summary
+   9. Action Verification (<10ms) — compare pre/post frames, auto-retry
+  10. Memory Update      (<5ms)   — store snapshot, update screen memory
 
-Only run OCR + vision when:
+Total target: <250ms when screen changes.
+Near-zero CPU when desktop is idle (gating skips everything).
+
+NEVER OCR every frame. Only process vision when:
+  - desktop changed (pHash differs)
   - active window changed
-  - frame changed significantly (pHash differs)
-  - user explicitly asked (force=True)
+  - mouse clicked
+  - keyboard input happened
+  - user explicitly requested vision (force=True)
+  - planner requires updated state
 
-Produces a structured UITree, NOT raw OCR text:
+Produces a full semantic understanding:
+  - Application type (VSCode, Chrome, Terminal, Discord, etc.)
+  - Layout regions (toolbar, sidebar, editor, status bar, tabs, etc.)
+  - UI tree (structured hierarchy with roles, enabled/visible state)
+  - OCR text with confidence and text hierarchy
+  - Page type classification
+  - Error detection
+  - Interactive element inventory
+  - Human-readable semantic summary
+  - Frame memory for state comparison
 
-    Desktop
-      Window "PyCharm"
-        Button "Run"
-        Button "Stop"
-        Tab "Terminal"
-        Text "Fatal Error"
+Structured logging per stage: [VISION] [FRAME] [LAYOUT] [OCR] [UI] [SCREEN] [VERIFY] [MEMORY]
 
-The tree is JSON-serializable for LLM prompt injection.
-
-Extends BaseService. Conversational engine accesses through:
-  - vision_service.analyze() → builds full UITree
-  - vision_service.quick_context() → compact text summary for LLM
+Maintains backward compatibility with:
+  - conversation_engine (vision_context_fn)
+  - planner (ui_tree, find_element, click_element)
+  - action_dispatcher (read_screen, screen_context)
+  - desktop_observer (window change events)
+  - BaseService lifecycle
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import time
@@ -47,12 +59,30 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 import numpy as np
 
 from core.service import BaseService
-from services.screen_capture import screen_capture_service, CaptureResult, FrameDiff
+
+# ── New vision modules ────────────────────────────────────────────
+from vision.frame_differencer import (
+    frame_differencer, FrameDiffResult, GatingDecision, MotionRegion,
+)
+from vision.layout_analyzer import (
+    layout_analyzer, ApplicationType, WindowLayout, RegionType, LayoutRegion,
+)
+from vision.ocr_pipeline import (
+    ocr_pipeline as enhanced_ocr, OCRBox, OCRResult, TextClass,
+)
+from vision.screen_memory import (
+    screen_memory, ScreenSnapshot,
+)
+from vision.action_verifier import (
+    action_verifier, VerificationResult, VerificationStatus,
+)
+from vision.forensic_logger import forensic_logger, ForensicReport
+from vision.debug_overlay import debug_overlay
+
+# ── Existing modules (backward compatible) ────────────────────────
+from services.screen_capture import screen_capture_service, CaptureResult
 from services.ui_tree import (
-    UIDesktop,
-    UIWindow,
-    UIElement,
-    ElementType,
+    UIDesktop, UIWindow, UIElement, ElementType,
 )
 
 logger = logging.getLogger(__name__)
@@ -67,526 +97,136 @@ try:
 except ImportError:
     cv2 = None  # type: ignore[assignment]
 
-_HAS_PADDLEOCR = False
-try:
-    from paddleocr import PaddleOCR as _PaddleOCR
-
-    _HAS_PADDLEOCR = True
-except ImportError:
-    _PaddleOCR = None  # type: ignore[assignment]
-
-_HAS_EASYOCR = False
-try:
-    import easyocr as _easyocr  # noqa: F401
-
-    _HAS_EASYOCR = True
-except ImportError:
-    _easyocr = None  # type: ignore[assignment]
-
-_HAS_TESSERACT = False
-try:
-    import pytesseract as _pytesseract
-
-    _HAS_TESSERACT = True
-except ImportError:
-    _pytesseract = None  # type: ignore[assignment]
-
-_HAS_QWEN_VL = False
-try:
-    from transformers import Qwen2_5_VLForConditionalGeneration as _QWEN_MODEL  # noqa: F401
-    from transformers import AutoProcessor as _QWEN_PROCESSOR  # noqa: F401
-
-    _HAS_QWEN_VL = True
-except ImportError:
-    _QWEN_MODEL = None  # type: ignore[assignment]
-    _QWEN_PROCESSOR = None  # type: ignore[assignment]
-
 
 # ═══════════════════════════════════════════════════════════════════
 # Data types
 # ═══════════════════════════════════════════════════════════════════
 
-
-@dataclass
-class OCRBox:
-    """A single OCR-detected text box."""
-    text: str = ""
-    bbox: Tuple[int, int, int, int] = (0, 0, 0, 0)  # x, y, w, h
-    confidence: float = 0.0
-
-
 @dataclass
 class VisionContext:
-    """The full result of vision analysis, ready for LLM injection."""
-    desktop: Optional[UIDesktop] = None
-    active_window_title: str = ""
+    """
+    The complete result of the full vision pipeline.
+
+    Replaces the v2 VisionContext. Adds layout, semantic reasoning,
+    memory, and verification fields. Backward compatible.
+    """
+    # Capture
+    capture: Optional[CaptureResult] = None
+    capture_time_ms: float = 0.0
+
+    # Frame / gating
+    frame_hash: str = ""
+    gating: Optional[GatingDecision] = None
+    frame_diff: Optional[FrameDiffResult] = None
+
+    # Layout
+    app_type: str = ""
+    app_name: str = ""
+    layout: Optional[WindowLayout] = None
+    layout_time_ms: float = 0.0
+
+    # OCR
+    ocr_result: Optional[OCRResult] = None
     ocr_text: str = ""
     raw_ocr_boxes: List[OCRBox] = field(default_factory=list)
-    ui_tree_text: str = ""           # Compact string representation
-    caption: str = ""                # VL model scene description (optional)
-    capture_time_ms: float = 0.0
     ocr_time_ms: float = 0.0
-    vision_time_ms: float = 0.0
+
+    # UI Tree
+    desktop: Optional[UIDesktop] = None
+    ui_tree_text: str = ""
+    ui_tree_json: str = ""
+    ui_time_ms: float = 0.0
+
+    # Semantic reasoning
+    page_type: str = ""
+    semantic_summary: str = ""
+    interactive_elements_json: str = ""
+    error_elements_json: str = ""
+    reasoning_time_ms: float = 0.0
+
+    # Window
+    active_window_title: str = ""
+    active_window_pid: int = 0
+    active_window_process: str = ""
+
+    # Verification
+    verification: Optional[VerificationResult] = None
+    verify_time_ms: float = 0.0
+
+    # Memory
+    snapshot: Optional[ScreenSnapshot] = None
+    memory_time_ms: float = 0.0
+
+    # Metadata
     total_time_ms: float = 0.0
     from_cache: bool = False
     error: str = ""
+    stages_run: List[str] = field(default_factory=list)
 
     @property
     def compact_summary(self) -> str:
-        """A compact text summary suitable for LLM prompt injection."""
+        """A compact text summary for LLM prompt injection."""
         parts = []
+
         if self.active_window_title:
-            parts.append(f"Active window: {self.active_window_title}")
+            app_info = self.active_window_title
+            if self.app_type:
+                app_info = f"[{self.app_type}/{self.app_name}] {app_info}"
+            parts.append(f"Active window: {app_info}")
+
+        if self.app_type and self.app_type != "unknown":
+            parts.append(f"Application: {self.app_name} ({self.app_type})")
+
+        if self.page_type and self.page_type != "unknown":
+            parts.append(f"Page type: {self.page_type}")
+
         if self.ui_tree_text:
             parts.append(self.ui_tree_text)
-        elif self.ocr_text:
-            parts.append(f"Visible text: {self.ocr_text[:500]}")
-        if self.caption:
-            parts.append(f"Scene: {self.caption}")
+
+        if self.semantic_summary:
+            parts.append(f"Summary: {self.semantic_summary}")
+
+        if self.ocr_text:
+            # Truncate to avoid blowing the LLM context
+            text_snippet = self.ocr_text[:500]
+            parts.append(f"Visible text: {text_snippet}")
+
         return "\n".join(parts)
 
-
-# ═══════════════════════════════════════════════════════════════════
-# OCR Engine (PaddleOCR → EasyOCR → Tesseract)
-# ═══════════════════════════════════════════════════════════════════
-
-
-class OCREngine:
-    """
-    Multi-backend OCR with automatic failover.
-
-    Prioritises accuracy: PaddleOCR > EasyOCR > Tesseract.
-    All backends return per-box coordinates + confidence, not just raw text.
-    """
-
-    def __init__(self):
-        self._paddle: Optional[Any] = None
-        self._easyocr_reader: Optional[Any] = None
-        self._active: str = "none"
-
-    def initialize(self) -> bool:
-        """Try to initialise the best available OCR backend."""
-        # PaddleOCR
-        if _HAS_PADDLEOCR:
-            try:
-                self._paddle = _PaddleOCR(
-                    use_angle_cls=True,
-                    lang="en",
-                    use_gpu=False,
-                    show_log=False,
-                )
-                self._active = "paddleocr"
-                logger.info("[VisionService] OCR backend: PaddleOCR")
-                return True
-            except Exception as e:
-                logger.warning("[VisionService] PaddleOCR init failed: %s", e)
-
-        # EasyOCR
-        if _HAS_EASYOCR:
-            try:
-                self._easyocr_reader = _easyocr.Reader(["en"], gpu=False)
-                self._active = "easyocr"
-                logger.info("[VisionService] OCR backend: EasyOCR")
-                return True
-            except Exception as e:
-                logger.warning("[VisionService] EasyOCR init failed: %s", e)
-
-        # Tesseract
-        if _HAS_TESSERACT:
-            try:
-                # Verify tesseract binary is available
-                import subprocess
-                result = subprocess.run(
-                    ["tesseract", "--version"],
-                    capture_output=True, timeout=5,
-                )
-                if result.returncode == 0:
-                    self._active = "tesseract"
-                    logger.info("[VisionService] OCR backend: Tesseract")
-                    return True
-            except Exception:
-                pass
-
-        logger.warning("[VisionService] No OCR backend available")
-        return False
-
     @property
-    def ready(self) -> bool:
-        return self._active != "none"
-
-    def ocr(self, image: np.ndarray) -> List[OCRBox]:
-        """
-        Extract text boxes from an RGB image.
-
-        Returns a list of OCRBox with per-word/per-line coordinates and
-        confidence scores.
-        """
-        if self._active == "paddleocr" and self._paddle is not None:
-            return self._ocr_paddle(image)
-        if self._active == "easyocr" and self._easyocr_reader is not None:
-            return self._ocr_easyocr(image)
-        if self._active == "tesseract":
-            return self._ocr_tesseract(image)
-        return []
-
-    def _ocr_paddle(self, image: np.ndarray) -> List[OCRBox]:
-        try:
-            results = self._paddle.ocr(image, cls=True)
-            boxes: List[OCRBox] = []
-            if results and results[0]:
-                for line in results[0]:
-                    bbox_points = line[0]  # [[x1,y1],[x2,y2],[x3,y3],[x4,y4]]
-                    text = line[1][0] if isinstance(line[1], (list, tuple)) else str(line[1])
-                    conf = line[1][1] if isinstance(line[1], (list, tuple)) and len(line[1]) > 1 else 1.0
-
-                    if text and conf > 0.3:
-                        xs = [p[0] for p in bbox_points]
-                        ys = [p[1] for p in bbox_points]
-                        x, y = int(min(xs)), int(min(ys))
-                        w, h = int(max(xs) - x), int(max(ys) - y)
-                        boxes.append(OCRBox(text=str(text), bbox=(x, y, w, h), confidence=float(conf)))
-            return boxes
-        except Exception as e:
-            logger.debug("[VisionService] PaddleOCR error: %s", e)
-            return []
-
-    def _ocr_easyocr(self, image: np.ndarray) -> List[OCRBox]:
-        try:
-            results = self._easyocr_reader.readtext(image)
-            boxes: List[OCRBox] = []
-            for bbox_points, text, conf in results:
-                if text and conf > 0.3:
-                    xs = [p[0] for p in bbox_points]
-                    ys = [p[1] for p in bbox_points]
-                    x, y = int(min(xs)), int(min(ys))
-                    w, h = int(max(xs) - x), int(max(ys) - y)
-                    boxes.append(OCRBox(text=str(text), bbox=(x, y, w, h), confidence=float(conf)))
-            return boxes
-        except Exception as e:
-            logger.debug("[VisionService] EasyOCR error: %s", e)
-            return []
-
-    def _ocr_tesseract(self, image: np.ndarray) -> List[OCRBox]:
-        try:
-            import cv2 as _cv
-            bgr = _cv.cvtColor(image, _cv.COLOR_RGB2BGR)
-            data = _pytesseract.image_to_data(bgr, output_type=_pytesseract.Output.DICT)
-            boxes: List[OCRBox] = []
-            n = len(data["text"])
-            for i in range(n):
-                text = (data["text"][i] or "").strip()
-                conf = int(data["conf"][i]) / 100.0 if data["conf"][i] != "-1" else 0.0
-                if text and conf > 0.3:
-                    x, y, w, h = (data["left"][i], data["top"][i], data["width"][i], data["height"][i])
-                    if w > 0 and h > 0:
-                        boxes.append(OCRBox(text=text, bbox=(x, y, w, h), confidence=conf))
-            return boxes
-        except Exception as e:
-            logger.debug("[VisionService] Tesseract error: %s", e)
-            return []
-
-    def close(self) -> None:
-        self._paddle = None
-        self._easyocr_reader = None
-
-
-# ═══════════════════════════════════════════════════════════════════
-# UI element detector — heuristics to classify OCR boxes
-# ═══════════════════════════════════════════════════════════════════
-
-
-class UIDetector:
-    """
-    Classifies OCR text boxes into UI element types using heuristics.
-
-    Each box is examined for:
-      - Position (top bar → window title, toolbar; bottom → status bar)
-      - Text patterns (short + verb-like → button; hierarchical → menu item)
-      - Spatial relationships (boxes in a row → tabs; close together → toolbar)
-      - Neighbor analysis (boxes near icons → icon labels)
-    """
-
-    # Common UI button text patterns
-    _BUTTON_PATTERNS = re.compile(
-        r"^(OK|Cancel|Apply|Submit|Save|Delete|Close|Yes|No|Next|Back|"
-        r"Finish|Run|Stop|Start|Pause|Resume|Retry|Skip|"
-        r"Open|New|Edit|Copy|Paste|Undo|Redo|"
-        r"Send|Search|Clear|Refresh|Reload|"
-        r"Login|Logout|Sign In|Sign Up|Register|"
-        r"Download|Upload|Install|Update|"
-        r"Play|Pause|Stop|Mute|"
-        r"Add|Remove|Create|Delete|Modify|"
-        r"Accept|Decline|Reject|Allow|Deny|"
-        r"Enable|Disable|On|Off|"
-        r"Confirm|Dismiss|Ignore|"
-        r"Settings|Preferences|Options|"
-        r"Help|About|Exit|Quit)$",
-        re.IGNORECASE,
-    )
-
-    # Common menu labels
-    _MENU_PATTERNS = re.compile(
-        r"^(File|Edit|View|Tools|Window|Help|Navigate|Code|Refactor|"
-        r"Run|Debug|Profile|Build|VCS|Git|Bookmarks|"
-        r"Format|Project|Settings|Preferences|Plugins|"
-        r"Terminal|Run|Debug|Stop|"
-        r"History|Bookmarks|Favorites|"
-        r"Analyze|Inspect|Generate|"
-        r"Recent|New|Open|Save)$",
-        re.IGNORECASE,
-    )
-
-    # Tab label indicators
-    _TAB_PATTERNS = re.compile(
-        r"^(.*\.(py|js|ts|html|css|json|yaml|yml|md|txt|java|cpp|c|h|rs|go|rb|"
-        r"php|sql|xml|toml|cfg|ini|sh|bash|zsh|fish|ps1))$",
-        re.IGNORECASE,
-    )
-
-    def __init__(self):
-        pass
-
-    def build_tree(
-        self,
-        ocr_boxes: List[OCRBox],
-        active_window_title: str,
-        image_width: int,
-        image_height: int,
-    ) -> UIDesktop:
-        """
-        Build a structured UI tree from OCR boxes + heuristics.
-
-        The tree is:
-          UIDesktop
-            └── UIWindow (active window)
-                  ├── UIButton / UIText / UITab / UIMenu / UIIcon / etc.
-
-        Returns a UIDesktop with one UIWindow child (the active window).
-        """
-        desktop = UIDesktop()
-        window = UIWindow(
-            title=active_window_title,
-            bounding_box=(0, 0, image_width, image_height),
-        )
-
-        if not ocr_boxes:
-            desktop.add_window(window)
-            return desktop
-
-        # ── Classify each OCR box ──────────────────────────
-        for box in sorted(ocr_boxes, key=lambda b: (b.bbox[1], b.bbox[0])):
-            element_type = self._classify(box, image_width, image_height)
-            element = UIElement(
-                element_type=element_type,
-                label=box.text,
-                bounding_box=box.bbox,
-                confidence=box.confidence,
-            )
-            window.element.add_child(element)
-
-        # ── Post-processing: detect tab groups ─────────────
-        self._detect_tab_groups(window.element)
-
-        # ── Post-processing: detect menus from menu items ──
-        self._detect_menus(window.element)
-
-        desktop.add_window(window)
-        return desktop
-
-    def _classify(
-        self, box: OCRBox, img_w: int, img_h: int
-    ) -> ElementType:
-        """Classify a single OCR box."""
-        text = box.text.strip()
-        x, y, w, h = box.bbox
-        text_len = len(text)
-
-        # Position-based hints
-        at_top = y < img_h * 0.08
-        at_bottom = y > img_h * 0.92
-        at_left = x < img_w * 0.05
-        at_right = x > img_w * 0.95
-        is_short = text_len <= 20
-        is_very_short = text_len <= 5
-
-        # Tab: file extensions or short at top
-        if self._TAB_PATTERNS.match(text):
-            return ElementType.TAB
-
-        # Button: short, verb-like, clickable
-        if is_very_short and self._BUTTON_PATTERNS.match(text):
-            return ElementType.BUTTON
-
-        # Button heuristics for short, action-oriented text
-        if is_very_short and not at_top:
-            # Single-word capitalized often = button
-            if text[0].isupper() and text.isalpha():
-                return ElementType.BUTTON
-
-        # Menu: common menu bar labels, at top
-        if at_top and self._MENU_PATTERNS.match(text):
-            return ElementType.MENU
-
-        # Menu item: short text inside a menu region
-        if is_short and at_top and not self._MENU_PATTERNS.match(text):
-            # Individual items under a menu
-            return ElementType.MENU_ITEM
-
-        # Tab at top (not menu-like)
-        if at_top and is_very_short:
-            return ElementType.TAB
-
-        # Input: short text near the bottom (terminal input line)
-        if at_bottom and is_short:
-            return ElementType.INPUT
-
-        # Link: starts with http or common link patterns
-        if text.startswith(("http://", "https://", "www.", "ftp://")):
-            return ElementType.LINK
-
-        # Checkbox / radio: starts with common markers
-        if text.startswith(("☐", "☑", "☒", "○", "●", "◉", "[ ]", "[x]", "[X]", "( )", "(*)")):
-            return ElementType.CHECKBOX
-
-        # Icon: very short text in a small, isolated box
-        if is_very_short and w < 50 and h < 50:
-            return ElementType.ICON
-
-        # Label: short text, often before input fields
-        if is_very_short and text.endswith(":"):
-            return ElementType.LABEL
-
-        # Default: text
-        return ElementType.TEXT
-
-    @staticmethod
-    def _detect_tab_groups(window_element: UIElement) -> None:
-        """
-        Cluster adjacent tabs into a TabGroup.
-
-        Tabs are typically in a horizontal row with similar y-coordinates.
-        """
-        tabs = window_element.find_by_type(ElementType.TAB)
-        if len(tabs) < 2:
-            return
-
-        # Sort by x position
-        tabs_sorted = sorted(tabs, key=lambda t: t.x)
-        groups: List[List[UIElement]] = []
-        current_group = [tabs_sorted[0]]
-
-        for i in range(1, len(tabs_sorted)):
-            prev = tabs_sorted[i - 1]
-            curr = tabs_sorted[i]
-            # Same y-line (within 10px) and close horizontally (within 200px)
-            if abs(curr.y - prev.y) <= 10 and (curr.x - (prev.x + prev.width)) <= 200:
-                current_group.append(curr)
-            else:
-                groups.append(current_group)
-                current_group = [curr]
-        groups.append(current_group)
-
-        # For each group > 1, wrap in TAB_GROUP
-        for group in groups:
-            if len(group) > 1:
-                # Check if any tab metadata says "active" based on visual contrast
-                # (simplified: the first tab is active)
-                group[0].metadata["active"] = True
-                # The group relationship is implicit from the adjacency metadata
-                for tab in group[1:]:
-                    tab.metadata["active"] = False
-
-    @staticmethod
-    def _detect_menus(window_element: UIElement) -> None:
-        """
-        Group adjacent MENU and MENU_ITEM elements.
-
-        Menus at the top bar are often followed by their items.
-        """
-        menus = window_element.find_by_type(ElementType.MENU)
-        menu_items = window_element.find_by_type(ElementType.MENU_ITEM)
-
-        if not menus or not menu_items:
-            return
-
-        # For each menu, find menu items that are vertically close below
-        for menu in menus:
-            mx, my, mw, mh = menu.x, menu.y, menu.width, menu.height
-            nearby_items = []
-            for item in menu_items[:]:
-                if abs(item.x - mx) < mw + 50 and item.y - (my + mh) < 30:
-                    nearby_items.append(item)
-                    menu_items.remove(item)
-            for item in nearby_items:
-                menu.add_child(item)
-
-    # ── Image preprocessing for better OCR ─────────────────────────
-
-    @staticmethod
-    def preprocess(image: np.ndarray) -> np.ndarray:
-        """
-        Apply OpenCV preprocessing to improve OCR accuracy.
-
-        Steps:
-          1. Convert to grayscale
-          2. Denoise (fast Non-Local Means)
-          3. Adaptive thresholding (binarization)
-          4. Morphological close (connect broken text)
-          5. Sharpen (unsharp mask)
-
-        Returns the preprocessed image (RGB format, same size).
-        """
-        if not _HAS_CV2:
-            return image
-
-        import cv2 as _cv
-
-        try:
-            gray = _cv.cvtColor(image, _cv.COLOR_RGB2GRAY)
-        except Exception:
-            return image
-
-        # Denoise
-        denoised = _cv.fastNlMeansDenoising(gray, None, 10, 7, 21)
-
-        # Adaptive threshold
-        binary = _cv.adaptiveThreshold(
-            denoised, 255, _cv.ADAPTIVE_THRESH_GAUSSIAN_C,
-            _cv.THRESH_BINARY, 11, 2,
-        )
-
-        # Morphological close (connect text components)
-        kernel = _cv.getStructuringElement(_cv.MORPH_RECT, (2, 2))
-        closed = _cv.morphologyEx(binary, _cv.MORPH_CLOSE, kernel)
-
-        # Sharpen
-        blur = _cv.GaussianBlur(closed, (0, 0), 3)
-        sharpened = _cv.addWeighted(closed, 1.5, blur, -0.5, 0)
-
-        # Convert back to RGB for OCR engines
-        result = _cv.cvtColor(sharpened, _cv.COLOR_GRAY2RGB)
-        return result
+    def quick_context(self) -> str:
+        """Ultra-compact context (one line)."""
+        items = []
+        if self.active_window_title:
+            items.append(f"Window: {self.active_window_title[:60]}")
+        if self.app_type:
+            items.append(f"App: {self.app_type}")
+        if self.page_type:
+            items.append(f"Page: {self.page_type}")
+        if self.semantic_summary:
+            items.append(self.semantic_summary[:100])
+        return " | ".join(items) if items else ""
 
 
 # ═══════════════════════════════════════════════════════════════════
 # VisionService — main orchestrator
 # ═══════════════════════════════════════════════════════════════════
 
-
 class VisionService(BaseService):
     """
-    Structured screen understanding service.
+    Production desktop vision pipeline with 10 stages.
 
-    Extends BaseService for lifecycle. Provides:
-      - analyze() — full capture → OCR → UI tree pipeline
+    Extends BaseService for lifecycle management.
+
+    Public API:
+      - analyze() — run full 10-stage pipeline
+      - force_analyze() — bypass all gating (always run full pipeline)
       - quick_context() — compact LLM-ready text summary
-      - ui_tree() — get current UIDesktop directly
-      - force_analyze() — bypass all gating, always run
-
-    Gating:
-      - If frame hasn't changed → skip (return cached)
-      - If window title unchanged + frame same → skip
-      - force=True → always run full pipeline
+      - ui_tree() — get current UIDesktop
+      - find_element() — search UI tree for elements
+      - click_element() — find clickable element by label
+      - verify_last_action() — check if the last action changed the UI
+      - what_changed() — describe what changed since previous frame
     """
 
     name = "vision_service"
@@ -594,49 +234,55 @@ class VisionService(BaseService):
 
     def __init__(self):
         super().__init__()
-        self._ocr = OCREngine()
-        self._detector = UIDetector()
         self._last_context: Optional[VisionContext] = None
-        self._last_window_title: str = ""
-        self._last_frame_hash: str = ""
         self._analyze_count: int = 0
         self._skip_count: int = 0
+        self._ocr_ready: bool = False
 
         # Tunables
         self.preprocess_for_ocr: bool = True
-        self.use_vl_model: bool = False  # Qwen2.5-VL (optional, heavy)
+        self.use_ocr: bool = True
+        self.use_layout: bool = True
+        self.use_verification: bool = True
+        self.use_memory: bool = True
 
     # ── BaseService contract ──────────────────────────────────────
 
     async def _start(self) -> bool:
-        """Initialise OCR backend."""
-        ocr_ok = self._ocr.initialize()
+        """Initialise all vision subsystems."""
+        ocr_ok = enhanced_ocr.initialize()
+        self._ocr_ready = ocr_ok
+
         details = {
-            "ocr": self._ocr._active,
-            "preprocess": self.preprocess_for_ocr and _HAS_CV2,
-            "vl_model": self.use_vl_model and _HAS_QWEN_VL,
+            "ocr": enhanced_ocr.active_backend,
             "opencv": _HAS_CV2,
+            "layout": self.use_layout,
+            "verification": self.use_verification,
+            "memory": self.use_memory,
         }
         self.set_health("ready" if ocr_ok else "degraded (no OCR)", details)
-        logger.info(
-            "[VisionService] Backends — ocr=%s preprocess=%s vl=%s",
-            self._ocr._active if ocr_ok else "none",
-            "✓" if _HAS_CV2 else "✗",
-            "✓" if (_HAS_QWEN_VL and self.use_vl_model) else "✗",
-        )
-        return True  # Always "ready" — OCR is optional, capture still works
+
+        logger.info("[VISION] Initialized — ocr=%s layout=%s verify=%s memory=%s",
+                     enhanced_ocr.active_backend if ocr_ok else "none",
+                     "✓" if self.use_layout else "✗",
+                     "✓" if self.use_verification else "✗",
+                     "✓" if self.use_memory else "✗")
+        return True  # Always ready — capture works even without OCR
 
     async def _stop(self) -> None:
-        """Release OCR resources."""
-        self._ocr.close()
+        """Release resources."""
+        enhanced_ocr.close()
+        screen_memory.clear()
         self._last_context = None
-        logger.info("[VisionService] Stopped")
+        logger.info("[VISION] Stopped")
 
     @property
     def ready(self) -> bool:
-        return self._ocr.ready
+        return screen_capture_service.ready
 
-    # ── Public API ─────────────────────────────────────────────────
+    # ═══════════════════════════════════════════════════════════════
+    # 10-STAGE VISION PIPELINE
+    # ═══════════════════════════════════════════════════════════════
 
     async def analyze(
         self,
@@ -644,109 +290,529 @@ class VisionService(BaseService):
         source: str = "active_window",
         include_ocr: bool = True,
         include_tree: bool = True,
+        include_layout: bool = True,
+        include_reasoning: bool = True,
+        verify_previous_action: bool = False,
     ) -> VisionContext:
         """
-        Run the full vision pipeline: capture → OCR → UI tree.
+        Run the full 10-stage vision pipeline.
+
+        Stages:
+          1. Screen Capture     (<20ms)
+          2. Frame Hash         (<2ms)
+          3. Motion Detection   (<5ms)
+          4. Gating Decision    (<1ms)   ← may return cached here
+          5. Layout Analysis    (<15ms)
+          6. OCR                (<150ms)
+          7. UI Detection       (<20ms)
+          8. Semantic Reasoning (<80ms)
+          9. Action Verification (<10ms)  ← optional
+         10. Memory Update      (<5ms)
 
         Args:
-            force: Bypass frame-difference gating (always run full pipeline).
+            force: Bypass gating (always run full pipeline).
             source: "active_window" or "fullscreen".
-            include_ocr: Run OCR (otherwise only capture).
-            include_tree: Build structured UI tree (otherwise raw OCR only).
+            include_ocr: Run OCR (stage 6).
+            include_tree: Build UI tree (stage 7).
+            include_layout: Run layout analysis (stage 5).
+            include_reasoning: Run semantic reasoning (stage 8).
+            verify_previous_action: Run verification against pre-action snapshot.
 
         Returns:
-            VisionContext with structured results. Never returns raw HTML.
-
-        Target latency: <800ms total (capture + OCR + tree).
+            VisionContext with complete analysis.
         """
-        t0 = time.time()
+        t0 = time.perf_counter_ns()
         ctx = VisionContext()
 
-        # ── Step 1: Capture ────────────────────────────────
-        # Determine source
+        # ═══════════════════════════════════════════════════════════
+        # Stage 1: Screen Capture
+        # ═══════════════════════════════════════════════════════════
+        t_cap = time.perf_counter_ns()
         if source == "active_window":
             cap = await screen_capture_service.capture_active_window()
         else:
             cap = await screen_capture_service.capture_fullscreen()
 
         if cap is None or not cap.is_valid:
-            ctx.error = "capture failed"
-            ctx.total_time_ms = (time.time() - t0) * 1000
+            ctx.error = "[VISION] Stage 1 FAILED: capture returned None or invalid image"
+            ctx.total_time_ms = (time.perf_counter_ns() - t0) / 1_000_000
+            logger.error(ctx.error)
             return ctx
 
-        ctx.capture_time_ms = (time.time() - t0) * 1000
+        ctx.capture = cap
+        ctx.capture_time_ms = (time.perf_counter_ns() - t_cap) / 1_000_000
         ctx.active_window_title = cap.source_label.replace("window:", "").split(" (fullscreen")[0]
+        ctx.stages_run.append("capture")
+        logger.info("[VISION] Stage 1 — Capture: %dx%d in %.1fms",
+                     cap.width, cap.height, ctx.capture_time_ms)
 
-        # ── Frame-difference gating ────────────────────────
-        if not force and self._last_frame_hash and cap.frame_hash == self._last_frame_hash:
-            # Frame hasn't changed — return cached if we have it
-            if self._last_context is not None and self._last_context.ui_tree_text:
-                self._skip_count += 1
-                cached = self._last_context
-                cached.total_time_ms = (time.time() - t0) * 1000
-                cached.from_cache = True
-                logger.debug("[VisionService] Frame unchanged — returning cached context")
-                return cached
+        # ═══════════════════════════════════════════════════════════
+        # Stage 2: Frame Hash
+        # ═══════════════════════════════════════════════════════════
+        t_hash = time.perf_counter_ns()
+        ctx.frame_hash = frame_differencer.compute_phash(cap.image) if cap.image is not None else ""
+        ctx.stages_run.append("hash")
+        hash_time = (time.perf_counter_ns() - t_hash) / 1_000_000
+        logger.info("[VISION] Stage 2 — Hash: %s in %.1fms", ctx.frame_hash[:8], hash_time)
 
-        self._last_frame_hash = cap.frame_hash
-        self._last_window_title = ctx.active_window_title
+        # ═══════════════════════════════════════════════════════════
+        # Stage 3: Motion Detection
+        # ═══════════════════════════════════════════════════════════
+        t_motion = time.perf_counter_ns()
+        if cap.image is not None:
+            ctx.frame_diff = frame_differencer.compute_motion(cap.image)
+            ctx.stages_run.append("motion")
+            motion_time = (time.perf_counter_ns() - t_motion) / 1_000_000
+            logger.info("[VISION] Stage 3 — Motion: %s in %.1fms",
+                         ctx.frame_diff.summary, motion_time)
 
-        # ── Step 2: OCR ────────────────────────────────────
-        if include_ocr and self._ocr.ready:
-            t_ocr = time.time()
-            image = cap.image
+        # ═══════════════════════════════════════════════════════════
+        # Stage 4: Gating Decision
+        # ═══════════════════════════════════════════════════════════
+        t_gate = time.perf_counter_ns()
+        ctx.gating = frame_differencer.should_process(
+            force=force,
+            window_title=ctx.active_window_title,
+            planner_requested=False,
+        )
+        ctx.stages_run.append("gating")
+        gate_time = (time.perf_counter_ns() - t_gate) / 1_000_000
+        logger.info("[VISION] Stage 4 — Gating: process=%s reason='%s' quality=%s in %.1fms",
+                     ctx.gating.should_process, ctx.gating.reason,
+                     ctx.gating.quality, gate_time)
 
-            # Optional preprocessing
-            if self.preprocess_for_ocr and _HAS_CV2:
-                image = self._detector.preprocess(image)
+        # ── Return cached if gating says skip ─────────────────
+        if not ctx.gating.should_process and self._last_context is not None:
+            self._skip_count += 1
+            cached = self._last_context
+            cached.total_time_ms = (time.perf_counter_ns() - t0) / 1_000_000
+            cached.from_cache = True
+            logger.debug("[VISION] Gating SKIP — returning cached context (%.1fms total)",
+                         cached.total_time_ms)
+            return cached
 
-            ocr_boxes = await asyncio.get_event_loop().run_in_executor(
-                None, self._ocr.ocr, image,
+        # Store current frame for future comparisons
+        if cap.image is not None:
+            frame_differencer.store_frame(cap.image, ctx.active_window_title)
+        ctx.stages_run.append("process")
+
+        # ═══════════════════════════════════════════════════════════
+        # Stage 5: Layout Analysis
+        # ═══════════════════════════════════════════════════════════
+        if include_layout and self.use_layout:
+            t_layout = time.perf_counter_ns()
+            try:
+                # Detect application type
+                app_type, app_name, app_conf = layout_analyzer.detect_application(
+                    window_title=ctx.active_window_title,
+                    process_name=ctx.active_window_process,
+                    pid=ctx.active_window_pid,
+                )
+                ctx.app_type = app_type.value if isinstance(app_type, ApplicationType) else app_type
+                ctx.app_name = app_name
+
+                # Segment layout
+                ctx.layout = layout_analyzer.segment_layout(
+                    app_type=app_type if isinstance(app_type, ApplicationType) else ApplicationType.UNKNOWN,
+                    window_width=cap.width,
+                    window_height=cap.height,
+                    window_title=ctx.active_window_title,
+                )
+                ctx.layout_time_ms = (time.perf_counter_ns() - t_layout) / 1_000_000
+                ctx.stages_run.append("layout")
+                logger.info("[VISION] Stage 5 — Layout: %s/%s (%d regions) in %.1fms",
+                             ctx.app_type, ctx.app_name,
+                             len(ctx.layout.regions) if ctx.layout else 0,
+                             ctx.layout_time_ms)
+            except Exception as e:
+                logger.warning("[VISION] Stage 5 — Layout FAILED: %s", e)
+
+        # ═══════════════════════════════════════════════════════════
+        # Stage 6: OCR
+        # ═══════════════════════════════════════════════════════════
+        if include_ocr and self.use_ocr and enhanced_ocr.ready and cap.image is not None:
+            t_ocr = time.perf_counter_ns()
+            try:
+                ctx.ocr_result = await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: enhanced_ocr.ocr(
+                        cap.image, preprocess=self.preprocess_for_ocr)
+                )
+                ctx.ocr_text = ctx.ocr_result.text
+                ctx.raw_ocr_boxes = ctx.ocr_result.boxes
+                ctx.ocr_time_ms = (time.perf_counter_ns() - t_ocr) / 1_000_000
+                ctx.stages_run.append("ocr")
+                logger.info("[VISION] Stage 6 — OCR: %d boxes avg_conf=%.2f backend=%s in %.1fms",
+                             ctx.ocr_result.box_count_final,
+                             ctx.ocr_result.avg_confidence,
+                             ctx.ocr_result.backend,
+                             ctx.ocr_time_ms)
+            except Exception as e:
+                logger.warning("[VISION] Stage 6 — OCR FAILED: %s", e)
+                ctx.ocr_result = None
+                ctx.ocr_text = ""
+
+        # ═══════════════════════════════════════════════════════════
+        # Stage 7: UI Detection (build tree)
+        # ═══════════════════════════════════════════════════════════
+        if include_tree and ctx.raw_ocr_boxes:
+            t_ui = time.perf_counter_ns()
+            try:
+                desktop = self._build_ui_tree(ctx)
+                ctx.desktop = desktop
+                ctx.ui_tree_text = desktop.to_compact_str() if desktop else ""
+                ctx.ui_tree_json = json.dumps(desktop.to_dict()) if desktop else ""
+                ctx.ui_time_ms = (time.perf_counter_ns() - t_ui) / 1_000_000
+                ctx.stages_run.append("ui_detection")
+                logger.info("[VISION] Stage 7 — UI Tree: %d windows in %.1fms",
+                             len(desktop.windows) if desktop else 0, ctx.ui_time_ms)
+            except Exception as e:
+                logger.warning("[VISION] Stage 7 — UI Detection FAILED: %s", e)
+                ctx.desktop = None
+                ctx.ui_tree_text = ""
+        elif include_tree:
+            # No OCR boxes — create minimal tree
+            desktop = UIDesktop()
+            window = UIWindow(
+                title=ctx.active_window_title,
+                bounding_box=(0, 0, cap.width, cap.height),
+                app_type=ctx.app_type,
+                app_name=ctx.app_name,
             )
-            ctx.ocr_time_ms = (time.time() - t_ocr) * 1000
-            ctx.raw_ocr_boxes = ocr_boxes
-            ctx.ocr_text = " ".join(b.text for b in ocr_boxes) if ocr_boxes else ""
+            if ctx.layout:
+                for region in ctx.layout.regions:
+                    panel_type = self._layout_region_to_element_type(region.region_type)
+                    panel = window.add_panel(
+                        region_type=panel_type,
+                        label=region.label,
+                        bbox=region.bounds,
+                    )
+            desktop.add_window(window)
+            ctx.desktop = desktop
+            ctx.ui_tree_text = desktop.to_compact_str()
+            ctx.ui_tree_json = json.dumps(desktop.to_dict())
+            ctx.stages_run.append("ui_detection")
 
-            # ── Step 3: Build UI tree ──────────────────────
-            if include_tree and ocr_boxes:
-                t_tree = time.time()
-                desktop = self._detector.build_tree(
-                    ocr_boxes,
-                    ctx.active_window_title,
-                    cap.width,
-                    cap.height,
+        # ═══════════════════════════════════════════════════════════
+        # Stage 8: Semantic Reasoning
+        # ═══════════════════════════════════════════════════════════
+        if include_reasoning:
+            t_reason = time.perf_counter_ns()
+            try:
+                from services.screen_reasoning import screen_reasoner
+                screen_ctx = screen_reasoner.analyze(
+                    ocr_text=ctx.ocr_text,
+                    ui_tree_text=ctx.ui_tree_text,
                 )
-                ctx.desktop = desktop
-                ctx.ui_tree_text = desktop.to_compact_str()
-                ctx.vision_time_ms = (time.time() - t_tree) * 1000
-        else:
-            # No OCR — at least note what window is active
-            if include_tree:
-                desktop = UIDesktop()
-                window = UIWindow(
-                    title=ctx.active_window_title,
-                    bounding_box=(0, 0, cap.width, cap.height),
-                )
-                desktop.add_window(window)
-                ctx.desktop = desktop
-                ctx.ui_tree_text = desktop.to_compact_str()
+                ctx.page_type = screen_ctx.page_type
+                ctx.semantic_summary = screen_reasoner.context_description()
+                if screen_ctx.elements:
+                    ctx.interactive_elements_json = json.dumps(
+                        [{"type": e.type, "label": e.label, "position": list(e.position),
+                          "confidence": e.confidence} for e in screen_ctx.elements[:20]]
+                    )
+                if screen_ctx.error_elements:
+                    ctx.error_elements_json = json.dumps(
+                        [{"type": e.type, "label": e.label, "confidence": e.confidence}
+                         for e in screen_ctx.error_elements[:10]]
+                    )
+                ctx.reasoning_time_ms = (time.perf_counter_ns() - t_reason) / 1_000_000
+                ctx.stages_run.append("reasoning")
+                logger.info("[VISION] Stage 8 — Reasoning: page_type=%s errors=%d in %.1fms",
+                             ctx.page_type, len(screen_ctx.error_elements), ctx.reasoning_time_ms)
+            except Exception as e:
+                logger.warning("[VISION] Stage 8 — Reasoning FAILED: %s", e)
 
-        # ── Cache ──────────────────────────────────────────
+        # ═══════════════════════════════════════════════════════════
+        # Stage 9: Action Verification (optional)
+        # ═══════════════════════════════════════════════════════════
+        if verify_previous_action and self.use_verification:
+            t_verify = time.perf_counter_ns()
+            try:
+                changed, explanation = screen_memory.last_action_changed_ui()
+                ctx.verification = VerificationResult(
+                    success=changed,
+                    status=VerificationStatus.VERIFIED if changed else VerificationStatus.NO_CHANGE,
+                    explanation=explanation,
+                    frame_changed=changed,
+                    pre_action_hash=frame_differencer.prev_hash,
+                    post_action_hash=ctx.frame_hash,
+                )
+                ctx.verify_time_ms = (time.perf_counter_ns() - t_verify) / 1_000_000
+                ctx.stages_run.append("verify")
+                logger.info("[VISION] Stage 9 — Verify: changed=%s in %.1fms",
+                             changed, ctx.verify_time_ms)
+            except Exception as e:
+                logger.debug("[VISION] Stage 9 — Verify: %s", e)
+
+        # ═══════════════════════════════════════════════════════════
+        # Stage 10: Memory Update
+        # ═══════════════════════════════════════════════════════════
+        if self.use_memory:
+            t_memory = time.perf_counter_ns()
+            try:
+                snapshot = ScreenSnapshot(
+                    window_title=ctx.active_window_title,
+                    app_type=ctx.app_type,
+                    app_name=ctx.app_name,
+                    frame_hash=ctx.frame_hash,
+                    full_hash=frame_differencer.compute_full_hash(cap.image) if cap.image is not None else "",
+                    width=cap.width,
+                    height=cap.height,
+                    ocr_text=ctx.ocr_text,
+                    ui_tree_text=ctx.ui_tree_text,
+                    ui_tree_json=ctx.ui_tree_json,
+                    layout_json=json.dumps(ctx.layout.to_dict()) if ctx.layout else "",
+                    semantic_summary=ctx.semantic_summary,
+                    page_type=ctx.page_type,
+                    interactive_elements=ctx.interactive_elements_json,
+                    error_elements=ctx.error_elements_json,
+                    total_pipeline_ms=(time.perf_counter_ns() - t0) / 1_000_000,
+                    from_cache=False,
+                )
+                screen_memory.store(snapshot)
+                ctx.snapshot = snapshot
+                ctx.memory_time_ms = (time.perf_counter_ns() - t_memory) / 1_000_000
+                ctx.stages_run.append("memory")
+                logger.info("[VISION] Stage 10 — Memory: stored frame #%d in %.1fms",
+                             snapshot.frame_id, ctx.memory_time_ms)
+            except Exception as e:
+                logger.warning("[VISION] Stage 10 — Memory FAILED: %s", e)
+
+        # ── Cache and finalize ────────────────────────────────
         self._last_context = ctx
         self._analyze_count += 1
+        ctx.total_time_ms = (time.perf_counter_ns() - t0) / 1_000_000
 
-        ctx.total_time_ms = (time.time() - t0) * 1000
-        logger.info(
-            "[VisionService] Analysis complete: %.0fms (capture=%.0f ocr=%.0f tree=%.0f) "
-            "window='%s' ocr_boxes=%d",
-            ctx.total_time_ms,
-            ctx.capture_time_ms,
-            ctx.ocr_time_ms,
-            ctx.vision_time_ms,
-            ctx.active_window_title,
-            len(ctx.raw_ocr_boxes),
-        )
+        logger.info("[VISION] Pipeline complete: stages=%s total=%.1fms window='%s' ocr_boxes=%d",
+                     "+".join(ctx.stages_run), ctx.total_time_ms,
+                     ctx.active_window_title[:60],
+                     ctx.ocr_result.box_count_final if ctx.ocr_result else 0)
         return ctx
+
+    # ── UI Tree builder (stage 7 internals) ──────────────────────
+
+    def _build_ui_tree(self, ctx: VisionContext) -> UIDesktop:
+        """
+        Build the full semantic UI tree from OCR boxes + layout regions.
+
+        Produces a hierarchical tree:
+          Desktop → Window → [Toolbar, Sidebar, Editor, ...] → [Button, Text, Tab, ...]
+        """
+        desktop = UIDesktop()
+        window = UIWindow(
+            title=ctx.active_window_title,
+            bounding_box=(0, 0, ctx.capture.width if ctx.capture else 0,
+                          ctx.capture.height if ctx.capture else 0),
+            app_type=ctx.app_type,
+            app_name=ctx.app_name,
+        )
+
+        app_type_enum = ApplicationType(ctx.app_type) if ctx.app_type else ApplicationType.UNKNOWN
+
+        # ── Add layout region panels ──────────────────────
+        if ctx.layout:
+            for region in ctx.layout.regions:
+                panel_type = self._layout_region_to_element_type(region.region_type)
+                panel = window.add_panel(
+                    region_type=panel_type,
+                    label=region.label,
+                    bbox=region.bounds,
+                )
+
+                # Place OCR boxes into their region panel
+                if ctx.raw_ocr_boxes:
+                    for box in ctx.raw_ocr_boxes:
+                        if self._box_in_region(box, region.bounds):
+                            element = self._ocr_box_to_ui_element(box, app_type_enum)
+                            panel.add_child(element)
+
+        # ── Add OCR boxes that don't fit in any region ─────
+        if ctx.raw_ocr_boxes and ctx.layout:
+            for box in ctx.raw_ocr_boxes:
+                placed = False
+                for region in ctx.layout.regions:
+                    if self._box_in_region(box, region.bounds):
+                        placed = True
+                        break
+                if not placed:
+                    element = self._ocr_box_to_ui_element(box, app_type_enum)
+                    window.add_child(element)
+        elif ctx.raw_ocr_boxes:
+            # No layout — place all OCR boxes directly in window
+            for box in sorted(ctx.raw_ocr_boxes, key=lambda b: (b.y, b.x)):
+                element = self._ocr_box_to_ui_element(box, app_type_enum)
+                window.add_child(element)
+
+        # ── Add dialogs detected from OCR ──────────────────
+        if ctx.layout and ctx.raw_ocr_boxes:
+            try:
+                dialogs = layout_analyzer.detect_dialogs(
+                    ctx.raw_ocr_boxes,
+                    ctx.capture.width if ctx.capture else 1920,
+                    ctx.capture.height if ctx.capture else 1080,
+                )
+                for dlg_region in dialogs:
+                    dialog = UIElement(
+                        element_type=ElementType.DIALOG,
+                        label=dlg_region.label,
+                        bounding_box=dlg_region.bounds,
+                        confidence=dlg_region.confidence,
+                    )
+                    window.add_child(dialog)
+            except Exception:
+                pass
+
+        desktop.add_window(window)
+
+        # ── Post-processing ───────────────────────────────
+        try:
+            # Detect tab groups
+            from services.vision_service import _detect_tab_groups
+            _detect_tab_groups(window.element)
+        except Exception:
+            pass
+
+        return desktop
+
+    @staticmethod
+    def _layout_region_to_element_type(region_type: str) -> ElementType:
+        """Map layout RegionType to UI ElementType."""
+        mapping = {
+            "desktop": ElementType.DESKTOP,
+            "window": ElementType.WINDOW,
+            "toolbar": ElementType.TOOLBAR,
+            "menu_bar": ElementType.MENU_BAR,
+            "tab_bar": ElementType.TAB_BAR,
+            "sidebar": ElementType.SIDEBAR,
+            "left_panel": ElementType.LEFT_PANEL,
+            "right_panel": ElementType.RIGHT_PANEL,
+            "bottom_panel": ElementType.BOTTOM_PANEL,
+            "editor": ElementType.EDITOR,
+            "content": ElementType.CONTENT,
+            "status_bar": ElementType.STATUS_BAR,
+            "title_bar": ElementType.TITLE_BAR,
+            "navigation": ElementType.NAVIGATION,
+            "scrollbar": ElementType.SCROLLBAR,
+            "minimap": ElementType.MINIMAP,
+            "dialog": ElementType.DIALOG,
+            "popup": ElementType.POPUP,
+            "notification": ElementType.NOTIFICATION,
+            "taskbar": ElementType.TASKBAR,
+            "dock": ElementType.DOCK,
+            "system_tray": ElementType.SYSTEM_TRAY,
+        }
+        return mapping.get(region_type, ElementType.PANEL)
+
+    @staticmethod
+    def _box_in_region(box: OCRBox, region_bounds: Tuple[int, int, int, int]) -> bool:
+        """Check if an OCR box falls within a region."""
+        rx, ry, rw, rh = region_bounds
+        return (
+            box.x >= rx and box.y >= ry
+            and (box.x + box.width) <= (rx + rw)
+            and (box.y + box.height) <= (ry + rh)
+        )
+
+    @staticmethod
+    def _ocr_box_to_ui_element(box: OCRBox, app_type: ApplicationType) -> UIElement:
+        """
+        Classify an OCR box into a UI element type.
+
+        Uses text content, position, and application type to determine
+        the most likely element type.
+        """
+        text = box.text.strip()
+        text_lower = text.lower()
+        x, y, w, h = box.bbox
+        text_len = len(text)
+
+        # Buttons (action words)
+        button_words = {
+            "ok", "cancel", "yes", "no", "submit", "save", "delete", "close",
+            "apply", "reset", "confirm", "dismiss", "back", "next", "finish",
+            "done", "build", "run", "debug", "start", "stop", "restart",
+            "deploy", "commit", "push", "pull", "merge", "install", "update",
+            "settings", "options", "preferences", "help", "about", "exit", "quit",
+            "login", "logout", "sign in", "sign up", "register", "download",
+            "upload", "play", "pause", "mute", "add", "remove", "create",
+            "enable", "disable", "on", "off", "retry", "skip", "search",
+            "clear", "refresh", "reload",
+        }
+        if text_lower in button_words and text_len <= 15:
+            return UIElement(
+                element_type=ElementType.BUTTON,
+                label=text, bounding_box=box.bbox,
+                confidence=box.confidence, metadata={"role": "button"},
+            )
+
+        # Menu items (short, at top)
+        menu_words = {"file", "edit", "view", "tools", "window", "help",
+                      "navigate", "code", "refactor", "run", "debug", "build",
+                      "vcs", "git", "bookmarks", "history"}
+        if text_lower in menu_words and y < 80:
+            return UIElement(
+                element_type=ElementType.MENU_ITEM,
+                label=text, bounding_box=box.bbox,
+                confidence=box.confidence, metadata={"role": "menuitem"},
+            )
+
+        # Tabs (file extensions)
+        if re.match(r'.*\.(py|js|ts|html|css|json|yaml|yml|md|txt|java|cpp|c|h|rs|go|rb|php|sql)$',
+                     text, re.IGNORECASE):
+            return UIElement(
+                element_type=ElementType.TAB,
+                label=text, bounding_box=box.bbox,
+                confidence=box.confidence, metadata={"role": "tab"},
+            )
+
+        # Links
+        if text.startswith(("http://", "https://", "www.")):
+            return UIElement(
+                element_type=ElementType.LINK,
+                label=text, bounding_box=box.bbox,
+                confidence=box.confidence, metadata={"role": "link"},
+            )
+
+        # Checkboxes
+        if text.startswith(("☐", "☑", "☒", "○", "●", "[ ]", "[x]", "( )", "(*)")):
+            return UIElement(
+                element_type=ElementType.CHECKBOX,
+                label=text, bounding_box=box.bbox,
+                confidence=box.confidence, metadata={"role": "checkbox"},
+            )
+
+        # Code (in IDE editor region)
+        if app_type.is_ide and (
+            any(kw in text for kw in ("def ", "class ", "import ", "from ", "return ",
+                                       "const ", "let ", "function", "Error:", "Traceback",
+                                       "Exception"))
+            or re.match(r'^\s*\d+\s*[:|]', text)  # line numbers
+        ):
+            return UIElement(
+                element_type=ElementType.TEXT,
+                label=text, bounding_box=box.bbox,
+                confidence=box.confidence, metadata={"role": "code"},
+            )
+
+        # Labels (short, at top or next to inputs)
+        if text_len <= 30 and text.endswith(":"):
+            return UIElement(
+                element_type=ElementType.LABEL,
+                label=text, bounding_box=box.bbox,
+                confidence=box.confidence, metadata={"role": "label"},
+            )
+
+        # Default: general text
+        return UIElement(
+            element_type=ElementType.TEXT,
+            label=text, bounding_box=box.bbox,
+            confidence=box.confidence, metadata={"role": "text"},
+        )
+
+    # ═══════════════════════════════════════════════════════════════
+    # Public API (backward compatible)
+    # ═══════════════════════════════════════════════════════════════
 
     async def force_analyze(self) -> VisionContext:
         """Always run the full pipeline (bypasses gating)."""
@@ -756,31 +822,27 @@ class VisionService(BaseService):
         """
         Return a compact text summary for LLM prompt injection.
 
-        Uses frame-difference gating: returns cached text if the screen
-        hasn't changed since the last analysis.
-
         This is the primary interface for the conversation engine —
         called when a user asks about their screen.
+        Uses frame-difference gating.
         """
         ctx = await self.analyze(force=False)
         return ctx.compact_summary
 
     async def ocr_only(self) -> str:
-        """Run OCR only (no UI tree) and return raw text."""
-        ctx = await self.analyze(force=False, include_tree=False)
+        """Run OCR only and return raw text."""
+        ctx = await self.analyze(force=False, include_tree=False, include_layout=False,
+                                  include_reasoning=False)
         return ctx.ocr_text
 
     async def ui_tree(self, force: bool = False) -> Optional[UIDesktop]:
-        """Return the current structured UI tree, or None."""
+        """Return the current structured UI tree."""
         ctx = await self.analyze(force=force)
         return ctx.desktop
 
-    async def find_element(self, label: str, element_type: Optional[ElementType] = None) -> List[UIElement]:
-        """
-        Search the UI tree for elements matching a label and optional type.
-
-        Returns a list of matching elements (may be empty).
-        """
+    async def find_element(self, label: str,
+                            element_type: Optional[ElementType] = None) -> List[UIElement]:
+        """Search the UI tree for elements matching a label and optional type."""
         ctx = await self.analyze(force=True)
         if ctx.desktop is None:
             return []
@@ -793,28 +855,50 @@ class VisionService(BaseService):
         return results
 
     async def click_element(self, label: str) -> Optional[Tuple[int, int]]:
-        """
-        Find a clickable element by label and return its centre coordinates.
-
-        Returns (x, y) or None if no matching clickable element is found.
-        """
+        """Find a clickable element by label and return its center coordinates."""
         elements = await self.find_element(label)
-        # Prefer buttons, then any clickable type
-        clickable_types = {ElementType.BUTTON, ElementType.LINK, ElementType.TAB,
-                           ElementType.MENU_ITEM, ElementType.CHECKBOX, ElementType.ICON}
+        clickable_types = {
+            ElementType.BUTTON, ElementType.LINK, ElementType.TAB,
+            ElementType.MENU_ITEM, ElementType.CHECKBOX, ElementType.ICON,
+            ElementType.TOGGLE, ElementType.SWITCH,
+        }
         for el in elements:
-            if el.element_type in clickable_types and el.bounding_box:
-                cx = el.x + el.width // 2
-                cy = el.y + el.height // 2
-                logger.info("[VisionService] click_element '%s' → (%d, %d)", label, cx, cy)
+            if el.element_type in clickable_types and el.bounding_box and el.enabled:
+                cx, cy = el.center
+                logger.info("[VISION] click_element '%s' → (%d, %d)", label, cx, cy)
                 return (cx, cy)
         # Fallback: any element with matching label
         for el in elements:
             if el.bounding_box:
-                cx = el.x + el.width // 2
-                cy = el.y + el.height // 2
+                cx, cy = el.center
                 return (cx, cy)
         return None
+
+    # ── Memory-based queries ─────────────────────────────────────
+
+    async def what_changed(self) -> str:
+        """Describe what changed since the previous frame."""
+        return screen_memory.what_changed()
+
+    async def verify_last_action(self) -> VerificationResult:
+        """Verify whether the last action changed the UI."""
+        changed, explanation = screen_memory.last_action_changed_ui()
+        return VerificationResult(
+            success=changed,
+            status=VerificationStatus.VERIFIED if changed else VerificationStatus.NO_CHANGE,
+            explanation=explanation,
+            frame_changed=changed,
+        )
+
+    def record_action(self, action_description: str) -> None:
+        """Record an action for future verification."""
+        action_verifier.capture_pre_action()
+        screen_memory.record_action(action_description)
+        logger.info("[VISION] Action recorded: %s", action_description[:80])
+
+    async def get_screen_history(self, max_frames: int = 3) -> str:
+        """Return recent screen history for LLM context."""
+        return screen_memory.context_for_llm(max_frames)
 
     # ── Diagnostics ───────────────────────────────────────────────
 
@@ -827,6 +911,11 @@ class VisionService(BaseService):
         return self._skip_count
 
     @property
+    def skip_ratio(self) -> float:
+        total = self._analyze_count + self._skip_count
+        return self._skip_count / max(total, 1)
+
+    @property
     def last_tree(self) -> Optional[str]:
         """Return the last UI tree as a compact string (for debugging)."""
         if self._last_context:
@@ -836,8 +925,519 @@ class VisionService(BaseService):
     def clear_cache(self) -> None:
         """Clear the last analysis cache (force next analyze to re-run)."""
         self._last_context = None
-        self._last_frame_hash = ""
-        self._last_window_title = ""
+        frame_differencer.reset()
+        screen_memory.clear()
+        logger.info("[VISION] Cache cleared")
+
+    def report(self) -> Dict[str, Any]:
+        """Return a full diagnostic report."""
+        return {
+            "analyze_count": self._analyze_count,
+            "skip_count": self._skip_count,
+            "skip_ratio": f"{self.skip_ratio:.1%}",
+            "ocr_backend": enhanced_ocr.active_backend,
+            "ocr_ready": self._ocr_ready,
+            "opencv": _HAS_CV2,
+            "frame_differencer": frame_differencer.report(),
+            "screen_memory": screen_memory.report(),
+            "action_verifier": action_verifier.report(),
+            "last_context": {
+                "window_title": self._last_context.active_window_title[:60] if self._last_context else "",
+                "app_type": self._last_context.app_type if self._last_context else "",
+                "page_type": self._last_context.page_type if self._last_context else "",
+                "total_ms": round(self._last_context.total_time_ms, 1) if self._last_context else 0,
+            } if self._last_context else {},
+        }
+
+    # ═══════════════════════════════════════════════════════════════
+    # FORENSIC DEBUG VISION — full pipeline with per-stage audit
+    # ═══════════════════════════════════════════════════════════════
+
+    async def analyze_forensic(self, force: bool = True,
+                                source: str = "active_window") -> Tuple[VisionContext, ForensicReport]:
+        """
+        Run the full pipeline with forensic logging at every stage.
+
+        Every stage logs: INPUT, OUTPUT, LATENCY, CONFIDENCE, FAILURE REASON.
+        Never silently fails — every failure explains exactly why.
+
+        Also updates the debug_overlay if enabled.
+
+        Returns:
+            (VisionContext, ForensicReport)
+        """
+        forensic_logger.start()
+
+        # ── Stage 1: Capture ────────────────────────────
+        forensic_logger.begin_stage(1, "Capture", f"source={source}")
+        t_cap = time.perf_counter_ns()
+        if source == "active_window":
+            cap = await screen_capture_service.capture_active_window()
+        else:
+            cap = await screen_capture_service.capture_fullscreen()
+
+        if cap is None or not cap.is_valid:
+            forensic_logger.log_failure(
+                "Window capture failed. No image returned.",
+                capture_result=str(cap),
+            )
+            ctx = VisionContext()
+            ctx.error = "[VISION] Stage 1 FAILED: capture returned None or invalid image"
+            ctx.total_time_ms = (time.perf_counter_ns() - t_cap) / 1_000_000
+            return ctx, forensic_logger.finish()
+
+        cap_time = (time.perf_counter_ns() - t_cap) / 1_000_000
+        forensic_logger.log_output(
+            f"{cap.width}x{cap.height} source={cap.source_label}",
+            confidence=1.0,
+            resolution=f"{cap.width}x{cap.height}",
+            source_label=cap.source_label,
+            capture_latency_ms=round(cap_time, 1),
+        )
+
+        ctx = VisionContext()
+        ctx.capture = cap
+        ctx.capture_time_ms = cap_time
+        ctx.active_window_title = cap.source_label.replace("window:", "").split(" (fullscreen")[0]
+        ctx.stages_run.append("capture")
+
+        # ── Stage 2: Frame Hash ──────────────────────────
+        forensic_logger.begin_stage(2, "Frame Hash", f"image {cap.width}x{cap.height}")
+        ctx.frame_hash = frame_differencer.compute_phash(cap.image) if cap.image is not None else ""
+        hash_time = (time.perf_counter_ns() - time.perf_counter_ns())  # approximate
+        if ctx.frame_hash:
+            forensic_logger.log_output(
+                f"hash={ctx.frame_hash}",
+                confidence=1.0,
+                hash_value=ctx.frame_hash,
+            )
+        else:
+            forensic_logger.log_failure(
+                "Frame hash computation returned empty string.",
+                image_present=cap.image is not None,
+            )
+        ctx.stages_run.append("hash")
+
+        # ── Stage 3: Motion Detection ────────────────────
+        forensic_logger.begin_stage(3, "Motion Detection", f"hash={ctx.frame_hash[:8]}")
+        t_motion = time.perf_counter_ns()
+        if cap.image is not None:
+            ctx.frame_diff = frame_differencer.compute_motion(cap.image)
+            ctx.stages_run.append("motion")
+            motion_time = (time.perf_counter_ns() - t_motion) / 1_000_000
+            forensic_logger.log_output(
+                ctx.frame_diff.summary,
+                confidence=0.0 if ctx.frame_diff.same else 0.8,
+                pixel_change=round(ctx.frame_diff.pixel_change_ratio, 5),
+                motion_regions=len(ctx.frame_diff.motion_regions),
+                same=ctx.frame_diff.same,
+            )
+        else:
+            forensic_logger.log_output(
+                "SKIPPED (no image)",
+                confidence=0.0,
+                reason="No image to compute motion on",
+            )
+
+        # ── Stage 4: Gating Decision ─────────────────────
+        forensic_logger.begin_stage(4, "Gating Decision",
+                                     f"force={force} window='{ctx.active_window_title[:40]}'")
+        ctx.gating = frame_differencer.should_process(
+            force=force,
+            window_title=ctx.active_window_title,
+            planner_requested=False,
+        )
+        ctx.stages_run.append("gating")
+        forensic_logger.log_output(
+            f"process={ctx.gating.should_process} reason='{ctx.gating.reason}' quality={ctx.gating.quality}",
+            confidence=1.0,
+            should_process=ctx.gating.should_process,
+            reason=ctx.gating.reason,
+            quality=ctx.gating.quality,
+        )
+
+        # Return cached if gating says skip
+        if not ctx.gating.should_process and self._last_context is not None:
+            self._skip_count += 1
+            cached = self._last_context
+            cached.total_time_ms = (time.perf_counter_ns() - time.perf_counter_ns())  # approx
+            cached.from_cache = True
+            forensic_logger.log_output(
+                "CACHED RETURN",
+                confidence=1.0,
+                cache_hit=True,
+            )
+            logger.info("[FORENSIC] Pipeline complete (cached): total=%.1fms",
+                         forensic_logger.finish().total_latency_ms)
+            return cached, forensic_logger.finish()
+
+        # Store current frame
+        if cap.image is not None:
+            frame_differencer.store_frame(cap.image, ctx.active_window_title)
+        ctx.stages_run.append("process")
+
+        # ── Stage 5: Layout Analysis ─────────────────────
+        forensic_logger.begin_stage(5, "Layout Analysis",
+                                     f"window='{ctx.active_window_title[:40]}' {cap.width}x{cap.height}")
+        if self.use_layout:
+            t_layout = time.perf_counter_ns()
+            try:
+                app_type, app_name, app_conf = layout_analyzer.detect_application(
+                    window_title=ctx.active_window_title,
+                    process_name=ctx.active_window_process,
+                    pid=ctx.active_window_pid,
+                )
+                ctx.app_type = app_type.value if isinstance(app_type, ApplicationType) else app_type
+                ctx.app_name = app_name
+
+                ctx.layout = layout_analyzer.segment_layout(
+                    app_type=app_type if isinstance(app_type, ApplicationType) else ApplicationType.UNKNOWN,
+                    window_width=cap.width,
+                    window_height=cap.height,
+                    window_title=ctx.active_window_title,
+                )
+                ctx.layout_time_ms = (time.perf_counter_ns() - t_layout) / 1_000_000
+                ctx.stages_run.append("layout")
+                forensic_logger.log_output(
+                    f"app={ctx.app_type}/{ctx.app_name} regions={len(ctx.layout.regions) if ctx.layout else 0}",
+                    confidence=float(app_conf) if isinstance(app_conf, (int, float)) else 0.8,
+                    app_type=ctx.app_type,
+                    app_name=ctx.app_name,
+                    regions=len(ctx.layout.regions) if ctx.layout else 0,
+                )
+            except Exception as e:
+                forensic_logger.log_failure(
+                    f"Layout analysis exception: {e}",
+                    exception_type=type(e).__name__,
+                )
+        else:
+            forensic_logger.log_output(
+                "SKIPPED (use_layout=False)",
+                confidence=0.0,
+            )
+
+        # ── Stage 6: OCR ─────────────────────────────────
+        forensic_logger.begin_stage(6, "OCR",
+                                     f"preprocess={self.preprocess_for_ocr} backend={enhanced_ocr.active_backend}")
+        if self.use_ocr and enhanced_ocr.ready and cap.image is not None:
+            t_ocr = time.perf_counter_ns()
+            try:
+                ctx.ocr_result = await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: enhanced_ocr.ocr(cap.image, preprocess=self.preprocess_for_ocr),
+                )
+                ctx.ocr_text = ctx.ocr_result.text
+                ctx.raw_ocr_boxes = ctx.ocr_result.boxes
+                ctx.ocr_time_ms = (time.perf_counter_ns() - t_ocr) / 1_000_000
+                ctx.stages_run.append("ocr")
+
+                if ctx.ocr_result.box_count_final == 0:
+                    forensic_logger.log_output(
+                        "No OCR text detected.",
+                        confidence=0.0,
+                        success=True,
+                        failure_reason="0 boxes after filtering/merging/dedup. Screen may be empty or rendering graphics-only content.",
+                        boxes_raw=ctx.ocr_result.box_count_raw,
+                        boxes_final=0,
+                        merged=ctx.ocr_result.merged_count,
+                        deduped=ctx.ocr_result.dedup_count,
+                    )
+                else:
+                    forensic_logger.log_output(
+                        f"{ctx.ocr_result.box_count_final} boxes avg_conf={ctx.ocr_result.avg_confidence:.3f}",
+                        confidence=ctx.ocr_result.avg_confidence,
+                        boxes_raw=ctx.ocr_result.box_count_raw,
+                        boxes_final=ctx.ocr_result.box_count_final,
+                        merged=ctx.ocr_result.merged_count,
+                        deduped=ctx.ocr_result.dedup_count,
+                        avg_confidence=round(ctx.ocr_result.avg_confidence, 3),
+                        backend=ctx.ocr_result.backend,
+                        text_preview=ctx.ocr_text[:100],
+                    )
+            except Exception as e:
+                forensic_logger.log_failure(
+                    f"OCR engine exception: {e}",
+                    exception_type=type(e).__name__,
+                )
+                ctx.ocr_result = None
+                ctx.ocr_text = ""
+        else:
+            reason = ""
+            if not self.use_ocr:
+                reason = "use_ocr=False"
+            elif not enhanced_ocr.ready:
+                reason = f"OCR backend '{enhanced_ocr.active_backend}' not ready"
+            elif cap.image is None:
+                reason = "No capture image"
+            forensic_logger.log_failure(
+                f"OCR skipped: {reason}",
+                ocr_configured=self.use_ocr,
+                ocr_ready=enhanced_ocr.ready,
+                has_image=cap.image is not None,
+            )
+
+        # ── Stage 7: UI Detection ────────────────────────
+        forensic_logger.begin_stage(7, "UI Detection",
+                                     f"ocr_boxes={len(ctx.raw_ocr_boxes)} layout={'yes' if ctx.layout else 'no'}")
+        if ctx.raw_ocr_boxes:
+            t_ui = time.perf_counter_ns()
+            try:
+                desktop = self._build_ui_tree(ctx)
+                ctx.desktop = desktop
+                ctx.ui_tree_text = desktop.to_compact_str() if desktop else ""
+                ctx.ui_tree_json = json.dumps(desktop.to_dict()) if desktop else ""
+                ctx.ui_time_ms = (time.perf_counter_ns() - t_ui) / 1_000_000
+                ctx.stages_run.append("ui_detection")
+
+                # Count by type
+                all_el = desktop.walk()
+                type_counts: Dict[str, int] = {}
+                for el in all_el:
+                    t = el.element_type.value
+                    type_counts[t] = type_counts.get(t, 0) + 1
+
+                forensic_logger.log_output(
+                    f"{len(all_el)} elements in {len(desktop.windows)} windows",
+                    confidence=0.8,
+                    total_elements=len(all_el),
+                    windows=len(desktop.windows),
+                    type_counts=type_counts,
+                    buttons=type_counts.get("button", 0),
+                    inputs=type_counts.get("input", 0) + type_counts.get("textbox", 0),
+                    menus=type_counts.get("menu_item", 0),
+                    dialogs=type_counts.get("dialog", 0),
+                )
+            except Exception as e:
+                forensic_logger.log_failure(
+                    f"UI tree construction failed: {e}",
+                    exception_type=type(e).__name__,
+                )
+                ctx.desktop = None
+                ctx.ui_tree_text = ""
+        else:
+            # Build minimal tree from layout
+            t_ui = time.perf_counter_ns()
+            desktop = UIDesktop()
+            window = UIWindow(
+                title=ctx.active_window_title,
+                bounding_box=(0, 0, cap.width, cap.height),
+                app_type=ctx.app_type,
+                app_name=ctx.app_name,
+            )
+            if ctx.layout:
+                for region in ctx.layout.regions:
+                    panel_type = self._layout_region_to_element_type(region.region_type)
+                    window.add_panel(
+                        region_type=panel_type,
+                        label=region.label,
+                        bbox=region.bounds,
+                    )
+            desktop.add_window(window)
+            ctx.desktop = desktop
+            ctx.ui_tree_text = desktop.to_compact_str()
+            ctx.ui_tree_json = json.dumps(desktop.to_dict())
+            ctx.ui_time_ms = (time.perf_counter_ns() - t_ui) / 1_000_000
+            ctx.stages_run.append("ui_detection")
+            forensic_logger.log_output(
+                f"Minimal tree (no OCR): {len(ctx.layout.regions) if ctx.layout else 0} layout regions",
+                confidence=0.3,
+                failure_reason="No OCR boxes available — UI tree built from layout regions only",
+                has_ocr=False,
+                has_layout=ctx.layout is not None,
+            )
+
+        # ── Stage 8: Semantic Reasoning ──────────────────
+        forensic_logger.begin_stage(8, "Semantic Reasoning",
+                                     f"ocr_chars={len(ctx.ocr_text)} ui_tree_lines={len(ctx.ui_tree_text.split(chr(10)))}")
+        t_reason = time.perf_counter_ns()
+        try:
+            from services.screen_reasoning import screen_reasoner
+            screen_ctx = screen_reasoner.analyze(
+                ocr_text=ctx.ocr_text,
+                ui_tree_text=ctx.ui_tree_text,
+            )
+            ctx.page_type = screen_ctx.page_type
+            ctx.semantic_summary = screen_reasoner.context_description()
+            if screen_ctx.elements:
+                ctx.interactive_elements_json = json.dumps(
+                    [{"type": e.type, "label": e.label, "position": list(e.position),
+                      "confidence": e.confidence} for e in screen_ctx.elements[:20]]
+                )
+            if screen_ctx.error_elements:
+                ctx.error_elements_json = json.dumps(
+                    [{"type": e.type, "label": e.label, "confidence": e.confidence}
+                     for e in screen_ctx.error_elements[:10]]
+                )
+            ctx.reasoning_time_ms = (time.perf_counter_ns() - t_reason) / 1_000_000
+            ctx.stages_run.append("reasoning")
+
+            # Ask the reasoning questions
+            questions = [
+                "What application is open?",
+                "What window?",
+                "What toolbar?",
+                "What dialog?",
+                "What buttons?",
+                "What text?",
+                "What error?",
+            ]
+            answers = []
+            if ctx.app_type:
+                answers.append(f"App: {ctx.app_type}/{ctx.app_name}")
+            if ctx.active_window_title:
+                answers.append(f"Window: {ctx.active_window_title[:60]}")
+            if ctx.page_type:
+                answers.append(f"Page type: {ctx.page_type}")
+            if ctx.semantic_summary:
+                answers.append(f"Summary: {ctx.semantic_summary[:80]}")
+
+            forensic_logger.log_output(
+                " | ".join(answers) if answers else ctx.page_type,
+                confidence=0.7,
+                page_type=ctx.page_type,
+                has_dialog=screen_ctx.has_dialog,
+                has_notification=screen_ctx.has_notification,
+                interactive_count=len(screen_ctx.elements),
+                error_count=len(screen_ctx.error_elements),
+            )
+        except Exception as e:
+            forensic_logger.log_failure(
+                f"Semantic reasoning failed: {e}",
+                exception_type=type(e).__name__,
+            )
+
+        # ── Stage 9: Action Verification ─────────────────
+        forensic_logger.begin_stage(9, "Action Verification", f"verify_previous={verify_previous_action}")
+        if verify_previous_action and self.use_verification:
+            t_verify = time.perf_counter_ns()
+            try:
+                changed, explanation = screen_memory.last_action_changed_ui()
+                ctx.verification = VerificationResult(
+                    success=changed,
+                    status=VerificationStatus.VERIFIED if changed else VerificationStatus.NO_CHANGE,
+                    explanation=explanation,
+                    frame_changed=changed,
+                    pre_action_hash=frame_differencer.prev_hash,
+                    post_action_hash=ctx.frame_hash,
+                )
+                ctx.verify_time_ms = (time.perf_counter_ns() - t_verify) / 1_000_000
+                ctx.stages_run.append("verify")
+                forensic_logger.log_output(
+                    f"changed={changed}: {explanation}",
+                    confidence=1.0 if changed else 0.0,
+                    success=changed,
+                    failure_reason="" if changed else "Click verification failed because frame hash did not change.",
+                    pre_hash=frame_differencer.prev_hash[:8],
+                    post_hash=ctx.frame_hash[:8],
+                )
+            except Exception as e:
+                forensic_logger.log_failure(
+                    f"Verification error: {e}",
+                    exception_type=type(e).__name__,
+                )
+        else:
+            forensic_logger.log_output(
+                "SKIPPED (not requested or verification disabled)",
+                confidence=0.0,
+            )
+
+        # ── Stage 10: Memory Update ──────────────────────
+        forensic_logger.begin_stage(10, "Memory Update", f"frames_stored={screen_memory.count}")
+        if self.use_memory:
+            t_memory = time.perf_counter_ns()
+            try:
+                snapshot = ScreenSnapshot(
+                    window_title=ctx.active_window_title,
+                    app_type=ctx.app_type,
+                    app_name=ctx.app_name,
+                    frame_hash=ctx.frame_hash,
+                    full_hash=frame_differencer.compute_full_hash(cap.image) if cap.image is not None else "",
+                    width=cap.width,
+                    height=cap.height,
+                    ocr_text=ctx.ocr_text,
+                    ui_tree_text=ctx.ui_tree_text,
+                    ui_tree_json=ctx.ui_tree_json,
+                    layout_json=json.dumps(ctx.layout.to_dict()) if ctx.layout else "",
+                    semantic_summary=ctx.semantic_summary,
+                    page_type=ctx.page_type,
+                    interactive_elements=ctx.interactive_elements_json,
+                    error_elements=ctx.error_elements_json,
+                    total_pipeline_ms=(time.perf_counter_ns() - time.perf_counter_ns()),
+                    from_cache=False,
+                )
+                screen_memory.store(snapshot)
+                ctx.snapshot = snapshot
+                ctx.memory_time_ms = (time.perf_counter_ns() - t_memory) / 1_000_000
+                ctx.stages_run.append("memory")
+                forensic_logger.log_output(
+                    f"Stored frame #{snapshot.frame_id} ({screen_memory.count} total)",
+                    confidence=1.0,
+                    frame_id=snapshot.frame_id,
+                    total_frames=screen_memory.count,
+                )
+            except Exception as e:
+                forensic_logger.log_failure(
+                    f"Memory store failed: {e}",
+                    exception_type=type(e).__name__,
+                )
+        else:
+            forensic_logger.log_output(
+                "SKIPPED (use_memory=False)",
+                confidence=0.0,
+            )
+
+        # ── Finalize ─────────────────────────────────────
+        self._last_context = ctx
+        self._analyze_count += 1
+        ctx.total_time_ms = (time.perf_counter_ns() - time.perf_counter_ns())  # will be overridden
+
+        report = forensic_logger.finish()
+        ctx.total_time_ms = report.total_latency_ms
+
+        # Update debug overlay if enabled
+        if debug_overlay.enabled:
+            debug_overlay.update_from_context(
+                ctx,
+                planner_target="",
+                status=f"Pipeline: {report.total_latency_ms:.1f}ms | "
+                       f"OCR: {ctx.ocr_result.box_count_final if ctx.ocr_result else 0} boxes | "
+                       f"UI: {len(ctx.desktop.walk()) if ctx.desktop else 0} elements | "
+                       f"Page: {ctx.page_type}"
+            )
+
+        logger.info("[FORENSIC] Pipeline complete: %d stages total=%.1fms errors=%d warnings=%d",
+                     len(report.stages), report.total_latency_ms,
+                     report.error_count, report.warning_count)
+        return ctx, report
+
+
+# ── Standalone helper (was a static method in the old UIDetector) ─
+
+def _detect_tab_groups(window_element: UIElement) -> None:
+    """Cluster adjacent tabs into groups."""
+    tabs = window_element.find_by_type(ElementType.TAB)
+    if len(tabs) < 2:
+        return
+
+    tabs_sorted = sorted(tabs, key=lambda t: t.x)
+    groups: List[List[UIElement]] = []
+    current_group = [tabs_sorted[0]]
+
+    for i in range(1, len(tabs_sorted)):
+        prev = tabs_sorted[i - 1]
+        curr = tabs_sorted[i]
+        if abs(curr.y - prev.y) <= 10 and (curr.x - (prev.x + prev.width)) <= 200:
+            current_group.append(curr)
+        else:
+            groups.append(current_group)
+            current_group = [curr]
+    groups.append(current_group)
+
+    for group in groups:
+        if len(group) > 1:
+            group[0].metadata["active"] = True
+            for tab in group[1:]:
+                tab.metadata["active"] = False
 
 
 # Global singleton

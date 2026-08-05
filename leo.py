@@ -282,6 +282,141 @@ def cmd_status() -> None:
     print(f"  Face encodings: {'present' if ep.exists() else 'MISSING'}")
 
 
+async def cmd_debug_vision() -> None:
+    """
+    `leo debug vision` — Open the live debug overlay.
+
+    Runs the forensic vision pipeline continuously and renders
+    the debug overlay showing:
+      - Green boxes: detected UI buttons/interactables
+      - Red boxes: discarded OCR
+      - White boxes: layout regions
+      - Magenta: planner target
+      - Cyan: mouse position
+      - Window name, frame hash, pipeline latency
+      - OCR confidence per box
+    """
+    from services.vision_service import vision_service
+    from services.screen_capture import screen_capture_service
+    from vision.debug_overlay import debug_overlay
+    from vision.forensic_logger import forensic_logger
+
+    # Initialize capture
+    print("Initializing screen capture...")
+    await screen_capture_service._start()
+    if not screen_capture_service.ready:
+        print("ERROR: Screen capture backend not available. Install mss: pip install mss")
+        return
+
+    # Initialize vision service
+    print("Initializing vision service...")
+    await vision_service._start()
+
+    # Enable overlay
+    debug_overlay.toggle()
+    print("\n" + "=" * 60)
+    print("  LEO DEBUG VISION — Live Overlay Active")
+    print("  Press Ctrl+C to stop")
+    print("=" * 60)
+    print()
+    print("Overlay shows:")
+    print("  Green boxes  = Buttons / clickable elements")
+    print("  Red boxes    = Discarded OCR (didn't become UI elements)")
+    print("  White boxes  = Layout regions (toolbar, sidebar, editor...)")
+    print("  Magenta      = Planner target")
+    print("  Cyan         = Mouse position")
+    print()
+
+    try:
+        frame = 0
+        while True:
+            frame += 1
+            print(f"\r  Frame #{frame} — capturing...", end="", flush=True)
+
+            ctx, report = await vision_service.analyze_forensic(force=True)
+
+            # Print per-stage summary
+            print(f"\r  Frame #{frame}: {ctx.capture.width}x{ctx.capture.height} | "
+                  f"App: {ctx.app_type}/{ctx.app_name} | "
+                  f"OCR: {ctx.ocr_result.box_count_final if ctx.ocr_result else 0} boxes | "
+                  f"UI: {len(ctx.desktop.walk()) if ctx.desktop else 0} elements | "
+                  f"Page: {ctx.page_type} | "
+                  f"Total: {report.total_latency_ms:.1f}ms")
+
+            if report.error_count > 0:
+                for s in report.stages:
+                    if not s.success:
+                        print(f"    ✗ Stage {s.stage} {s.name}: {s.failure_reason}")
+
+            # Update overlay
+            debug_overlay.update_from_context(
+                ctx,
+                planner_target="",
+                status=f"Frame #{frame} | {ctx.app_type}/{ctx.app_name} | "
+                       f"OCR: {ctx.ocr_result.box_count_final if ctx.ocr_result else 0} boxes | "
+                       f"UI: {len(ctx.desktop.walk()) if ctx.desktop else 0} el | "
+                       f"{report.total_latency_ms:.1f}ms"
+            )
+
+            await asyncio.sleep(0.5)  # 2 FPS is enough for debugging
+
+    except KeyboardInterrupt:
+        print("\n\nShutting down debug overlay...")
+    finally:
+        debug_overlay.close()
+        await vision_service._stop()
+        await screen_capture_service._stop()
+        print("Debug vision session ended.")
+
+
+async def cmd_inspect_screen() -> None:
+    """
+    `leo inspect screen` — Comprehensive screen inspection report.
+
+    Outputs:
+      - Application name and type
+      - Window title
+      - Detected controls (by type)
+      - Buttons with positions and confidence
+      - Inputs
+      - Menus
+      - Dialogs
+      - Notifications
+      - OCR confidence and text preview
+      - Layout regions
+      - Pipeline stats
+    """
+    from services.vision_service import vision_service
+    from services.screen_capture import screen_capture_service
+    from vision.forensic_logger import inspect_screen
+
+    # Initialize
+    print("Initializing screen capture...")
+    await screen_capture_service._start()
+    if not screen_capture_service.ready:
+        print("ERROR: Screen capture backend not available.")
+        return
+
+    print("Initializing vision service...")
+    await vision_service._start()
+
+    print("Capturing and analyzing screen (this may take 1-2 seconds)...")
+    print()
+
+    ctx, report = await vision_service.analyze_forensic(force=True)
+
+    # Print forensic report
+    print(report.to_text())
+    print()
+
+    # Print screen inspection
+    print(inspect_screen(ctx))
+
+    # Cleanup
+    await vision_service._stop()
+    await screen_capture_service._stop()
+
+
 def run(no_auth: bool = False) -> None:
     """Canonical blocking entry point — boots Leo and runs until Ctrl+C.
 
@@ -296,6 +431,18 @@ def run(no_auth: bool = False) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Leo — Conversational Desktop Agent")
+    sub = parser.add_subparsers(dest="command", help="Subcommands")
+
+    # `leo debug vision` — live debug overlay
+    sub.add_parser("debug", help="Debug tools").add_argument(
+        "target", nargs="?", choices=["vision"], default="vision",
+        help="Debug target (default: vision)")
+
+    # `leo inspect screen` — comprehensive screen report
+    sub.add_parser("inspect", help="Inspect tools").add_argument(
+        "target", nargs="?", choices=["screen"], default="screen",
+        help="Inspect target (default: screen)")
+
     parser.add_argument("--no-auth", action="store_true",
                         help="Skip face authentication (development only)")
     parser.add_argument("--status", action="store_true",
@@ -304,6 +451,14 @@ def main() -> None:
 
     if args.status:
         cmd_status()
+        return
+
+    if args.command == "debug":
+        asyncio.run(cmd_debug_vision())
+        return
+
+    if args.command == "inspect":
+        asyncio.run(cmd_inspect_screen())
         return
 
     run(no_auth=args.no_auth)

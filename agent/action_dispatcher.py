@@ -410,17 +410,24 @@ class ActionDispatcher:
     def _ocr_sync(self) -> str:
         """Synchronous OCR of the active window."""
         try:
-            from vision import vision_manager, CaptureSource
-            if not vision_manager.is_available:
-                vision_manager.initialize()
-            cap = vision_manager._screen_capturer.capture_active_window()
-            if cap is None or cap.image is None:
-                cap = vision_manager._screen_capturer.capture_full_screen()
-            if cap is None or cap.image is None:
-                return ""
-            return vision_manager._ocr_engine.ocr(cap.image)
+            import asyncio
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # Create a future for the coroutine
+                future = asyncio.run_coroutine_threadsafe(
+                    self._ocr_async(), loop)
+                return future.result(timeout=5)
+            return ""
         except Exception as e:
             logger.debug("[ACTIONS] OCR failed: %s", e)
+            return ""
+
+    async def _ocr_async(self) -> str:
+        """Async OCR helper."""
+        try:
+            from services.vision_service import vision_service
+            return await vision_service.ocr_only()
+        except Exception:
             return ""
 
     async def screen_context(self) -> str:
@@ -441,12 +448,17 @@ class ActionDispatcher:
                 parts.append(f"Active window: {title}")
         except Exception:
             pass
-        # OCR snippet
+        # OCR snippet from vision_service
         try:
-            text = self._ocr_sync()
-            if text:
-                snippet = " ".join(text.split())[:300]
-                parts.append(f"Visible text: {snippet}")
+            import asyncio
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                future = asyncio.run_coroutine_threadsafe(
+                    self._ocr_async(), loop)
+                text = future.result(timeout=5)
+                if text:
+                    snippet = " ".join(text.split())[:300]
+                    parts.append(f"Visible text: {snippet}")
         except Exception:
             pass
         return " | ".join(parts)
@@ -500,25 +512,30 @@ class ActionDispatcher:
         return f"Couldn't find {text} to click"
 
     def _locate_text_on_screen(self, text: str):
-        """Return (x, y) centroid of `text` on screen via OCR, or None."""
+        """Return (x, y) centroid of `text` on screen via vision_service, or None."""
         try:
-            import pytesseract
-            from vision import vision_manager
-            if not vision_manager.is_available:
-                vision_manager.initialize()
-            cap = vision_manager._screen_capturer.capture_full_screen()
-            if cap is None or cap.image is None:
+            from services.vision_service import vision_service
+            import asyncio
+            loop = asyncio.get_event_loop()
+            if not loop.is_running():
                 return None
-            data = pytesseract.image_to_data(cap.image, output_type=pytesseract.Output.DICT)
-            text_lower = text.lower()
-            n = len(data["text"])
-            for i in range(n):
-                if data["text"][i] and text_lower in data["text"][i].lower():
-                    x = data["left"][i] + data["width"][i] // 2
-                    y = data["top"][i] + data["height"][i] // 2
-                    return (x, y)
+            future = asyncio.run_coroutine_threadsafe(
+                self._locate_text_async(text), loop)
+            return future.result(timeout=5)
         except Exception as e:
             logger.debug("[ACTIONS] locate_text failed: %s", e)
+        return None
+
+    async def _locate_text_async(self, text: str):
+        """Async locate text using vision_service."""
+        from services.vision_service import vision_service
+        ctx = await vision_service.force_analyze()
+        if not ctx.raw_ocr_boxes:
+            return None
+        text_lower = text.lower()
+        for box in ctx.raw_ocr_boxes:
+            if text_lower in box.text.lower():
+                return box.center
         return None
 
     async def _play_media_async(self, query: str) -> str:
