@@ -712,6 +712,9 @@ class StreamingSTT:
         self._cancel = asyncio.Event()
         # Speech corrector — loaded lazily
         self._corrector = None
+        # Drain-on-resume: set by resume_listening(), cleared by stream_utterances()
+        # after the ring buffer has been drained and VAD state reset.
+        self._drain_requested = False
 
     def initialize(self) -> bool:
         vad_ok = self._vad.load()
@@ -739,10 +742,23 @@ class StreamingSTT:
         return self._ready
 
     def pause_listening(self) -> None:
+        """Mute STT — used during TTS playback to prevent Leo from
+        transcribing his own voice."""
         self._listen_enabled.clear()
+        logger.info("[STREAM-STT] Listening PAUSED (TTS guard)")
 
     def resume_listening(self) -> None:
+        """Unmute STT and request a ring-buffer drain.
+        
+        Called after TTS finishes.  Sets a flag that causes the
+        stream_utterances() loop to skip all audio accumulated during
+        TTS playback (jumping last_total to the current write position),
+        then re-enables VAD scoring.
+        """
+        self._drain_requested = True
         self._listen_enabled.set()
+        logger.info("[STREAM-STT] Listening RESUMED — drain requested, "
+                    "VAD re-enabled")
 
     def cancel(self) -> None:
         self._cancel.set()
@@ -826,6 +842,35 @@ class StreamingSTT:
             await self._listen_enabled.wait()
             if self._cancel.is_set():
                 break
+
+            # ── Drain-on-resume: skip TTS-contaminated audio ──
+            # When resume_listening() is called after TTS ends, it sets
+            # _drain_requested.  We jump last_total to the current write
+            # position (total_samples), discarding all audio that arrived
+            # during TTS playback.  This prevents Leo from transcribing
+            # his own voice as a phantom user command.
+            if self._drain_requested:
+                self._drain_requested = False
+                old_total = last_total
+                last_total = audio_manager.total_samples
+                skipped = last_total - old_total
+                if skipped > 0:
+                    logger.info("[STREAM-STT] Drain-on-resume: skipped %d samples "
+                                "(%.0fms) of TTS-contaminated audio",
+                                skipped, skipped / 16.0)
+                # Reset VAD-related state so we start fresh
+                in_speech = False
+                audio_buffer.clear()
+                silence_run_ms = 0.0
+                _last_nonoverlap_idx = -1
+                _frame_remainder = np.array([], dtype=np.float32)
+                pre_roll.clear()
+                _partial_history.clear()
+                _partial_index = 0
+                _merged_transcript = ""
+                _stable_count = 0
+                _rolling_context = ""
+                continue
 
             new_audio, last_total = audio_manager.read_since(last_total)
             if len(new_audio) == 0:

@@ -926,9 +926,11 @@ class ConversationEngine:
                 yield item
 
         monitor = asyncio.create_task(self._watch_interruption(events))
+        streaming_stt.pause_listening()
         try:
             await streaming_tts.speak_sentences(sentences(), interrupt)
         finally:
+            streaming_stt.resume_listening()
             monitor.cancel()
             if not producer.done():
                 interrupt.set()
@@ -1156,14 +1158,20 @@ class ConversationEngine:
         yield text
 
     async def _speak_line(self, text: str) -> None:
-        """Speak a single line (GREETING / FACE_AUTH denial)."""
+        """Speak a single line (GREETING / FACE_AUTH denial).
+        
+        Mutes STT during playback so Leo doesn't transcribe his own voice,
+        then drains the ring buffer and re-enables VAD when done.
+        """
         logger.info("TTS start")
         t0 = time.time()
         self._tts_interrupt.clear()
+        streaming_stt.pause_listening()
         try:
             await streaming_tts.speak_sentences(self._one_line_stream(text),
                                                 self._tts_interrupt)
         finally:
+            streaming_stt.resume_listening()
             logger.info("TTS end (%.0fms)", (time.time() - t0) * 1000)
 
     # ── Actions ───────────────────────────────────────────
