@@ -169,18 +169,16 @@ async def run_leo(no_auth: bool = False) -> None:
 
     # ── Run engine + watchdog concurrently ────────────────
     engine_task = asyncio.create_task(conversation_engine.run())
-    watchdog_task = asyncio.create_task(conversation_engine.timeout_watchdog())
 
     logger.info("Listening for wake word...")
 
     try:
-        await asyncio.gather(engine_task, watchdog_task)
+        await engine_task
     except asyncio.CancelledError:
         pass
     finally:
-        for t in (engine_task, watchdog_task):
-            t.cancel()
-        await asyncio.gather(engine_task, watchdog_task, return_exceptions=True)
+        engine_task.cancel()
+        await asyncio.gather(engine_task, return_exceptions=True)
         await background_learner.stop()
 
 
@@ -193,7 +191,7 @@ async def shutdown() -> None:
     logger.info("[LEO] Shutting down...")
     try:
         from core.conversation_engine import conversation_engine
-        await conversation_engine.shutdown()
+        conversation_engine._running = False
     except Exception as e:
         logger.debug("engine shutdown: %s", e)
 
@@ -204,8 +202,8 @@ async def shutdown() -> None:
         logger.debug("tts shutdown: %s", e)
 
     try:
-        from voice.streaming_stt import streaming_stt
-        streaming_stt.cancel()
+        from voice.command_listener import command_listener
+        command_listener.cancel()
     except Exception as e:
         logger.debug("stt shutdown: %s", e)
 

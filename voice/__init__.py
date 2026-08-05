@@ -1,26 +1,42 @@
 """
 Voice subsystem for Leo Desktop Assistant.
 
-THE SINGLE VOICE PIPELINE (exactly one implementation of each stage):
+CLEAN ARCHITECTURE (2026-08-05):
 
     Microphone
       ↓
     AudioManager            voice/audio_manager.py   (ONE InputStream,
-                                                      verified mic, ring buffer)
+                                                     verified mic, ring buffer,
+                                                     AGC + high-pass ONCE)
       ↓
-    WakeListener            voice/wake_listener.py   (Silero VAD gate →
-                                                      openWakeWord streaming)
+    Unified VAD             voice/vad.py             (ONE Silero VAD instance,
+                                                     shared by wake + command)
       ↓
-    Whisper verification    voice/wake_word.py       (verify_wake_transcript —
-                                                      RapidFuzz + phonetic)
+    ┌─────────────────────┬──────────────────────────┐
+    │ WakeListener        │ CommandListener          │
+    │ voice/wake_listener │ voice/command_listener   │
+    │ openWakeWord +      │ streaming Whisper with   │
+    │ Whisper verification│ 800ms+ context windows   │
+    └─────────────────────┴──────────────────────────┘
       ↓
-    Conversation            core/conversation_engine.py
+    ConversationEngine      core/conversation_engine.py
+      ↓
+    StreamingTTS            voice/streaming_tts.py   (Kokoro TTS)
+
+STATE MACHINE:
+    IDLE → WAKE → FACE_AUTH → LISTEN → THINK → SPEAK → IDLE
+
+SINGLE OWNERS:
+  - Audio buffering:     AudioManager
+  - VAD:                 voice/vad.py (unified_vad)
+  - Endpoint detection:  CommandListener (silence-based)
+  - Transcript:          CommandListener (Whisper, 800ms+ windows)
+  - Interruption:        ConversationEngine._watch_interruption()
 
 Supporting modules:
   - WakeModelManager  (voice/wake_model_manager.py) — openWakeWord lifecycle
-  - StreamingSTT      (voice/streaming_stt.py)      — Whisper (verification +
-                                                      conversation STT)
-  - StreamingTTS      (voice/streaming_tts.py)      — speech output
+  - WakeWord          (voice/wake_word.py)          — transcript verification
+  - AudioProcessing   (voice/audio_processing.py)   — AGC, high-pass, stage tracing
   - VoiceSettings     (voice/settings.py)           — runtime configuration
 """
 
