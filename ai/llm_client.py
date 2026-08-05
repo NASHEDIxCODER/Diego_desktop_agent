@@ -69,32 +69,71 @@ class LLMClient:
             logger.warning("Ollama check failed: %s", e)
         return self._available
 
+    # Vision model name patterns — these are heavy and should only be
+    # loaded when screen context is explicitly requested.
+    _VISION_MODEL_PATTERNS = ("qwen2.5vl", "qwen2-vl", "llava", "bakllava",
+                               "minicpm-v", "cogvlm", "fuyu", "paligemma",
+                               "moondream", "llama3.2-vision")
+
+    # Preferred small conversational/routing models (ordered by preference).
+    _PREFERRED_SMALL_MODELS = (
+        "qwen2.5:1.5b", "qwen2.5:3b", "qwen2.5:0.5b",
+        "qwen2:1.5b", "qwen2:0.5b",
+        "llama3.2:1b", "llama3.2:3b",
+        "phi3:mini", "phi3.5:mini",
+        "gemma2:2b", "gemma2:9b",
+        "mistral:7b", "tinyllama",
+    )
+
+    @classmethod
+    def _is_vision_model(cls, name: str) -> bool:
+        """True if the model name matches a known vision-model pattern."""
+        lower = name.lower()
+        return any(pat in lower for pat in cls._VISION_MODEL_PATTERNS)
+
     def _select_model(self) -> None:
         """
         Auto-select the best available model.
-        
+
         Priority:
         1. Configured model from settings (if installed)
-        2. First installed model
-        3. Fallback to 'llama3.2'
+        2. First preferred small model that is installed
+        3. First non-vision model that is installed
+        4. First installed model (even if vision — last resort)
+        5. Fallback to 'llama3.2'
         """
         if not self._model_names:
             self._model = "llama3.2"
             return
 
-        # Check if configured model is available
+        # 1. Configured model
         configured = getattr(settings, 'OLLAMA_MODEL', None) or getattr(settings, 'LLM_MODEL', None)
         if configured:
-            # Check for exact match or tag match
             for m in self._model_names:
                 if m == configured or m.startswith(f"{configured}:"):
                     self._model = m
                     logger.info("Using configured model: %s", self._model)
                     return
 
-        # Use first installed model
+        # 2. First preferred small model that is installed
+        for preferred in self._PREFERRED_SMALL_MODELS:
+            for m in self._model_names:
+                if m == preferred or m.startswith(f"{preferred}:"):
+                    self._model = m
+                    logger.info("Selected preferred small model: %s", self._model)
+                    return
+
+        # 3. First non-vision model
+        for m in self._model_names:
+            if not self._is_vision_model(m):
+                self._model = m
+                logger.info("Selected non-vision model: %s", self._model)
+                return
+
+        # 4. Last resort: first installed model (even if vision)
         self._model = self._model_names[0]
-        logger.info("Auto-selected model: %s", self._model)
+        logger.warning("No small/non-vision model found — "
+                       "falling back to: %s (may be heavy)", self._model)
 
     async def chat(self, message: str, context: str = "") -> str:
         """
@@ -115,6 +154,7 @@ class LLMClient:
             "model": self._model,
             "prompt": f"{SYSTEM_PROMPT}\n\n{prompt}",
             "stream": False,
+            "keep_alive": 0,
             "options": {
                 "num_predict": 200,
                 "temperature": 0.7,
