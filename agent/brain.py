@@ -296,6 +296,7 @@ class AgentBrain:
         ConversationEngine calls this and speaks the response.
 
         Flow:
+          0. Normalize: canonicalize the spoken command
           1. Perceive: collect desktop context
           2. Decide: route the command (LLM last resort)
           3. Plan: create a plan if needed
@@ -316,6 +317,16 @@ class AgentBrain:
         t0 = time.time()
         self._commands_processed += 1
         result = CommandResult()
+
+        # ── Step 0: Normalize (NEW) ──────────────────────────
+        # Canonicalize the spoken command before any processing.
+        # Handles app aliases, verb normalization, noise removal,
+        # follow-up commands, music/search detection.
+        from nlp.command_normalizer import command_normalizer
+        normalized = command_normalizer.normalize(text)
+        if normalized != text:
+            logger.info("[Brain] Normalized: '%s' → '%s'", text[:50], normalized[:50])
+        text = normalized
 
         # ── Step 1: Perceive ─────────────────────────────────
         perception_ctx = await self._perceive()
