@@ -117,7 +117,7 @@ class AgentPlanner:
         """
         logger.info("Agent planning request: %s", request)
 
-        plan = self._generate_plan(request)
+        plan = self._generate_plan_sync(request)
         if not plan:
             logger.warning("Could not generate plan for: %s", request[:60])
             return "I'm sorry, I couldn't figure out how to do that. Could you be more specific?"
@@ -140,12 +140,31 @@ class AgentPlanner:
         """
         logger.info("Agent generating plan: %s", request[:80])
 
-        plan = self._generate_plan(request)
+        plan = self._generate_plan_sync(request)
         if plan:
             logger.info("Plan generated with %d steps", len(plan))
         return plan
 
-    def _generate_plan(self, request: str) -> Optional[List[Dict[str, Any]]]:
+    def _generate_plan_sync(self, request: str) -> Optional[List[Dict[str, Any]]]:
+        """
+        Synchronous plan generation.
+
+        The LLM client's chat() is async. We run it in a fresh event
+        loop via asyncio.run() so this method can be called from a
+        thread (run_in_executor) without deadlocking.
+        """
+        try:
+            import asyncio
+            return asyncio.run(self._generate_plan(request))
+        except RuntimeError:
+            # Already inside an event loop — fall back to sync fallback plan
+            logger.warning("[Planner] Cannot run async LLM inside running loop — using fallback")
+            return self._fallback_plan(request)
+        except Exception as e:
+            logger.warning("[Planner] Async plan generation failed: %s", e)
+            return self._fallback_plan(request)
+
+    async def _generate_plan(self, request: str) -> Optional[List[Dict[str, Any]]]:
         """Generate a step-by-step plan using the LLM + experience DB."""
         # ── Check experience DB for previously successful plans ──
         experience_ctx = ""
@@ -179,7 +198,10 @@ class AgentPlanner:
 
             prompt = f"{PLANNER_SYSTEM_PROMPT}\n\nContext:\n{context}\n\nUser request: {request}\n\nPlan:"
 
-            response = self._llm_client.chat(prompt)
+            # CRITICAL FIX: chat() is async — MUST await it.
+            # Previously this returned a coroutine object (always truthy),
+            # which then failed in _parse_plan() with AttributeError.
+            response = await self._llm_client.chat(prompt)
             if response:
                 # Parse JSON from response
                 return self._parse_plan(response)

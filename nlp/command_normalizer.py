@@ -519,7 +519,14 @@ class CommandNormalizer:
                 except (IndexError, AttributeError):
                     query = "music"
                 if query:
-                    return f"play_music:{query}"
+                    # CRITICAL FIX: return a NATURAL command that the
+                    # CommandRouter can match — NOT a tag format like
+                    # "play_music:lofi" which the router's regex patterns
+                    # cannot match and would fall through to the LLM.
+                    if action == "play_music":
+                        return f"play {query}"
+                    if action == "play_music:music":
+                        return "play music"
         return None
 
     def _detect_screen(self, text: str) -> bool:
@@ -539,7 +546,11 @@ class CommandNormalizer:
                 except (IndexError, AttributeError):
                     query = text
                 if query:
-                    return f"search:{query}"
+                    # CRITICAL FIX: return a NATURAL command that the
+                    # CommandRouter can match — NOT a tag format like
+                    # "search:cats" which the router's regex patterns
+                    # cannot match and would fall through to the LLM.
+                    return f"search {query}"
         return None
 
     def report(self) -> Dict[str, int]:

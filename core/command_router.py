@@ -76,6 +76,24 @@ _SIMPLE_COMMANDS = [
     (r"^open\s+(?:the\s+)?(settings|preferences)$", "desktop_open", {"app": "gnome-control-center"}),
     (r"^open\s+(?:the\s+)?(files|file\s*manager|nautilus)$", "desktop_open", {"app": "nautilus"}),
 
+    # Websites (browser_navigate — must come AFTER app patterns)
+    (r"^open\s+(?:the\s+)?(youtube|youtube\.com)$", "browser_navigate", {"url": "https://youtube.com"}),
+    (r"^open\s+(?:the\s+)?(google|google\.com)$", "browser_navigate", {"url": "https://google.com"}),
+    (r"^open\s+(?:the\s+)?(gmail|gmail\.com)$", "browser_navigate", {"url": "https://gmail.com"}),
+    (r"^open\s+(?:the\s+)?(github|github\.com)$", "browser_navigate", {"url": "https://github.com"}),
+    (r"^open\s+(?:the\s+)?(linkedin|linkedin\.com)$", "browser_navigate", {"url": "https://linkedin.com"}),
+    (r"^open\s+(?:the\s+)?(reddit|reddit\.com)$", "browser_navigate", {"url": "https://reddit.com"}),
+    (r"^open\s+(?:the\s+)?(stackoverflow|stackoverflow\.com)$", "browser_navigate", {"url": "https://stackoverflow.com"}),
+    (r"^open\s+(?:the\s+)?([a-z0-9-]+\.(?:com|org|net|io|dev|ai|me|co|app))$", "browser_navigate", {}),
+
+    # Web search
+    (r"^search\s+(?:the\s+web\s+)?(?:for\s+)?(.+)$", "browser_search", {}),
+    (r"^search\s+youtube\s+(?:for\s+)?(.+)$", "play_media", {}),
+    (r"^google\s+(.+)$", "browser_search", {}),
+    (r"^look\s+up\s+(.+)$", "browser_search", {}),
+    (r"^find\s+(.+)$", "browser_search", {}),
+    (r"^open\s+(?:a\s+|an\s+)?(?:video|song|music)\s+(?:on\s+)?youtube\s+(?:for\s+)?(.+)$", "play_media", {}),
+
     # Volume
     (r"^volume\s*(up|increase|louder)$", "volume_up", {}),
     (r"^(?:turn\s+)?(?:the\s+)?volume\s*(up|increase|louder)$", "volume_up", {}),

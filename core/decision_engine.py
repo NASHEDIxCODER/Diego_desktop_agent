@@ -167,7 +167,7 @@ class DecisionEngine:
             )
 
         # ── L1: Working Memory (conversation context) ──────
-        result = self._check_working_memory(normalized)
+        result = await self._check_working_memory(normalized)
         if result is not None:
             self._record(DecisionPath.WORKING_MEMORY, t_start)
             return result
@@ -223,7 +223,7 @@ class DecisionEngine:
 
     # ── Layer checks ────────────────────────────────────────
 
-    def _check_working_memory(self, text: str) -> Optional[Decision]:
+    async def _check_working_memory(self, text: str) -> Optional[Decision]:
         """
         L1: Check if this can be answered from working (conversation) memory.
 
@@ -242,10 +242,23 @@ class DecisionEngine:
         # These are handled by command_router's conversation cache
         # but we check here first for lower latency.
         
-        # Pronoun resolution
+        # Pronoun resolution — MUST re-route the resolved command, not
+        # just reply "I'll open firefox." with no action dispatched.
         resolved = self._conv_memory._resolve_pronouns(text)
         if resolved != text:
             logger.info("[DECIDE:L1] Pronoun resolved: '%s' → '%s'", text, resolved)
+            # Re-route the resolved text so the actual action dispatches.
+            # Example: "open it" when last entity is "firefox" → "open firefox"
+            # which the CommandRouter matches as SIMPLE_DESKTOP and returns an action.
+            if self._command_router is not None:
+                try:
+                    routed = await self._check_direct_execution(resolved)
+                    if routed is not None:
+                        routed.debug.update({"resolved_from": text})
+                        return routed
+                except Exception as e:
+                    logger.debug("[DECIDE:L1] Resolved re-route failed: %s", e)
+            # Fallback: at least acknowledge, but never claim success.
             return Decision(
                 path=DecisionPath.WORKING_MEMORY,
                 needs_llm=False,

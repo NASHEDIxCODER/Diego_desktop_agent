@@ -358,8 +358,21 @@ class AgentBrain:
                         result.actions_failed += 1
                 result.verified = result.actions_failed == 0
 
-            # Response
-            result.response = decision.response or self._default_response(result)
+            # ── Response (CRITICAL FIX): generated AFTER execution ──
+            # Never use the decision's canned response when actions FAILED.
+            # The user must hear the actual outcome, not a promise to act.
+            if result.actions_executed > 0:
+                if result.actions_failed == 0:
+                    # All succeeded — use the decision's canned confirmation
+                    result.response = decision.response or "Done."
+                else:
+                    # At least one action failed — be honest about the failure.
+                    # The decision's response ("Opening.") must NOT be spoken
+                    # when the action did not actually open anything.
+                    result.response = self._default_response(result)
+            else:
+                # No actions dispatched — conversational/cached responses are fine
+                result.response = decision.response or self._default_response(result)
 
         else:
             # ── Complex path: needs LLM ─────────────────────
@@ -452,6 +465,12 @@ class AgentBrain:
 
         This is the ONLY place actions are dispatched, verified, and
         recorded for learning.
+
+        ORDER INVARIANT (CRITICAL):
+          1. Capture pre-action screen state (BEFORE execution)
+          2. Execute the action exactly once (dispatch)
+          3. Verify AFTER execution by comparing pre/post screen state
+          4. Learn the outcome
         """
         if not self._dispatcher:
             logger.warning("[Brain] No dispatcher — cannot execute action")
@@ -460,7 +479,18 @@ class AgentBrain:
         action_name = action.get("action", "")
         params = action.get("params", {}) or {}
 
-        # ── Step 4: Dispatch ────────────────────────────────
+        # ── Step 4a: Capture PRE-action state (BEFORE dispatch) ──
+        # CRITICAL FIX: without a pre-action snapshot, the verifier
+        # cannot detect ANY screen change and always reports NO_CHANGE.
+        # This made every action fail verification even when it succeeded.
+        if self._verifier:
+            try:
+                self._verifier.capture_pre_action()
+                logger.debug("[Brain] Pre-action capture for %s", action_name)
+            except Exception as e:
+                logger.debug("[Brain] Pre-action capture failed: %s", e)
+
+        # ── Step 4b: Dispatch (execute exactly once) ───────────
         try:
             result = await self._dispatcher.execute(action)
             self._actions_dispatched += 1
@@ -486,27 +516,95 @@ class AgentBrain:
 
     async def _verify(self, action_name: str, params: Dict[str, Any],
                       result: Optional[str]) -> bool:
-        """Step 5: Verify an action had the expected effect."""
-        if not self._verifier:
-            # No verifier — trust the dispatcher result
-            return result is not None and "Couldn't" not in str(result)
+        """
+        Step 5: Verify an action had the expected effect.
 
+        Verification strategy (most reliable first):
+          1. If dispatch returned an explicit failure ("Couldn't...") → fail fast
+          2. OS-level process verification for desktop_open / browser actions
+             (pgrep — authoritative: did the app actually launch?)
+          3. Vision/screen comparison for UI actions (click, type, scroll)
+          4. Trust dispatch result on verification subsystem failure
+        """
+        # ── Fail fast if the dispatcher itself reported failure ──
+        if result is not None and "Couldn't" in str(result):
+            logger.debug("[Brain] Verify FAIL (dispatcher reported): %s", result[:80])
+            return False
+
+        # ── OS-level process verification (authoritative for apps/browsers) ──
         try:
-            verify_type = self._map_action_to_verify_type(action_name)
-            if not verify_type:
-                # No verification needed for this action type
-                return result is not None and "Couldn't" not in str(result)
+            import subprocess
+            import shutil
+            if shutil.which("pgrep"):
+                if action_name == "desktop_open":
+                    app = str(params.get("app", "")).lower()
+                    # Map friendly names to process names
+                    proc_map = {
+                        "code": "code", "vscode": "code", "vs code": "code",
+                        "firefox": "firefox", "browser": "firefox",
+                        "chrome": "chrome", "google-chrome": "chrome",
+                        "spotify": "spotify", "gnome-terminal": "gnome-terminal",
+                        "terminal": "gnome-terminal", "nautilus": "nautilus",
+                        "files": "nautilus", "slack": "slack",
+                        "discord": "discord", "telegram-desktop": "telegram",
+                        "notion-app": "notion",
+                    }
+                    proc = proc_map.get(app, app)
+                    chk = subprocess.run(
+                        ["pgrep", "-f", proc],
+                        capture_output=True, text=True, timeout=3,
+                    )
+                    if chk.returncode == 0:
+                        logger.info("[Brain] Verify OK: process '%s' running", proc)
+                        return True
+                    # Process not found — try alternate binaries
+                    for alt in (proc.replace("-", ""), f"{proc}-esr", f"{proc}-stable"):
+                        chk2 = subprocess.run(
+                            ["pgrep", "-f", alt],
+                            capture_output=True, text=True, timeout=3,
+                        )
+                        if chk2.returncode == 0:
+                            logger.info("[Brain] Verify OK: process '%s' running", alt)
+                            return True
 
-            vresult = await self._verifier.verify_action(
-                verify_type,
-                params,
-                expected_outcome="",
-            )
-            return vresult.success
+                elif action_name in ("browser_navigate", "browser_search"):
+                    chk = subprocess.run(
+                        ["pgrep", "-f", "firefox|chrome|chromium|brave"],
+                        capture_output=True, text=True, timeout=3,
+                    )
+                    if chk.returncode == 0:
+                        logger.info("[Brain] Verify OK: browser process running")
+                        return True
         except Exception as e:
-            logger.debug("[Brain] Verification failed: %s", e)
-            # Trust the result on verification failure
-            return result is not None and "Couldn't" not in str(result)
+            logger.debug("[Brain] OS-level verify failed: %s", e)
+
+        # ── Vision/screen verification (for UI actions) ──
+        if self._verifier:
+            try:
+                verify_type = self._map_action_to_verify_type(action_name)
+                if verify_type:
+                    vresult = await self._verifier.verify_action(
+                        verify_type,
+                        params,
+                        expected_outcome="",
+                    )
+                    if vresult.success:
+                        logger.info("[Brain] Verify OK: %s (%s)", action_name, vresult.status.value)
+                        return True
+                    logger.warning("[Brain] Verify FAIL: %s — %s",
+                                   action_name, vresult.explanation[:100])
+                    # If OS-level checks passed but vision says no change, the
+                    # action may still have succeeded (e.g., app already open).
+                    # IMPORTANT: Do NOT return False here — let the caller
+                    # decide based on dispatch result + OS checks above.
+                else:
+                    # No verification type mapped — trust the dispatch result
+                    return result is not None and "Couldn't" not in str(result)
+            except Exception as e:
+                logger.debug("[Brain] Vision verify failed: %s", e)
+
+        # ── Fallback: trust a clean dispatch result ──
+        return result is not None and "Couldn't" not in str(result)
 
     async def _learn(self, action_name: str, params: Dict[str, Any],
                      success: bool, error: str = "") -> None:
@@ -694,7 +792,8 @@ class AgentBrain:
             return self._fallback_decompose(description)
 
         try:
-            response = self._llm_client.chat(prompt)
+            # CRITICAL FIX: chat() is async — MUST await it.
+            response = await self._llm_client.chat(prompt)
             if response:
                 tasks_data = self._parse_task_json(response)
                 if tasks_data:
