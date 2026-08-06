@@ -245,6 +245,8 @@ def main() -> None:
                         help="Record 100 wake phrases + train custom verifier")
     parser.add_argument("--no-auth", action="store_true",
                         help="Skip face authentication (development only)")
+    parser.add_argument("--record-session", action="store_true",
+                        help="Record every conversation turn to logs/manual_voice_session.json")
 
     args = parser.parse_args()
 
@@ -269,7 +271,7 @@ def main() -> None:
 
     # ── Default: the conversational runtime (boots once, waits forever
     # for the wake word, never exits unless the user quits). ──
-    leo.run(no_auth=args.no_auth)
+    leo.run(no_auth=args.no_auth, record_session=args.record_session)
 
 
 if __name__ == "__main__":

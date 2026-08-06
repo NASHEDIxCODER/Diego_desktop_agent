@@ -189,6 +189,21 @@ async def run_leo(no_auth: bool = False) -> None:
 async def shutdown() -> None:
     """Stop all subsystems cleanly."""
     logger.info("[LEO] Shutting down...")
+
+    # ── Save session recording before tearing down ──
+    try:
+        from core.manual_session_recorder import session_recorder
+        if session_recorder.enabled:
+            saved_path = session_recorder.save()
+            if saved_path:
+                summary = session_recorder.get_summary()
+                logger.info("[LEO] Session summary: %d turns, avg wake=%.0fms, avg turn=%.0fms",
+                            summary.get("total_turns", 0),
+                            summary.get("avg_wake_latency_ms", 0),
+                            summary.get("avg_total_latency_ms", 0))
+    except Exception as e:
+        logger.debug("session recorder shutdown: %s", e)
+
     try:
         from core.conversation_engine import conversation_engine
         conversation_engine._running = False
@@ -223,7 +238,7 @@ async def shutdown() -> None:
     logger.info("[LEO] Shutdown complete.")
 
 
-async def _main_async(no_auth: bool) -> None:
+async def _main_async(no_auth: bool, record_session: bool = False) -> None:
     loop = asyncio.get_running_loop()
     stop = asyncio.Event()
 
@@ -235,6 +250,11 @@ async def _main_async(no_auth: bool) -> None:
             loop.add_signal_handler(sig, _signal)
         except (NotImplementedError, RuntimeError):
             pass
+
+    # ── Enable session recording if requested ──
+    if record_session or os.environ.get("LEO_RECORD_SESSION", "").strip() in ("1", "true", "yes"):
+        from core.manual_session_recorder import session_recorder
+        session_recorder.enable()
 
     run_task = asyncio.create_task(run_leo(no_auth=no_auth))
     stop_task = asyncio.create_task(stop.wait())
@@ -425,14 +445,14 @@ async def cmd_inspect_screen() -> None:
     await screen_capture_service._stop()
 
 
-def run(no_auth: bool = False) -> None:
+def run(no_auth: bool = False, record_session: bool = False) -> None:
     """Canonical blocking entry point — boots Leo and runs until Ctrl+C.
 
     Used by BOTH `python leo.py` and `python main.py` so there is exactly
     ONE runtime entry path.
     """
     try:
-        asyncio.run(_main_async(no_auth=no_auth))
+        asyncio.run(_main_async(no_auth=no_auth, record_session=record_session))
     except KeyboardInterrupt:
         pass
 

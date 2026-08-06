@@ -63,6 +63,7 @@ from agent.conversation_memory import conv_memory
 from agent.personality import personality
 from core.command_router import command_router, RouteKind
 from core.benchmark import benchmark
+from core.manual_session_recorder import session_recorder
 
 logger = logging.getLogger(__name__)
 
@@ -254,6 +255,15 @@ class ConversationEngine:
                 logger.info("Wake accepted (model='%s' score=%.2f ≥ %.2f)",
                             event.model, event.score, wake_model_manager.threshold)
 
+                # ── Record wake metrics ──
+                session_recorder.new_turn()
+                session_recorder.record_wake(
+                    latency_ms=event.correlation * 1000 if event.correlation else 0,
+                    confidence=event.score,
+                    model=event.model,
+                    transcript=event.transcript,
+                )
+
                 # Play chime
                 await loop.run_in_executor(None, self._play_wake_chime)
 
@@ -261,14 +271,18 @@ class ConversationEngine:
                 needs_auth = self._needs_auth()
                 if needs_auth:
                     self._set_state(EngineState.FACE_AUTH)
+                    t_auth_start = time.time()
                     name = await self._run_auth()
+                    auth_latency = (time.time() - t_auth_start) * 1000
                     if name:
                         self._auth_user = name
                         self._last_auth_time = time.time()
                         conv_memory.set_user_name(name)
                         logger.info("[FACE_AUTH] Authenticated: %s", name)
+                        session_recorder.record_face_auth(auth_latency, True, name)
                     else:
                         logger.warning("[FACE_AUTH] Failed — continuing unauthenticated")
+                        session_recorder.record_face_auth(auth_latency, False)
 
                 # STATE: LISTEN → THINK → SPEAK → (loop back)
                 await self._conversation_session()
@@ -384,6 +398,15 @@ class ConversationEngine:
                 logger.info("Transcript: '%s' (conf=%.3f)", text, ev.confidence)
                 self._session_deadline = time.monotonic() + CONVERSATION_TIMEOUT_S
 
+                # ── Record utterance metrics ──
+                session_recorder.record_utterance(
+                    transcript=text,
+                    confidence=ev.confidence,
+                    speech_duration_ms=dur_ms,
+                    endpoint_reason=ev.endpoint_reason,
+                    whisper_latency_ms=ev.whisper_latency_ms,
+                )
+
                 lower = text.lower()
 
                 # Filler-only: keep listening
@@ -418,6 +441,16 @@ class ConversationEngine:
                     logger.info("[DECIDE] Bypassed LLM — path=%s confidence=%.2f",
                                 decision.path.value, decision.confidence)
 
+                    # ── Record decision ──
+                    session_recorder.record_decision(
+                        classification=decision.path.value,
+                        confidence=decision.confidence,
+                        latency_us=decision.latency_us,
+                        llm_used=False,
+                        action=decision.action,
+                        actions=decision.actions,
+                    )
+
                     if decision.action and self._action_executor:
                         try:
                             await self._action_executor(decision.action)
@@ -444,6 +477,11 @@ class ConversationEngine:
                         action_success=(decision.action is not None or decision.actions is not None),
                     )
 
+                    # ── Record turn end ──
+                    session_recorder.record_turn_end(
+                        total_latency_ms=(time.time() - t_turn_start) * 1000,
+                    )
+
                     if decision.response and decision.path in (
                         DecisionPath.WORKING_MEMORY, DecisionPath.SESSION_MEMORY,
                         DecisionPath.DIRECT_EXECUTION,
@@ -467,6 +505,17 @@ class ConversationEngine:
                 self._set_state(EngineState.THINK)
                 t_llm_start = time.time()
                 actions = await self._think_and_speak(text, events)
+
+                # ── Record decision (LLM path) ──
+                session_recorder.record_decision(
+                    classification=RouteKind.COMPLEX.value,
+                    confidence=0.0,
+                    latency_us=0.0,
+                    llm_used=True,
+                    action=actions[0] if actions else None,
+                    actions=actions if actions else None,
+                )
+
                 benchmark.record_turn(
                     text=text, llm_used=True,
                     router_kind=RouteKind.COMPLEX.value,
@@ -479,6 +528,11 @@ class ConversationEngine:
                 # ── Execute actions ──
                 for action_json in actions:
                     await self._run_action(action_json)
+
+                # ── Record turn end (LLM path) ──
+                session_recorder.record_turn_end(
+                    total_latency_ms=(time.time() - t_turn_start) * 1000,
+                )
 
                 # Drain stale events from TTS/action contamination
                 drained = 0

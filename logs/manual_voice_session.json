@@ -1,0 +1,83 @@
+{
+  "session_id": "1786011111",
+  "session_started_iso": "2026-08-06T10:11:51",
+  "session_ended_iso": "2026-08-06T10:11:51",
+  "total_turns": 2,
+  "turns": [
+    {
+      "turn_id": 1,
+      "timestamp_iso": "2026-08-06T10:11:51",
+      "wake_latency_ms": 320,
+      "wake_confidence": 0.87,
+      "wake_model": "hey_leo_v2",
+      "wake_transcript": "hello leo",
+      "face_auth_latency_ms": 450,
+      "face_auth_success": true,
+      "face_auth_user": "test_user",
+      "speech_duration_ms": 1200,
+      "endpoint_reason": "silence",
+      "whisper_transcript": "open firefox",
+      "transcript_confidence": 0.95,
+      "whisper_latency_ms": 200,
+      "command_classification": "DIRECT_EXECUTION",
+      "decision_confidence": 0.98,
+      "decision_latency_us": 150,
+      "llm_used": false,
+      "action_selected": {
+        "type": "desktop_open",
+        "app": "firefox"
+      },
+      "actions_selected": null,
+      "action_verification_result": "verified",
+      "action_verification_detail": "Window appeared",
+      "response_text": "Opening Firefox",
+      "tts_latency_ms": 300,
+      "total_turn_latency_ms": 1800,
+      "checklist": {
+        "transcript_correct": null,
+        "planner_correct": null,
+        "action_executed": null,
+        "verification_succeeded": null,
+        "response_natural": null,
+        "latency_acceptable": null
+      },
+      "extra": {}
+    },
+    {
+      "turn_id": 2,
+      "timestamp_iso": "2026-08-06T10:11:51",
+      "wake_latency_ms": 280,
+      "wake_confidence": 0.92,
+      "wake_model": "hey_leo_v2",
+      "wake_transcript": "hey leo",
+      "face_auth_latency_ms": 0.0,
+      "face_auth_success": false,
+      "face_auth_user": "",
+      "speech_duration_ms": 1500,
+      "endpoint_reason": "silence",
+      "whisper_transcript": "how are you",
+      "transcript_confidence": 0.88,
+      "whisper_latency_ms": 250,
+      "command_classification": "CONVERSATION",
+      "decision_confidence": 0.95,
+      "decision_latency_us": 100,
+      "llm_used": false,
+      "action_selected": null,
+      "actions_selected": null,
+      "action_verification_result": "",
+      "action_verification_detail": "",
+      "response_text": "I am doing great, thank you!",
+      "tts_latency_ms": 400,
+      "total_turn_latency_ms": 2200,
+      "checklist": {
+        "transcript_correct": null,
+        "planner_correct": null,
+        "action_executed": null,
+        "verification_succeeded": null,
+        "response_natural": null,
+        "latency_acceptable": null
+      },
+      "extra": {}
+    }
+  ]
+}
