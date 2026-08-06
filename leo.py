@@ -120,9 +120,15 @@ async def run_leo(no_auth: bool = False) -> None:
     from services.screen_capture import screen_capture_service
 
     # ── Wire subsystems ───────────────────────────────────
-    conversation_engine.set_action_executor(action_dispatcher.execute)
+    # ConversationEngine ONLY speaks. The Brain is the single
+    # orchestrator for perceive → decide → plan → dispatch →
+    # verify → learn → respond.
 
-    # Wire the command router (smart routing layer — bypasses LLM for 80%+ of commands)
+    # Brain — the single orchestrator
+    from agent.brain import agent_brain
+    await agent_brain.initialize()
+
+    # Wire the command router (classifies only — Brain dispatches)
     from core.command_router import command_router
     command_router.wire(action_dispatcher=action_dispatcher, conversation_engine=conversation_engine)
 
@@ -135,7 +141,6 @@ async def run_leo(no_auth: bool = False) -> None:
     conversation_engine.set_search_provider(search_service.context_for_llm)
 
     # Learning context: Context Composer — smart, ranked, compact memory injection
-    # Replaces the old naive learning_engine.llm_context() approach.
     from agent.context_composer import context_composer
     conversation_engine.set_learning_context(
         lambda: context_composer.compose("", max_tokens=500)

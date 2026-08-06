@@ -58,10 +58,8 @@ from voice.command_listener import command_listener, is_filler, UtteranceEvent
 from voice.streaming_tts import streaming_tts
 from voice.wake_listener import WakeListener, WakeEvent
 from voice.wake_model_manager import wake_model_manager
-from agent.streaming_llm import streaming_llm
 from agent.conversation_memory import conv_memory
 from agent.personality import personality
-from core.command_router import command_router, RouteKind
 from core.benchmark import benchmark
 from core.manual_session_recorder import session_recorder
 
@@ -129,11 +127,10 @@ class ConversationEngine:
         self._session_deadline: float = 0.0
         self._turn_count = 0
 
-        # Providers
+        # Providers (context for Brain's LLM pipeline)
         self._vision_context_fn = None
         self._search_provider_fn = None
         self._learning_context_fn = None
-        self._action_executor = None
 
         # GUI pump
         self._gui_pump_task: Optional[asyncio.Task] = None
@@ -151,9 +148,6 @@ class ConversationEngine:
 
     def set_learning_context(self, fn) -> None:
         self._learning_context_fn = fn
-
-    def set_action_executor(self, fn) -> None:
-        self._action_executor = fn
 
     def set_auth_provider(self, fn) -> None:
         self._auth_provider = fn
@@ -425,111 +419,38 @@ class ConversationEngine:
 
                 t_turn_start = time.time()
 
-                # ── Decision engine (L1-L7) ──
-                from core.autonomous_reasoning import auto_context
-                auto_ctx = await auto_context.collect()
-
-                from core.decision_engine import decision_engine, DecisionPath
-                decision = await decision_engine.decide(
-                    text,
-                    vision_context=None,
-                    search_context=None,
-                    desktop_context=auto_ctx.summary if auto_ctx else "",
-                )
-
-                if decision.resolved:
-                    logger.info("[DECIDE] Bypassed LLM — path=%s confidence=%.2f",
-                                decision.path.value, decision.confidence)
-
-                    # ── Record decision ──
-                    session_recorder.record_decision(
-                        classification=decision.path.value,
-                        confidence=decision.confidence,
-                        latency_us=decision.latency_us,
-                        llm_used=False,
-                        action=decision.action,
-                        actions=decision.actions,
-                    )
-
-                    if decision.action and self._action_executor:
-                        try:
-                            await self._action_executor(decision.action)
-                        except Exception as e:
-                            logger.warning("[DECIDE] Action failed: %s", e)
-
-                    if decision.actions and self._action_executor:
-                        for action in decision.actions:
-                            try:
-                                await self._action_executor(action)
-                            except Exception as e:
-                                logger.warning("[DECIDE] Workflow action failed: %s", e)
-
-                    if decision.response:
-                        self._set_state(EngineState.THINK)
-                        await self._think_and_speak(decision.response, events, canned=True)
-
-                    benchmark.record_turn(
-                        text=text, llm_used=False,
-                        router_kind=decision.path.value,
-                        latency_ms=(time.time() - t_turn_start) * 1000,
-                        cache_hit=(decision.path == DecisionPath.WORKING_MEMORY),
-                        action_executed=(decision.action is not None or decision.actions is not None),
-                        action_success=(decision.action is not None or decision.actions is not None),
-                    )
-
-                    # ── Record turn end ──
-                    session_recorder.record_turn_end(
-                        total_latency_ms=(time.time() - t_turn_start) * 1000,
-                    )
-
-                    if decision.response and decision.path in (
-                        DecisionPath.WORKING_MEMORY, DecisionPath.SESSION_MEMORY,
-                        DecisionPath.DIRECT_EXECUTION,
-                    ):
-                        command_router.cache_llm_response(text, decision.response, ttl_s=86400)
-
-                    # Drain stale events
-                    drained = 0
-                    while True:
-                        try:
-                            events.get_nowait()
-                            drained += 1
-                        except asyncio.QueueEmpty:
-                            break
-                    if drained:
-                        logger.info("[LISTEN] Drained %d stale STT events", drained)
-                    self._set_state(EngineState.LISTEN)
-                    continue
-
-                # ── STATE: THINK (LLM) ──
+                # ── STATE: THINK — Brain orchestrates the full pipeline ──
+                # Brain.process_command() runs:
+                #   perceive → decide → plan → dispatch → verify → learn → respond
+                # The engine ONLY speaks the response. No bypass is possible.
                 self._set_state(EngineState.THINK)
-                t_llm_start = time.time()
-                actions = await self._think_and_speak(text, events)
 
-                # ── Record decision (LLM path) ──
+                from agent.brain import agent_brain
+                result = await agent_brain.process_command(text)
+
+                # ── Record decision ──
                 session_recorder.record_decision(
-                    classification=RouteKind.COMPLEX.value,
-                    confidence=0.0,
+                    classification=result.path or "BRAIN",
+                    confidence=1.0,
                     latency_us=0.0,
-                    llm_used=True,
-                    action=actions[0] if actions else None,
-                    actions=actions if actions else None,
+                    llm_used=result.used_llm,
+                    action=None,
+                    actions=None,
                 )
 
                 benchmark.record_turn(
-                    text=text, llm_used=True,
-                    router_kind=RouteKind.COMPLEX.value,
-                    latency_ms=(time.time() - t_turn_start) * 1000,
-                    llm_latency_ms=(time.time() - t_llm_start) * 1000,
-                    action_executed=len(actions) > 0,
-                    action_success=len(actions) > 0,
+                    text=text, llm_used=result.used_llm,
+                    router_kind=result.path,
+                    latency_ms=result.latency_ms,
+                    action_executed=result.actions_executed > 0,
+                    action_success=result.actions_failed == 0,
                 )
 
-                # ── Execute actions ──
-                for action_json in actions:
-                    await self._run_action(action_json)
+                # ── Speak the response (conversation ONLY speaks) ──
+                if result.response:
+                    await self._think_and_speak(result.response, events, canned=True)
 
-                # ── Record turn end (LLM path) ──
+                # ── Record turn end ──
                 session_recorder.record_turn_end(
                     total_latency_ms=(time.time() - t_turn_start) * 1000,
                 )
@@ -582,53 +503,45 @@ class ConversationEngine:
         self, user_text: str, events: "asyncio.Queue[UtteranceEvent]",
         canned: bool = False,
     ) -> List[str]:
-        """THINK (LLM) → SPEAK (TTS) for one turn."""
+        """
+        SPEAK (TTS) for one turn.
+
+        RESPONSIBILITY: The ConversationEngine ONLY speaks. The Brain
+        generates all responses and executes all actions. This method
+        receives a complete response string and speaks it via TTS.
+        """
         self._tts_interrupt.clear()
         interrupt = self._tts_interrupt
-        actions: List[str] = []
-        t_llm = time.time()
-
-        if canned:
-            logger.info("LLM skipped (canned response)")
-        else:
-            logger.info("LLM start")
+        t_start = time.time()
 
         sentence_q: "asyncio.Queue[Optional[str]]" = asyncio.Queue()
 
         async def produce() -> None:
             try:
-                stream = self._one_line_stream(user_text) if canned \
-                    else self._llm_sentences(user_text, interrupt)
+                # Only one-line stream — the Brain already generated
+                # the full response. No LLM, no ACTION parsing here.
+                stream = self._one_line_stream(user_text)
                 async for piece in stream:
                     if interrupt.is_set():
                         break
-                    if piece.startswith("ACTION:"):
-                        actions.append(piece[len("ACTION:"):].strip())
-                    else:
-                        await sentence_q.put(piece)
+                    await sentence_q.put(piece)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                logger.warning("[LLM] error: %s", e)
+                logger.warning("[SPEAK] error: %s", e)
                 await sentence_q.put(personality.error_response())
             finally:
-                if not canned:
-                    logger.info("LLM end (%.0fms)", (time.time() - t_llm) * 1000)
                 await sentence_q.put(None)
 
         producer = asyncio.create_task(produce())
         first = await sentence_q.get()
         if first is None:
             await asyncio.gather(producer, return_exceptions=True)
-            return actions
-
-        if not canned:
-            logger.info("[LLM] First sentence in %.0fms", (time.time() - t_llm) * 1000)
+            return []
 
         # ── STATE: SPEAK ──
         self._set_state(EngineState.SPEAK)
         logger.info("TTS start")
-        t_tts = time.time()
 
         async def sentences() -> AsyncIterator[str]:
             yield first
@@ -648,8 +561,8 @@ class ConversationEngine:
             if not producer.done():
                 interrupt.set()
             await asyncio.gather(producer, monitor, return_exceptions=True)
-        logger.info("TTS end (%.0fms)", (time.time() - t_tts) * 1000)
-        return actions
+        logger.info("TTS end (%.0fms)", (time.time() - t_start) * 1000)
+        return []
 
     async def _watch_interruption(
         self, events: "asyncio.Queue[UtteranceEvent]") -> None:
@@ -669,79 +582,6 @@ class ConversationEngine:
                 events.put_nowait(ev)
             raise
 
-    async def _llm_sentences(
-        self, user_text: str, interrupt: asyncio.Event) -> AsyncIterator[str]:
-        """Yield LLM sentences with vision/search/desktop context."""
-        from core.cache_manager import cache_manager
-
-        context_parts: list = []
-
-        async def _prepopulate_caches() -> None:
-            nonlocal context_parts
-            try:
-                dk = cache_manager.desktop_key("quick_context")
-                ds_ctx = cache_manager.get_or_compute(
-                    "desktop", dk,
-                    lambda: self._get_desktop_context_sync(),
-                    ttl_s=1.0,
-                )
-                if ds_ctx:
-                    context_parts.append(f"[Desktop: {ds_ctx}]")
-            except Exception as e:
-                logger.debug("[LLM] desktop state failed: %s", e)
-
-            if self._references_screen(user_text) and self._vision_context_fn:
-                try:
-                    vk = cache_manager.vision_key("screen")
-                    entry = cache_manager.get("vision", vk)
-                    if entry is None:
-                        screen_ctx = await self._vision_context_fn()
-                        if screen_ctx:
-                            cache_manager.set("vision", vk, screen_ctx, ttl_s=5.0)
-                            entry = screen_ctx
-                    if entry:
-                        context_parts.append(f"[Screen: {entry}]")
-                except Exception as e:
-                    logger.debug("[LLM] vision failed: %s", e)
-
-            if self._search_provider_fn and self._references_search(user_text):
-                try:
-                    sk = cache_manager.search_key(user_text)
-                    entry = cache_manager.get("search", sk)
-                    if entry is None:
-                        search_ctx = await self._search_provider_fn(user_text)
-                        if search_ctx:
-                            cache_manager.set("search", sk, search_ctx, ttl_s=30.0)
-                            entry = search_ctx
-                    if entry:
-                        context_parts.append(f"[Search: {entry}]")
-                except Exception as e:
-                    logger.debug("[LLM] search failed: %s", e)
-
-            if self._learning_context_fn:
-                try:
-                    learn_ctx = self._learning_context_fn()
-                    if learn_ctx:
-                        context_parts.append(f"[User: {learn_ctx}]")
-                except Exception as e:
-                    logger.debug("[LLM] learning context failed: %s", e)
-
-        await _prepopulate_caches()
-
-        system = personality.system_prompt()
-        history = conv_memory.format_for_llm()
-        ctx_block = "\n".join(context_parts) if context_parts else ""
-
-        prompt = user_text
-        if ctx_block:
-            prompt = f"{ctx_block}\n\nUser: {user_text}"
-
-        async for sentence in streaming_llm.stream(
-            prompt, system_prompt=system, history=history,
-            interrupt=interrupt,
-        ):
-            yield sentence
-
     async def _one_line_stream(self, text: str) -> AsyncIterator[str]:
         yield text
 
@@ -750,38 +590,6 @@ class ConversationEngine:
         async def _gen():
             yield text
         await streaming_tts.speak_sentences(_gen(), None)
-
-    async def _run_action(self, action_json: str) -> None:
-        if not self._action_executor:
-            return
-        try:
-            import json
-            action = json.loads(action_json) if isinstance(action_json, str) else action_json
-            await self._action_executor(action)
-        except Exception as e:
-            logger.warning("[ENGINE] Action execution failed: %s", e)
-
-    @staticmethod
-    def _get_desktop_context_sync() -> str:
-        try:
-            from services.desktop_state import desktop_state
-            return desktop_state.quick_context()
-        except Exception:
-            return ""
-
-    @staticmethod
-    def _references_screen(text: str) -> bool:
-        keywords = {"screen", "see", "looking at", "this page", "this window",
-                    "what's on", "what is on", "current", "visible"}
-        lower = text.lower()
-        return any(k in lower for k in keywords)
-
-    @staticmethod
-    def _references_search(text: str) -> bool:
-        keywords = {"search", "find", "look up", "google", "what is", "who is",
-                    "how to", "weather", "news", "latest"}
-        lower = text.lower()
-        return any(k in lower for k in keywords)
 
     def get_diagnostics(self) -> dict:
         return {

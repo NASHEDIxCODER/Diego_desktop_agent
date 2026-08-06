@@ -102,61 +102,48 @@ class AgentPlanner:
 
     def process_request(self, request: str) -> str:
         """
-        Process a user request by planning and executing steps.
+        Legacy method — kept for backward compatibility.
+        Generates a plan and returns a status message.
+
+        The Brain is the sole orchestrator. Execution flows through
+        Brain → Dispatcher → Verifier → Learning. This method only
+        generates the plan; it NEVER executes steps directly.
 
         Args:
-            request: User's request text (e.g. "Send this resume to HR on LinkedIn")
+            request: User's request text
 
         Returns:
-            Result description of what was accomplished.
+            Status message about the plan.
         """
-        logger.info("Agent processing request: %s", request)
+        logger.info("Agent planning request: %s", request)
 
-        # Store in memory
-        agent_memory.add_conversation("user", request)
-        task_id = agent_memory.start_task(request)
-
-        # Step 1: Generate plan
         plan = self._generate_plan(request)
         if not plan:
-            agent_memory.fail_task("Could not generate plan")
+            logger.warning("Could not generate plan for: %s", request[:60])
             return "I'm sorry, I couldn't figure out how to do that. Could you be more specific?"
 
         logger.info("Plan generated with %d steps", len(plan))
+        return f"I've planned {len(plan)} steps to accomplish this."
 
-        # Step 2: Execute each step
-        for i, step in enumerate(plan):
-            action = step.get("action", "")
-            params = step.get("params", {})
-            description = step.get("description", "")
+    def generate_plan_only(self, request: str) -> Optional[List[Dict[str, Any]]]:
+        """
+        Generate a step-by-step plan WITHOUT executing it.
 
-            agent_memory.add_step(action, description)
-            agent_memory.start_step()
+        This is the ONLY planning API used by the Brain. The Brain
+        dispatches each step through the ActionDispatcher.
 
-            logger.info("Executing step %d/%d: %s — %s", i + 1, len(plan), action, description)
+        Args:
+            request: User's request text
 
-            success, message = self._execute_action(action, params)
+        Returns:
+            List of action step dicts, or None if no plan could be made.
+        """
+        logger.info("Agent generating plan: %s", request[:80])
 
-            if success:
-                agent_memory.complete_step(message)
-                agent_memory.add_conversation("assistant", f"Step {i+1}: {message}")
-            else:
-                logger.warning("Step %d failed: %s", i + 1, message)
-                agent_memory.fail_step(message)
-
-                # Try recovery once
-                recovered = self._try_recovery(action, params, message)
-                if recovered:
-                    agent_memory.complete_step(f"Recovered: {recovered}")
-                    agent_memory.add_conversation("assistant", f"Step {i+1} (after recovery): {recovered}")
-                else:
-                    agent_memory.fail_task(f"Failed at step {i+1}: {message}")
-                    return f"I ran into an issue on step {i+1} ({description}): {message}. I couldn't recover automatically."
-
-        # Step 3: Complete
-        agent_memory.complete_task("All steps completed successfully")
-        logger.info("Agent task completed: %s", request)
-        return f"Done! I've completed the task: {request}"
+        plan = self._generate_plan(request)
+        if plan:
+            logger.info("Plan generated with %d steps", len(plan))
+        return plan
 
     def _generate_plan(self, request: str) -> Optional[List[Dict[str, Any]]]:
         """Generate a step-by-step plan using the LLM + experience DB."""

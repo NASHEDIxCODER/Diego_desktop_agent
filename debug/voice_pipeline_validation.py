@@ -381,12 +381,12 @@ def test_conversation_engine():
     conversation_engine.set_vision_context(lambda: called.append("vision") or "test")
     conversation_engine.set_search_provider(lambda q: called.append("search") or "test")
     conversation_engine.set_learning_context(lambda: called.append("learn") or "test")
-    conversation_engine.set_action_executor(lambda a: called.append("action"))
-    
+
     check("Vision context wired", conversation_engine._vision_context_fn is not None)
     check("Search provider wired", conversation_engine._search_provider_fn is not None)
     check("Learning context wired", conversation_engine._learning_context_fn is not None)
-    check("Action executor wired", conversation_engine._action_executor is not None)
+    check("Action executor removed (Brain owns execution)",
+          not hasattr(conversation_engine, '_action_executor'))
     
     # Auth
     check("No auth by default", not conversation_engine._needs_auth())

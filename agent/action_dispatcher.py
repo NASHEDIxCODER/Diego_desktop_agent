@@ -84,20 +84,20 @@ class ActionDispatcher:
 
     async def execute(self, action: Dict[str, Any]) -> Optional[str]:
         """
-        Execute an ACTION dict from the LLM with verify/retry/fallback.
+        Execute an ACTION dict from the LLM.
 
-        Pipeline:
-          1. Execute the action
-          2. Verify it worked (vision check, process check, etc.)
-          3. If failed, retry with adjusted parameters
-          4. If still failed, try fallback alternatives
-          5. Report result
+        RESPONSIBILITY: The Dispatcher ONLY executes actions. The Brain
+        owns verification and learning. This method does NOT verify or
+        record for learning — the Brain's pipeline does that.
 
-        Runs blocking desktop operations in a thread so the event loop
-        stays responsive (full duplex keeps listening while acting).
+        Fast path for music actions (must run in the event loop).
+        All other actions run in a thread.
 
-        Every action is recorded in the learning engine for continuous
-        self-improvement.
+        Args:
+            action: Action dict with action name and params
+
+        Returns:
+            Result string describing what happened.
         """
         name = action.get("action", "")
         params = action.get("params", {}) or {}
@@ -106,88 +106,38 @@ class ActionDispatcher:
         t0 = time.time()
         loop = asyncio.get_event_loop()
 
-        # ── Consult ExperienceDB for best approach ────────
-        best_action = self._consult_experience(name, params)
-
-        # ── Capture pre-action screen state for verification ──
-        self._capture_pre_action()
-
         # ── Music actions must run in the event loop, not a thread ──
         if name == "play_media":
-            result = await self._play_media_async(params.get("query", ""))
-            latency_ms = (time.time() - t0) * 1000
-            self._record_for_learning(name, params, success=True, latency_ms=latency_ms)
-            return result
+            return await self._play_media_async(params.get("query", ""))
         if name in ("music_pause", "music_resume", "music_next",
                      "music_previous", "music_stop", "music_shuffle",
                      "music_repeat", "music_status"):
-            result = await self._music_action(name, params)
-            latency_ms = (time.time() - t0) * 1000
-            self._record_for_learning(name, params, success=True, latency_ms=latency_ms)
-            return result
+            return await self._music_action(name, params)
         if name == "music_volume":
             pct = int(params.get("percent", params.get("level", 50)))
-            result = await self._music_volume(pct)
-            latency_ms = (time.time() - t0) * 1000
-            self._record_for_learning(name, params, success=True, latency_ms=latency_ms)
-            return result
+            return await self._music_volume(pct)
         if name == "music_mute":
-            result = await self._music_mute()
-            latency_ms = (time.time() - t0) * 1000
-            self._record_for_learning(name, params, success=True, latency_ms=latency_ms)
-            return result
+            return await self._music_mute()
 
-        # ── Attempt 1: Primary execution ──────────────────
+        # ── Primary execution ─────────────────────────────
         try:
             result = await loop.run_in_executor(None, self._execute_sync, name, params)
-            latency_ms = (time.time() - t0) * 1000
-
-            # Verify the action actually worked
-            verified = await self._verify_action(name, params, result)
-            if verified:
-                self._record_for_learning(name, params, success=True, latency_ms=latency_ms)
+            if result:
                 return result
-
-            # Verification failed — try retry
-            logger.warning("[ACTIONS] Verification failed for %s — retrying", name)
         except Exception as e:
-            latency_ms = (time.time() - t0) * 1000
-            logger.warning("[ACTIONS] execute failed (%s): %s — retrying", name, e)
+            logger.warning("[ACTIONS] execute failed (%s): %s", name, e)
 
-        # ── Attempt 2: Retry with adjusted params ─────────
-        try:
-            retry_params = self._adjust_params_for_retry(name, params)
-            result = await loop.run_in_executor(None, self._execute_sync, name, retry_params)
-            latency_ms = (time.time() - t0) * 1000
-
-            verified = await self._verify_action(name, retry_params, result)
-            if verified:
-                self._record_for_learning(name, params, success=True, latency_ms=latency_ms,
-                                          retries=1)
-                return result
-
-            logger.warning("[ACTIONS] Retry verification failed for %s — trying fallback", name)
-        except Exception as e:
-            logger.warning("[ACTIONS] Retry failed (%s): %s — trying fallback", name)
-
-        # ── Attempt 3: Fallback alternative ───────────────
+        # ── Fallback alternative ──────────────────────────
         try:
             fallback_result = await self._execute_fallback(name, params)
             if fallback_result:
-                latency_ms = (time.time() - t0) * 1000
-                self._record_for_learning(name, params, success=True, latency_ms=latency_ms,
-                                          retries=2, fallback_used=True)
                 return fallback_result
         except Exception as e:
             logger.warning("[ACTIONS] Fallback failed (%s): %s", name, e)
 
-        # ── All attempts exhausted ────────────────────────
-        latency_ms = (time.time() - t0) * 1000
-        self._record_for_learning(name, params, success=False, latency_ms=latency_ms,
-                                  error=f"All attempts exhausted for {name}")
         # Track entity for pronoun resolution
         self._track_entity_for_memory(name, params)
-        return f"Couldn't {name.replace('_', ' ')} after several attempts"
+        return f"Couldn't {name.replace('_', ' ')}"
 
     # ── ExperienceDB consultation ─────────────────────────
 

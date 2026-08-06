@@ -207,7 +207,12 @@ class CommandRouter:
     # ── Wiring ────────────────────────────────────────────────────
 
     def wire(self, action_dispatcher=None, conversation_engine=None) -> None:
-        """Wire in the action dispatcher and conversation engine."""
+        """Wire in the action dispatcher and conversation engine.
+
+        NOTE: The router does NOT execute actions directly. The Brain
+        is the single orchestrator. The router only CLASSIFIES and
+        returns the action for the Brain to dispatch.
+        """
         self._action_dispatcher = action_dispatcher
         self._conversation_engine = conversation_engine
 
@@ -242,15 +247,10 @@ class CommandRouter:
             )
 
         # ── Layer 2: Simple desktop commands ───────────────────
+        # NOTE: The router ONLY classifies. The Brain dispatches the
+        # action through Permission → Dispatcher → Verifier → Learning.
         result = self._match_simple(normalized)
         if result is not None:
-            t1 = time.time()
-            if self._action_dispatcher:
-                # Execute immediately — no LLM call
-                try:
-                    await self._action_dispatcher.execute(result[0])
-                except Exception as e:
-                    logger.warning("[ROUTER] Action execution failed: %s", e)
             self._bypassed_llm += 1
             self._latency_ms_total += (time.time() - t0) * 1000
             return RouteResult(
@@ -261,14 +261,10 @@ class CommandRouter:
             )
 
         # ── Layer 3: Known workflows ──────────────────────────
+        # NOTE: The router ONLY returns the workflow. The Brain
+        # dispatches each step through the pipeline.
         workflow = self._match_workflow(normalized)
         if workflow is not None:
-            if self._action_dispatcher:
-                for action in workflow:
-                    try:
-                        await self._action_dispatcher.execute(action)
-                    except Exception as e:
-                        logger.warning("[ROUTER] Workflow action failed: %s", e)
             self._bypassed_llm += 1
             self._latency_ms_total += (time.time() - t0) * 1000
             return RouteResult(

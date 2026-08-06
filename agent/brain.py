@@ -101,6 +101,24 @@ class Goal:
     result_summary: str = ""
 
 
+@dataclass
+class CommandResult:
+    """
+    Result of processing a spoken command through the full pipeline.
+
+    The ConversationEngine uses this to speak the response.
+    """
+    response: str = ""
+    actions_executed: int = 0
+    actions_succeeded: int = 0
+    actions_failed: int = 0
+    verified: bool = True
+    used_llm: bool = False
+    path: str = ""                      # Which path resolved the command
+    latency_ms: float = 0.0
+    error: str = ""
+
+
 # ═══════════════════════════════════════════════════════════════
 # Decomposition Prompt
 # ═══════════════════════════════════════════════════════════════
@@ -153,12 +171,23 @@ class AgentBrain:
     def __init__(self):
         self._llm_client = None
         self._planner = None
+        self._dispatcher = None
+        self._verifier = None
+        self._learning = None
+        self._perception = None
+        self._decision_engine = None
         self._initialized = False
         self._active_goal: Optional[Goal] = None
         self._goal_history: List[Goal] = []
         self._goal_manager = None  # Set after GoalManager is created
         self._event_bus = None     # Wired from outside
         self._lock = asyncio.Lock()
+
+        # Pipeline stats
+        self._commands_processed: int = 0
+        self._actions_dispatched: int = 0
+        self._actions_verified: int = 0
+        self._actions_failed: int = 0
 
     # ── Wiring ─────────────────────────────────────────────────
 
@@ -175,8 +204,14 @@ class AgentBrain:
         self._goal_manager = manager
 
     async def initialize(self) -> bool:
-        """Initialize the Brain. Wires to existing Planner."""
+        """Initialize the Brain and wire ALL subsystems.
+
+        The Brain is the single orchestrator. Every subsystem is wired
+        here so no other module can bypass the pipeline.
+        """
         logger.info("[Brain] Initializing AgentBrain...")
+
+        # ── Planner (creates plans ONLY) ──
         try:
             from agent.planner import agent_planner
             self._planner = agent_planner
@@ -185,6 +220,46 @@ class AgentBrain:
         except Exception as e:
             logger.warning("[Brain] Planner not available: %s", e)
             self._planner = None
+
+        # ── Action Dispatcher (executes actions ONLY) ──
+        try:
+            from agent.action_dispatcher import action_dispatcher
+            self._dispatcher = action_dispatcher
+        except Exception as e:
+            logger.warning("[Brain] ActionDispatcher not available: %s", e)
+            self._dispatcher = None
+
+        # ── Action Verifier (verifies actions ONLY) ──
+        try:
+            from vision.action_verifier import action_verifier
+            self._verifier = action_verifier
+        except Exception as e:
+            logger.warning("[Brain] ActionVerifier not available: %s", e)
+            self._verifier = None
+
+        # ── Learning Engine (records outcomes ONLY) ──
+        try:
+            from learning.learning_engine import learning_engine
+            self._learning = learning_engine
+        except Exception as e:
+            logger.warning("[Brain] LearningEngine not available: %s", e)
+            self._learning = None
+
+        # ── Perception Pipeline (observes ONLY) ──
+        try:
+            from services.perception_pipeline import perception_pipeline
+            self._perception = perception_pipeline
+        except Exception as e:
+            logger.warning("[Brain] PerceptionPipeline not available: %s", e)
+            self._perception = None
+
+        # ── Decision Engine (routes ONLY) ──
+        try:
+            from core.decision_engine import decision_engine
+            self._decision_engine = decision_engine
+        except Exception as e:
+            logger.warning("[Brain] DecisionEngine not available: %s", e)
+            self._decision_engine = None
 
         # LLM client fallback
         if self._llm_client is None:
@@ -195,14 +270,314 @@ class AgentBrain:
                 pass
 
         self._initialized = True
-        logger.info("[Brain] AgentBrain initialized (planner=%s, llm=%s)",
+        logger.info("[Brain] AgentBrain initialized (planner=%s, dispatcher=%s, verifier=%s, learning=%s, perception=%s)",
                      "ready" if self._planner else "unavailable",
-                     "ready" if self._llm_client else "unavailable")
+                     "ready" if self._dispatcher else "unavailable",
+                     "ready" if self._verifier else "unavailable",
+                     "ready" if self._learning else "unavailable",
+                     "ready" if self._perception else "unavailable")
         return True
 
     @property
     def is_available(self) -> bool:
         return self._initialized and self._planner is not None
+
+    # ═══════════════════════════════════════════════════════════
+    # MAIN ENTRY POINT: process_command()
+    # The single pipeline for every spoken command:
+    #   perceive → decide → plan → dispatch → verify → learn → respond
+    # ═══════════════════════════════════════════════════════════
+
+    async def process_command(self, text: str) -> CommandResult:
+        """
+        Process a spoken command through the full execution pipeline.
+
+        This is the ONLY entry point for command execution. The
+        ConversationEngine calls this and speaks the response.
+
+        Flow:
+          1. Perceive: collect desktop context
+          2. Decide: route the command (LLM last resort)
+          3. Plan: create a plan if needed
+          4. Dispatch: execute actions
+          5. Verify: verify each action
+          6. Learn: record outcomes
+          7. Respond: return the response to speak
+
+        Args:
+            text: The user's spoken command.
+
+        Returns:
+            CommandResult with the response to speak.
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        t0 = time.time()
+        self._commands_processed += 1
+        result = CommandResult()
+
+        # ── Step 1: Perceive ─────────────────────────────────
+        perception_ctx = await self._perceive()
+
+        # ── Step 2: Decide ───────────────────────────────────
+        decision = await self._decide(text, perception_ctx)
+
+        if decision.resolved:
+            # ── Simple path: no LLM needed ──────────────────
+            result.path = decision.path.value
+            result.used_llm = False
+
+            # Execute single action
+            if decision.action:
+                ok = await self._dispatch_and_verify(decision.action)
+                result.actions_executed = 1
+                result.actions_succeeded = 1 if ok else 0
+                result.actions_failed = 0 if ok else 1
+                result.verified = ok
+
+            # Execute multi-step workflow
+            if decision.actions:
+                for action in decision.actions:
+                    ok = await self._dispatch_and_verify(action)
+                    result.actions_executed += 1
+                    if ok:
+                        result.actions_succeeded += 1
+                    else:
+                        result.actions_failed += 1
+                result.verified = result.actions_failed == 0
+
+            # Response
+            result.response = decision.response or self._default_response(result)
+
+        else:
+            # ── Complex path: needs LLM ─────────────────────
+            result.path = "LLM"
+            result.used_llm = True
+
+            # Step 3: Plan (if needed)
+            plan = await self._plan(text, perception_ctx)
+
+            # Steps 4-6: Dispatch → Verify → Learn
+            if plan:
+                for step in plan:
+                    action = self._step_to_action(step)
+                    if action:
+                        ok = await self._dispatch_and_verify(action)
+                        result.actions_executed += 1
+                        if ok:
+                            result.actions_succeeded += 1
+                        else:
+                            result.actions_failed += 1
+                result.verified = result.actions_failed == 0
+
+            # Step 7: Respond (LLM generates the response)
+            result.response = await self._generate_response(text, perception_ctx, result)
+
+        result.latency_ms = (time.time() - t0) * 1000
+        logger.info("[Brain] Command processed: '%s' path=%s actions=%d verified=%s latency=%.0fms",
+                     text[:50], result.path, result.actions_executed, result.verified, result.latency_ms)
+        return result
+
+    # ── Pipeline steps ─────────────────────────────────────────
+
+    async def _perceive(self) -> Optional[Any]:
+        """Step 1: Perceive desktop context."""
+        if not self._perception:
+            return None
+        try:
+            ctx = await self._perception.perceive()
+            logger.debug("[Brain] Perception: window='%s' a11y=%s ocr=%s",
+                         getattr(ctx, 'window_title', '')[:40],
+                         getattr(ctx, 'a11y_available', False),
+                         getattr(ctx, 'ocr_used', False))
+            return ctx
+        except Exception as e:
+            logger.debug("[Brain] Perception failed: %s", e)
+            return None
+
+    async def _decide(self, text: str, perception_ctx: Optional[Any]) -> Any:
+        """Step 2: Decide how to handle the command."""
+        if not self._decision_engine:
+            # Fallback: always use LLM
+            from core.decision_engine import Decision, DecisionPath
+            return Decision(path=DecisionPath.LLM, needs_llm=True)
+
+        try:
+            desktop_ctx = ""
+            if perception_ctx and hasattr(perception_ctx, 'compact_summary'):
+                desktop_ctx = perception_ctx.compact_summary
+
+            return await self._decision_engine.decide(
+                text,
+                vision_context=desktop_ctx or None,
+                search_context=None,
+                desktop_context=desktop_ctx,
+            )
+        except Exception as e:
+            logger.warning("[Brain] Decision failed: %s", e)
+            from core.decision_engine import Decision, DecisionPath
+            return Decision(path=DecisionPath.LLM, needs_llm=True)
+
+    async def _plan(self, text: str, perception_ctx: Optional[Any]) -> Optional[List[Dict[str, Any]]]:
+        """Step 3: Create a plan (Planner only creates plans, never executes)."""
+        if not self._planner:
+            return None
+        try:
+            loop = asyncio.get_event_loop()
+            plan = await loop.run_in_executor(
+                None, self._planner.generate_plan_only, text
+            )
+            if plan:
+                logger.info("[Brain] Plan created: %d steps", len(plan))
+            return plan
+        except Exception as e:
+            logger.warning("[Brain] Planning failed: %s", e)
+            return None
+
+    async def _dispatch_and_verify(self, action: Dict[str, Any]) -> bool:
+        """
+        Steps 4-6: Dispatch → Verify → Learn.
+
+        This is the ONLY place actions are dispatched, verified, and
+        recorded for learning.
+        """
+        if not self._dispatcher:
+            logger.warning("[Brain] No dispatcher — cannot execute action")
+            return False
+
+        action_name = action.get("action", "")
+        params = action.get("params", {}) or {}
+
+        # ── Step 4: Dispatch ────────────────────────────────
+        try:
+            result = await self._dispatcher.execute(action)
+            self._actions_dispatched += 1
+        except Exception as e:
+            logger.warning("[Brain] Dispatch failed for %s: %s", action_name, e)
+            self._actions_failed += 1
+            await self._learn(action_name, params, success=False, error=str(e))
+            return False
+
+        # ── Step 5: Verify ──────────────────────────────────
+        verified = await self._verify(action_name, params, result)
+        self._actions_verified += 1
+
+        if not verified:
+            logger.warning("[Brain] Action %s failed verification", action_name)
+            self._actions_failed += 1
+            await self._learn(action_name, params, success=False, error="Verification failed")
+            return False
+
+        # ── Step 6: Learn ───────────────────────────────────
+        await self._learn(action_name, params, success=True)
+        return True
+
+    async def _verify(self, action_name: str, params: Dict[str, Any],
+                      result: Optional[str]) -> bool:
+        """Step 5: Verify an action had the expected effect."""
+        if not self._verifier:
+            # No verifier — trust the dispatcher result
+            return result is not None and "Couldn't" not in str(result)
+
+        try:
+            verify_type = self._map_action_to_verify_type(action_name)
+            if not verify_type:
+                # No verification needed for this action type
+                return result is not None and "Couldn't" not in str(result)
+
+            vresult = await self._verifier.verify_action(
+                verify_type,
+                params,
+                expected_outcome="",
+            )
+            return vresult.success
+        except Exception as e:
+            logger.debug("[Brain] Verification failed: %s", e)
+            # Trust the result on verification failure
+            return result is not None and "Couldn't" not in str(result)
+
+    async def _learn(self, action_name: str, params: Dict[str, Any],
+                     success: bool, error: str = "") -> None:
+        """Step 6: Record the action outcome for learning."""
+        if not self._learning:
+            return
+        try:
+            self._learning.record_action(
+                action_name=action_name,
+                params=params,
+                success=success,
+                error=error,
+            )
+        except Exception as e:
+            logger.debug("[Brain] Learning record failed: %s", e)
+
+    async def _generate_response(self, text: str, perception_ctx: Optional[Any],
+                                  result: CommandResult) -> str:
+        """
+        Step 7: Generate a conversational response.
+
+        Uses the streaming LLM for complex commands. For simple
+        commands, uses the decision response or a default.
+        """
+        # If we already have a response from the decision, use it
+        if result.response:
+            return result.response
+
+        # If actions were executed, give a natural confirmation
+        if result.actions_executed > 0:
+            if result.actions_failed == 0:
+                return "Done."
+            return f"I ran into an issue with {result.actions_failed} of the steps."
+
+        # Otherwise, use the LLM to generate a response
+        try:
+            from agent.streaming_llm import streaming_llm
+            sentences = []
+            async for sentence in streaming_llm.generate(text):
+                sentences.append(sentence)
+            return " ".join(sentences) if sentences else "I'm not sure how to help with that."
+        except Exception as e:
+            logger.warning("[Brain] LLM response failed: %s", e)
+            return "I'm having trouble with that right now."
+
+    # ── Helpers ────────────────────────────────────────────────
+
+    @staticmethod
+    def _map_action_to_verify_type(action_name: str) -> Optional[str]:
+        """Map dispatcher action names to verifier action types."""
+        mapping = {
+            "desktop_open": "open_app",
+            "browser_navigate": "navigate",
+            "browser_search": "navigate",
+            "click_text": "click",
+            "scroll": "scroll",
+            "type_text": "type",
+            "key_press": "key_press",
+        }
+        return mapping.get(action_name)
+
+    @staticmethod
+    def _step_to_action(step: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Convert a planner step to an action dict."""
+        if not step:
+            return None
+        action = step.get("action", "")
+        if not action:
+            return None
+        return {
+            "action": action,
+            "params": step.get("params", {}) or {},
+        }
+
+    @staticmethod
+    def _default_response(result: CommandResult) -> str:
+        """Generate a default response based on execution results."""
+        if result.actions_executed == 0:
+            return "On it."
+        if result.actions_failed == 0:
+            return "Done."
+        return f"Mostly done, but {result.actions_failed} step(s) had issues."
 
     @property
     def active_goal(self) -> Optional[Goal]:
