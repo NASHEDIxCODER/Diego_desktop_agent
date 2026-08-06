@@ -475,7 +475,7 @@ class ScreenReasoner:
         Returns:
             Dict with action_type, target, confidence, params, explanation.
         """
-        request = request.strip()
+        request = user_request.strip()
         request_lower = request.lower()
 
         # "Click the blue Run button" / "Click Run" / "Click the X"

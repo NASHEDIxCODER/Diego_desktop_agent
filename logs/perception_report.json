@@ -1,0 +1,498 @@
+{
+  "report_title": "Leo Desktop Assistant \u2014 Perception Pipeline Phase 2 Report",
+  "timestamp": "2026-08-06 10:38:38 UTC",
+  "test_summary": {
+    "total_tests": 10,
+    "passed": 8,
+    "failed": 2,
+    "skipped": 0,
+    "pass_rate": "80.0%",
+    "elapsed_seconds": 1.9,
+    "results": [
+      {
+        "test": "Accessibility Initialization",
+        "status": "PASS",
+        "timestamp": 1786012716.7288709,
+        "details": {
+          "backends": [
+            "at-spi",
+            "x11_window"
+          ],
+          "backend_count": 2
+        },
+        "error": ""
+      },
+      {
+        "test": "Accessibility Tree",
+        "status": "FAIL",
+        "timestamp": 1786012716.7745507,
+        "details": {
+          "tree": null
+        },
+        "error": "No accessibility tree available \u2014 OCR fallback will be needed"
+      },
+      {
+        "test": "Perception Pipeline",
+        "status": "PASS",
+        "timestamp": 1786012717.216693,
+        "details": {
+          "perception_id": "b5dc664306a4",
+          "total_latency_ms": 424.2,
+          "stages_run": [
+            "window_detect",
+            "app_detect",
+            "ui_tree",
+            "ocr",
+            "desktop_state",
+            "reasoning"
+          ],
+          "stage_count": 6,
+          "window_title": "leo_Desktop_agent \u2013 accessibility.py",
+          "window_process": "pycharm",
+          "app_type": "jetbrains",
+          "app_name": "PyCharm",
+          "page_type": "settings",
+          "a11y_available": false,
+          "a11y_backend": "",
+          "a11y_node_count": 0,
+          "a11y_clickable_count": 0,
+          "ocr_used": true,
+          "ocr_skipped_reason": "",
+          "ocr_box_count": 0,
+          "screen_changed": false,
+          "window_changed": true,
+          "has_dialog": false,
+          "has_notification": false,
+          "focused_element": "",
+          "git_branch": "",
+          "browser_tab": "",
+          "clipboard_preview": "Phase 2 begins.\n\nThe voice subsystem is now FEATUR",
+          "semantic_summary": "Screen type: settings",
+          "compact_summary": "Window: [jetbrains] leo_Desktop_agent \u2013 accessibility.py\nPage: settings\nWindow: leo_Desktop_agent \u2013 accessibility.py\nApplication: PyCharm (jetbrains)\nProcess: pycharm (PID 5547)\nSummary: Screen type: settings\nClipboard: Phase 2 begins.\n\nThe voice subsystem is now FEATURE FROZEN.\n\nDo NOT modify:\n\n- A"
+        },
+        "error": ""
+      },
+      {
+        "test": "OCR Fallback \u2014 Correctly Used",
+        "status": "PASS",
+        "timestamp": 1786012717.2875335,
+        "details": {
+          "a11y_available": false,
+          "ocr_used": true,
+          "ocr_box_count": 0
+        },
+        "error": ""
+      },
+      {
+        "test": "Vision Cache",
+        "status": "PASS",
+        "timestamp": 1786012717.3824768,
+        "details": {
+          "first_latency_ms": 75.2,
+          "second_latency_ms": 19.7,
+          "cache_hit": true,
+          "speedup_ratio": 3.8,
+          "perception_id_1": "ea87aac28c07",
+          "perception_id_2": "ea87aac28c07"
+        },
+        "error": ""
+      },
+      {
+        "test": "Action Verification",
+        "status": "PASS",
+        "timestamp": 1786012717.832414,
+        "details": {
+          "verification_success": false,
+          "explanation": "Click 'Test Button' had no visible effect. Screen: unchanged; Window: unchanged",
+          "retry_needed": true,
+          "recovery_action": "Retry clicking 'Test Button' or try nearby element",
+          "details": {
+            "screen_changed": false,
+            "window_changed": false
+          },
+          "verifier_report": {
+            "verification_count": 0,
+            "failure_count": 0,
+            "failure_rate": "0.0%",
+            "retry_count": 0,
+            "has_pre_snapshot": false
+          }
+        },
+        "error": ""
+      },
+      {
+        "test": "Screen Reasoning",
+        "status": "PASS",
+        "timestamp": 1786012717.9095788,
+        "details": {
+          "page_type": "settings",
+          "semantic_summary": "Screen type: settings",
+          "has_dialog": false,
+          "has_notification": false,
+          "error_count": 0,
+          "interactive_count": 0,
+          "question_answers": {
+            "What application is open?": {
+              "action_type": "analyze_screen",
+              "explanation": "Current screen appears to be a settings page.",
+              "confidence": 0.4
+            },
+            "What window?": {
+              "action_type": "analyze_screen",
+              "explanation": "Current screen appears to be a settings page.",
+              "confidence": 0.4
+            },
+            "What buttons are available?": {
+              "action_type": "analyze_screen",
+              "explanation": "Current screen appears to be a settings page.",
+              "confidence": 0.4
+            },
+            "What errors are visible?": {
+              "action_type": "check_screen",
+              "explanation": "Scanning screen for errors...",
+              "confidence": 0.5
+            },
+            "Summarize this screen": {
+              "action_type": "read_screen",
+              "explanation": "Reading current screen content.",
+              "confidence": 0.95
+            }
+          }
+        },
+        "error": ""
+      },
+      {
+        "test": "Layout Learning",
+        "status": "PASS",
+        "timestamp": 1786012717.9869437,
+        "details": {
+          "known_apps": [
+            "chrome",
+            "code",
+            "discord",
+            "firefox",
+            "github",
+            "gmail",
+            "pycharm",
+            "spotify",
+            "terminal",
+            "youtube"
+          ],
+          "known_app_count": 10,
+          "current_app": "PyCharm",
+          "current_app_template_observations": 101,
+          "current_app_stability": 0.95,
+          "prediction_test": "Predicted 'Run' at (1680, 64)",
+          "layout_report": {
+            "total_apps": 10,
+            "builtin_apps": 10,
+            "learned_apps": 0,
+            "apps": {
+              "code": {
+                "app_type": "vscode",
+                "observations": 100,
+                "regions": 8,
+                "elements": 11,
+                "stability": 0.95,
+                "last_seen": 1786012717.9142125
+              },
+              "firefox": {
+                "app_type": "browser",
+                "observations": 100,
+                "regions": 4,
+                "elements": 5,
+                "stability": 0.95,
+                "last_seen": 1786012717.9142506
+              },
+              "chrome": {
+                "app_type": "browser",
+                "observations": 100,
+                "regions": 3,
+                "elements": 6,
+                "stability": 0.95,
+                "last_seen": 1786012717.9142618
+              },
+              "terminal": {
+                "app_type": "terminal",
+                "observations": 100,
+                "regions": 3,
+                "elements": 2,
+                "stability": 0.95,
+                "last_seen": 1786012717.9142706
+              },
+              "pycharm": {
+                "app_type": "jetbrains",
+                "observations": 101,
+                "regions": 9,
+                "elements": 10,
+                "stability": 0.95,
+                "last_seen": 1786012717.9868922
+              },
+              "discord": {
+                "app_type": "chat",
+                "observations": 100,
+                "regions": 5,
+                "elements": 2,
+                "stability": 0.95,
+                "last_seen": 1786012717.9142938
+              },
+              "spotify": {
+                "app_type": "music",
+                "observations": 100,
+                "regions": 3,
+                "elements": 5,
+                "stability": 0.95,
+                "last_seen": 1786012717.9143004
+              },
+              "gmail": {
+                "app_type": "email",
+                "observations": 100,
+                "regions": 3,
+                "elements": 2,
+                "stability": 0.95,
+                "last_seen": 1786012717.914308
+              },
+              "youtube": {
+                "app_type": "video",
+                "observations": 100,
+                "regions": 2,
+                "elements": 4,
+                "stability": 0.95,
+                "last_seen": 1786012717.914313
+              },
+              "github": {
+                "app_type": "code_review",
+                "observations": 100,
+                "regions": 2,
+                "elements": 5,
+                "stability": 0.95,
+                "last_seen": 1786012717.9143188
+              }
+            }
+          }
+        },
+        "error": ""
+      },
+      {
+        "test": "Desktop State",
+        "status": "PASS",
+        "timestamp": 1786012717.9870265,
+        "details": {
+          "window_title": "leo_Desktop_agent \u2013 accessibility.py",
+          "window_process": "pycharm",
+          "window_pid": 5547,
+          "git_branch": "",
+          "terminal_cwd": "",
+          "browser_tab": "",
+          "browser_url": "",
+          "clipboard_preview": "Phase 2 begins.\n\nThe voice subsystem is now FEATUR",
+          "battery": "97%",
+          "cpu_percent": 4.8,
+          "memory_percent": 65.9,
+          "audio_volume": 100,
+          "audio_muted": false,
+          "current_file": "",
+          "current_ide": "pycharm",
+          "llm_context": "Focused window: pycharm \u2014 leo_Desktop_agent \u2013 accessibility.py\nClipboard: Phase 2 begins.  The voice subsystem is now FEATURE FROZEN.  Do NOT modify:  - AudioManager - Unifie\nBattery: 97% (charging)\nVolume: 100%"
+        },
+        "error": ""
+      },
+      {
+        "test": "End-to-End Perception",
+        "status": "FAIL",
+        "timestamp": 1786012718.0715237,
+        "details": {
+          "stages_completed": [
+            "window_detect",
+            "app_detect",
+            "ui_tree",
+            "ocr",
+            "desktop_state",
+            "reasoning"
+          ],
+          "missing_stages": [
+            "screen_capture"
+          ],
+          "planner_context_length": 300,
+          "quick_context": "Window: leo_Desktop_agent \u2013 accessibility.py | App: jetbrains | Page: settings | Screen type: settings | OCR: used",
+          "planner_context_preview": "Window: [jetbrains] leo_Desktop_agent \u2013 accessibility.py\nPage: settings\nWindow: leo_Desktop_agent \u2013 accessibility.py\nApplication: PyCharm (jetbrains)\nProcess: pycharm (PID 5547)\nSummary: Screen type: settings\nClipboard: Phase 2 begins.\n\nThe voice subsystem is now FEATURE FROZEN.\n\nDo NOT modify:\n\n- A",
+          "perception_latency_ms": 74.4,
+          "from_cache": false
+        },
+        "error": "Missing stages: {'screen_capture'}"
+      }
+    ]
+  },
+  "key_metrics": {
+    "perception_latency_ms": 74.4,
+    "ocr_usage_rate": "100.0%",
+    "accessibility_usage_rate": "0.0%",
+    "verification_success_rate": "N/A",
+    "retries": 0,
+    "recoveries": 0,
+    "cache_hit_ratio": "11.1%"
+  },
+  "perception_pipeline": {
+    "perception_count": 9,
+    "cache_hit_count": 1,
+    "cache_hit_ratio": "11.1%",
+    "ocr_run_count": 8,
+    "ocr_skip_count": 0,
+    "ocr_usage_rate": "100.0%",
+    "a11y_success_count": 0,
+    "a11y_fail_count": 8,
+    "a11y_usage_rate": "0.0%",
+    "a11y_backends": [
+      "at-spi",
+      "x11_window"
+    ],
+    "last_window": "leo_Desktop_agent \u2013 accessibility.py",
+    "last_app_type": "jetbrains",
+    "last_page_type": "settings",
+    "last_latency_ms": 74.4
+  },
+  "accessibility": {
+    "initialized": true,
+    "available_backends": [
+      "at-spi",
+      "x11_window"
+    ],
+    "last_backend": "none",
+    "last_window_id": "18874443",
+    "cached_tree_nodes": 0,
+    "cached_clickable": 0
+  },
+  "layout_learning": {
+    "total_apps": 10,
+    "builtin_apps": 10,
+    "learned_apps": 0,
+    "apps": {
+      "code": {
+        "app_type": "vscode",
+        "observations": 100,
+        "regions": 8,
+        "elements": 11,
+        "stability": 0.95,
+        "last_seen": 1786012717.9142125
+      },
+      "firefox": {
+        "app_type": "browser",
+        "observations": 100,
+        "regions": 4,
+        "elements": 5,
+        "stability": 0.95,
+        "last_seen": 1786012717.9142506
+      },
+      "chrome": {
+        "app_type": "browser",
+        "observations": 100,
+        "regions": 3,
+        "elements": 6,
+        "stability": 0.95,
+        "last_seen": 1786012717.9142618
+      },
+      "terminal": {
+        "app_type": "terminal",
+        "observations": 100,
+        "regions": 3,
+        "elements": 2,
+        "stability": 0.95,
+        "last_seen": 1786012717.9142706
+      },
+      "pycharm": {
+        "app_type": "jetbrains",
+        "observations": 101,
+        "regions": 9,
+        "elements": 10,
+        "stability": 0.95,
+        "last_seen": 1786012717.9868922
+      },
+      "discord": {
+        "app_type": "chat",
+        "observations": 100,
+        "regions": 5,
+        "elements": 2,
+        "stability": 0.95,
+        "last_seen": 1786012717.9142938
+      },
+      "spotify": {
+        "app_type": "music",
+        "observations": 100,
+        "regions": 3,
+        "elements": 5,
+        "stability": 0.95,
+        "last_seen": 1786012717.9143004
+      },
+      "gmail": {
+        "app_type": "email",
+        "observations": 100,
+        "regions": 3,
+        "elements": 2,
+        "stability": 0.95,
+        "last_seen": 1786012717.914308
+      },
+      "youtube": {
+        "app_type": "video",
+        "observations": 100,
+        "regions": 2,
+        "elements": 4,
+        "stability": 0.95,
+        "last_seen": 1786012717.914313
+      },
+      "github": {
+        "app_type": "code_review",
+        "observations": 100,
+        "regions": 2,
+        "elements": 5,
+        "stability": 0.95,
+        "last_seen": 1786012717.9143188
+      }
+    }
+  },
+  "remaining_blind_spots": [
+    "Browser CDP not available \u2014 browser content requires OCR"
+  ],
+  "architecture": {
+    "pipeline_stages": [
+      "1. Screen Capture",
+      "2. Active Window Detection",
+      "3. Application Type Detection",
+      "4. Accessibility Tree (AT-SPI \u2192 Browser CDP \u2192 X11)",
+      "5. UI Tree Construction",
+      "6. OCR (FALLBACK ONLY)",
+      "7. Desktop State (clipboard, git, terminal, browser)",
+      "8. Focused Element",
+      "9. Screen Reasoning (page type, errors, interactive elements)"
+    ],
+    "accessibility_priority": [
+      "1. AT-SPI (Linux accessibility bus)",
+      "2. Browser CDP (Chrome DevTools Protocol)",
+      "3. X11 Window Tree (xdotool + xprop)",
+      "4. OCR (FALLBACK ONLY)"
+    ],
+    "action_verification_chain": [
+      "1. Check process exists (for open_app)",
+      "2. Check focused window changed",
+      "3. Check window title",
+      "4. Check screen hash changed",
+      "5. Run perception to confirm",
+      "6. Retry on failure",
+      "7. Recovery action on repeated failure"
+    ],
+    "cache_strategy": [
+      "Screen hash changed \u2192 rerun",
+      "Focused window changed \u2192 rerun",
+      "User explicitly requested refresh \u2192 rerun",
+      "Otherwise \u2192 reuse cached perception"
+    ],
+    "learned_apps": 10,
+    "builtin_templates": 10
+  },
+  "recommendations": [
+    "Install at-spi2-core and pyatspi2 for full accessibility support on GTK/Qt apps",
+    "Launch Chrome with --remote-debugging-port=9222 for browser accessibility",
+    "Run perception pipeline at least 10 times per app to build stable layout templates",
+    "Integrate perception_pipeline.perceive() into the planner's pre-action hook",
+    "Use perception_pipeline.verify_action() after every desktop action"
+  ]
+}
