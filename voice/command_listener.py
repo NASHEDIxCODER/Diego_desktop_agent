@@ -53,6 +53,21 @@ PARTIAL_MIN_NEW_MS = 200      # Minimum new audio before running partial
 PRE_ROLL_MS = 600             # Pre-roll to prevent first-word clipping
 INTERRUPT_MIN_MS = 90         # Speech duration to trigger interruption
 
+# ── Transcript stabilization (NEW) ─────────────────────────────
+# Do NOT trust the first transcript. Compare consecutive partial
+# hypotheses and only finalize when the transcript is stable.
+STABILITY_REQUIRED = 2        # Consecutive matching partials before finalize
+STABILITY_SIMILARITY = 0.85   # Similarity threshold for "same" transcript
+STABILITY_MIN_MS = 1200       # Minimum speech before stability matters
+STABILITY_MAX_MS = 4000       # After this, finalize even if unstable
+
+# ── Endpoint confidence (NEW) ─────────────────────────────────
+# Finalize only when: min_speech + min_silence + stability + confidence
+MIN_SPEECH_MS = 400           # Minimum speech duration before endpoint
+MIN_SILENCE_MS = 500          # Minimum silence before endpoint
+CONFIDENCE_THRESHOLD = -0.5   # Whisper avg_logprob threshold (higher = better)
+LOW_CONFIDENCE_SILENCE_MS = 1500  # Longer silence for low-confidence transcripts
+
 # ── Filler words ───────────────────────────────────────────────
 FILLERS = {
     "umm", "um", "uh", "uhh", "er", "erm", "hmm", "hm",
@@ -199,7 +214,42 @@ class _WhisperTranscriber:
         return self._ready
 
     def transcribe(self, pcm_int16: bytes, sample_rate: int = SAMPLE_RATE) -> Tuple[str, float]:
-        """Transcribe PCM16 bytes. Returns (text, avg_logprob)."""
+        """Transcribe PCM16 bytes. Returns (text, avg_logprob).
+
+        Uses beam search (beam_size=5) for higher accuracy on final
+        transcripts. Partial transcripts use beam_size=1 for speed.
+        """
+        if not self._ready or not pcm_int16:
+            return "", 0.0
+        try:
+            audio = np.frombuffer(pcm_int16, dtype=np.int16).astype(np.float32) / 32768.0
+            if len(audio) < sample_rate * 0.15:
+                return "", 0.0
+            segments, _ = self._model.transcribe(
+                audio,
+                beam_size=5,          # Beam search for higher accuracy
+                language="en",
+                temperature=0.0,
+                best_of=5,            # Best-of-N for better hypotheses
+                condition_on_previous_text=False,
+                compression_ratio_threshold=None,
+                no_speech_threshold=0.9,
+                vad_filter=False,
+                without_timestamps=True,
+            )
+            segs = list(segments)
+            if not segs:
+                return "", 0.0
+            text = " ".join(s.text.strip() for s in segs).strip()
+            logprobs = [float(getattr(s, "avg_logprob", 0.0) or 0.0) for s in segs]
+            avg_logprob = float(np.mean(logprobs)) if logprobs else 0.0
+            return text, avg_logprob
+        except Exception as e:
+            logger.debug("[CMD-LISTEN] transcribe error: %s", e)
+            return "", 0.0
+
+    def transcribe_fast(self, pcm_int16: bytes, sample_rate: int = SAMPLE_RATE) -> Tuple[str, float]:
+        """Fast transcription for partials — beam_size=1 for low latency."""
         if not self._ready or not pcm_int16:
             return "", 0.0
         try:
@@ -226,7 +276,7 @@ class _WhisperTranscriber:
             avg_logprob = float(np.mean(logprobs)) if logprobs else 0.0
             return text, avg_logprob
         except Exception as e:
-            logger.debug("[CMD-LISTEN] transcribe error: %s", e)
+            logger.debug("[CMD-LISTEN] transcribe_fast error: %s", e)
             return "", 0.0
 
 
@@ -315,6 +365,13 @@ class CommandListener:
         last_partial_time = 0.0
         _frame_remainder: np.ndarray = np.array([], dtype=np.float32)
 
+        # ── Transcript stabilization state (NEW) ─────────────
+        # Track consecutive partial hypotheses to detect stability.
+        # Do NOT trust the first transcript.
+        last_partial_text: str = ""
+        stable_count: int = 0
+        last_partial_confidence: float = 0.0
+
         # VAD step (50% overlap = 256 samples = 16ms)
         VAD_STEP = FRAME_SAMPLES // 2
 
@@ -395,6 +452,8 @@ class CommandListener:
                         speech_start_time = now
                         audio_buffer = list(pre_roll)
                         last_partial_time = now
+                        last_partial_text = ""
+                        stable_count = 0
                         logger.info("[CMD-LISTEN] Speech start (VAD_prob=%.2f, pre_roll_frames=%d)",
                                     prob, len(pre_roll))
                         yield UtteranceEvent(kind="speech_start", started_at=now)
@@ -403,12 +462,31 @@ class CommandListener:
                 else:
                     if in_speech:
                         silence_run_ms = (now - last_voice_time) * 1000.0
+                        dur_ms = len(audio_buffer) * (FRAME_SAMPLES / SAMPLE_RATE * 1000)
+                        speech_dur_ms = (now - speech_start_time) * 1000.0
 
-                        # Endpoint: silence
-                        if silence_run_ms >= ENDPOINT_SILENCE_MS:
-                            dur_ms = len(audio_buffer) * (FRAME_SAMPLES / SAMPLE_RATE * 1000)
-                            logger.info("[CMD-LISTEN] Endpoint (silence=%dms, duration=%.0fms, frames=%d)",
-                                        int(silence_run_ms), dur_ms, len(audio_buffer))
+                        # ── Endpoint decision (NEW) ─────────────
+                        # Finalize only when:
+                        #   min_speech + min_silence + stability + confidence
+                        # Do NOT finalize immediately after silence.
+                        can_endpoint = (
+                            dur_ms >= MIN_SPEECH_MS and
+                            silence_run_ms >= MIN_SILENCE_MS
+                        )
+
+                        # Low-confidence transcripts need longer silence
+                        if can_endpoint and last_partial_confidence < CONFIDENCE_THRESHOLD:
+                            can_endpoint = silence_run_ms >= LOW_CONFIDENCE_SILENCE_MS
+
+                        # Transcript must be stable (or speech too long)
+                        if can_endpoint and speech_dur_ms < STABILITY_MAX_MS:
+                            can_endpoint = stable_count >= STABILITY_REQUIRED
+
+                        if can_endpoint and silence_run_ms >= ENDPOINT_SILENCE_MS:
+                            logger.info("[CMD-LISTEN] Endpoint (silence=%dms, duration=%.0fms, "
+                                        "stable=%d, conf=%.3f, frames=%d)",
+                                        int(silence_run_ms), dur_ms, stable_count,
+                                        last_partial_confidence, len(audio_buffer))
                             final = await self._finalize(
                                 audio_buffer, speech_start_time,
                                 endpoint_reason=f"silence_{int(silence_run_ms)}ms")
@@ -416,6 +494,8 @@ class CommandListener:
                             audio_buffer = []
                             silence_run_ms = 0.0
                             _last_nonoverlap_idx = -1
+                            last_partial_text = ""
+                            stable_count = 0
                             if final is not None:
                                 if is_filler(final.text):
                                     logger.info("[CMD-LISTEN] Filler '%s' — turn stays open", final.text)
@@ -432,14 +512,28 @@ class CommandListener:
                     if (now - last_partial_time) >= PARTIAL_INTERVAL_S:
                         pcm = self._frames_to_bytes(audio_buffer)
                         t_partial_start = time.time()
+                        # Use fast transcription for partials (beam_size=1)
                         text, confidence = await loop.run_in_executor(
-                            None, self._whisper.transcribe, pcm, SAMPLE_RATE)
+                            None, self._whisper.transcribe_fast, pcm, SAMPLE_RATE)
                         t_partial_elapsed = (time.time() - t_partial_start) * 1000
                         last_partial_time = now
 
                         if text and not is_filler(text):
-                            logger.info("[CMD-LISTEN] Partial (%.0fms audio, %.0fms latency): '%s' (conf=%.3f)",
-                                        context_ms, t_partial_elapsed, text, confidence)
+                            # ── Transcript stabilization (NEW) ──
+                            # Compare consecutive partial hypotheses.
+                            # Only increment stable_count when they match.
+                            normalized = _postprocess(text).lower()
+                            if last_partial_text and self._similarity(
+                                    last_partial_text, normalized) >= STABILITY_SIMILARITY:
+                                stable_count += 1
+                            else:
+                                stable_count = 0
+                            last_partial_text = normalized
+                            last_partial_confidence = confidence
+
+                            logger.info("[CMD-LISTEN] Partial (%.0fms audio, %.0fms latency): '%s' "
+                                        "(conf=%.3f, stable=%d)",
+                                        context_ms, t_partial_elapsed, text, confidence, stable_count)
                             yield UtteranceEvent(
                                 kind="partial", text=text, is_final=False,
                                 started_at=speech_start_time,
@@ -514,6 +608,43 @@ class CommandListener:
         n = len(audio)
         for i in range(0, n - FRAME_SAMPLES + 1, step):
             yield i, audio[i:i + FRAME_SAMPLES]
+
+    @staticmethod
+    def _similarity(a: str, b: str) -> float:
+        """Compute similarity between two transcript hypotheses.
+
+        Uses word-level Jaccard similarity with a character-level
+        fallback for short texts. Returns 0.0–1.0.
+        """
+        if not a or not b:
+            return 0.0
+        if a == b:
+            return 1.0
+
+        # Word-level Jaccard
+        words_a = set(a.split())
+        words_b = set(b.split())
+        if words_a and words_b:
+            inter = len(words_a & words_b)
+            union = len(words_a | words_b)
+            if union > 0:
+                jaccard = inter / union
+                # For short commands, word overlap is very informative
+                if len(words_a) <= 3 or len(words_b) <= 3:
+                    return jaccard
+                return jaccard
+
+        # Character-level fallback (for very short texts)
+        if len(a) < 3 or len(b) < 3:
+            return 1.0 if a == b else 0.0
+        # Simple character n-gram overlap
+        def _ngrams(s: str, n: int = 2):
+            return {s[i:i+n] for i in range(len(s) - n + 1)}
+        na = _ngrams(a)
+        nb = _ngrams(b)
+        if not na or not nb:
+            return 0.0
+        return len(na & nb) / len(na | nb)
 
     # ── Interruption detection ─────────────────────────────
 
