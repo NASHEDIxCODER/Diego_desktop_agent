@@ -657,6 +657,7 @@ class AgentBrain:
         """Map dispatcher action names to verifier action types."""
         mapping = {
             "desktop_open": "open_app",
+            "close_app": "open_app",
             "browser_navigate": "navigate",
             "browser_search": "navigate",
             "click_text": "click",

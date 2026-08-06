@@ -388,6 +388,10 @@ class ActionDispatcher:
             app = params.get("app", "")
             return self._open_app(app)
 
+        if name == "close_app":
+            app = params.get("app", "")
+            return self._close_app(app)
+
         # ── Browser ───────────────────────────────────────
         if name == "browser_navigate":
             url = params.get("url", "")
@@ -625,6 +629,54 @@ class ActionDispatcher:
         except Exception as e:
             logger.warning("[ACTIONS] Failed to open %s: %s", app, e)
             return f"Couldn't open {app}"
+
+    def _close_app(self, app: str) -> str:
+        """Close a desktop application by name (with smart mapping)."""
+        import shutil
+        import subprocess
+
+        app_lower = app.lower().strip()
+        # Map friendly names to process names for pkill
+        proc_map = {
+            "vs code": "code", "vscode": "code", "code": "code",
+            "browser": "firefox", "firefox": "firefox", "chrome": "google-chrome",
+            "google-chrome": "google-chrome", "spotify": "spotify",
+            "terminal": "gnome-terminal", "gnome-terminal": "gnome-terminal",
+            "files": "nautilus", "file manager": "nautilus", "nautilus": "nautilus",
+            "calculator": "gnome-calculator", "settings": "gnome-control-center",
+            "slack": "slack", "discord": "discord", "telegram": "telegram-desktop",
+            "notion": "notion-app", "pycharm": "pycharm",
+        }
+        proc = proc_map.get(app_lower, app_lower)
+
+        # Try pkill first (sends SIGTERM — graceful)
+        if shutil.which("pkill"):
+            try:
+                result = subprocess.run(
+                    ["pkill", "-f", proc],
+                    capture_output=True, text=True, timeout=3,
+                )
+                if result.returncode == 0:
+                    logger.info("[ACTIONS] Closed app: %s (%s)", app, proc)
+                    return f"Closed {app}"
+            except Exception as e:
+                logger.warning("[ACTIONS] pkill failed for %s: %s", app, e)
+
+        # Fallback: try killall
+        if shutil.which("killall"):
+            try:
+                result = subprocess.run(
+                    ["killall", proc],
+                    capture_output=True, text=True, timeout=3,
+                )
+                if result.returncode == 0:
+                    logger.info("[ACTIONS] Closed app via killall: %s", app)
+                    return f"Closed {app}"
+            except Exception as e:
+                logger.warning("[ACTIONS] killall failed for %s: %s", app, e)
+
+        logger.warning("[ACTIONS] Could not close app: %s", app)
+        return f"Couldn't close {app}"
 
     def _open_url_fallback(self, url: str) -> str:
         """Open a URL in the default browser."""

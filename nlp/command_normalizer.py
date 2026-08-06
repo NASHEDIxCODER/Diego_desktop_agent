@@ -265,14 +265,13 @@ _CONTRACTIONS = {
 }
 
 # ── Follow-up command patterns ─────────────────────────────────
+# CRITICAL FIX: "pause music", "stop music", "resume music",
+# "open it", "close it" etc. must NOT be swallowed here — they are
+# real commands that need the full router / pronoun-resolution path.
+# Removing them lets the DecisionEngine resolve pronouns against
+# conv_memory ("open it" → "open firefox") and the CommandRouter
+# match music-control patterns directly.
 _FOLLOW_UP_PATTERNS = {
-    "open it": "open",
-    "open that": "open",
-    "open this": "open",
-    "launch it": "open",
-    "start it": "open",
-    "run it": "open",
-    "continue playing": "resume",
     "continue": "continue",
     "go on": "continue",
     "keep going": "continue",
@@ -280,11 +279,6 @@ _FOLLOW_UP_PATTERNS = {
     "proceed": "continue",
     "go back": "previous",
     "back": "previous",
-    "close that": "close",
-    "close it": "close",
-    "stop": "stop",
-    "pause": "pause",
-    "resume": "resume",
     "again": "again",
     "do it again": "again",
     "repeat": "repeat",
@@ -292,11 +286,6 @@ _FOLLOW_UP_PATTERNS = {
     "cancel": "cancel",
     "never mind": "cancel",
     "forget it": "cancel",
-    "skip": "next",
-    "next": "next",
-    "previous": "previous",
-    "that one": "open",
-    "this one": "open",
     "yes": "yes",
     "yeah": "yes",
     "yep": "yes",
@@ -474,10 +463,12 @@ class CommandNormalizer:
             r"\s+the\s+laptop$", r"\s+laptop$",
             r"\s+the\s+screen$", r"\s+screen$",
             r"\s+the\s+page$", r"\s+page$",
-            r"\s+the\s+music$", r"\s+music$",
-            r"\s+the\s+song$", r"\s+song$",
-            r"\s+the\s+track$", r"\s+track$",
-            r"\s+the\s+playback$", r"\s+playback$",
+            # CRITICAL FIX: "music", "song", "track", "playback" are NOT
+            # redundant — they are the OBJECT of music-control commands.
+            # "pause music" must stay "pause music" so the CommandRouter's
+            # ^(?:pause|stop)\s*(?:the\s+)?(?:music|song|track|playback)$
+            # pattern can match it. Stripping them turned "pause music"
+            # into "pause" which fell through to the LLM.
             r"\s+the\s+brightness$", r"\s+brightness$",
             r"\s+percent$",
         ]

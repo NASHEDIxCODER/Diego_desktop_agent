@@ -153,14 +153,21 @@ class AgentPlanner:
         loop via asyncio.run() so this method can be called from a
         thread (run_in_executor) without deadlocking.
         """
+        import asyncio
+        coro = None
         try:
-            import asyncio
-            return asyncio.run(self._generate_plan(request))
+            coro = self._generate_plan(request)
+            return asyncio.run(coro)
         except RuntimeError:
-            # Already inside an event loop — fall back to sync fallback plan
+            # Already inside an event loop — close the un-awaited coroutine
+            # to suppress "coroutine was never awaited" warnings.
+            if coro is not None:
+                coro.close()
             logger.warning("[Planner] Cannot run async LLM inside running loop — using fallback")
             return self._fallback_plan(request)
         except Exception as e:
+            if coro is not None:
+                coro.close()
             logger.warning("[Planner] Async plan generation failed: %s", e)
             return self._fallback_plan(request)
 

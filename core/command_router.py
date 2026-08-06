@@ -86,13 +86,16 @@ _SIMPLE_COMMANDS = [
     (r"^open\s+(?:the\s+)?(stackoverflow|stackoverflow\.com)$", "browser_navigate", {"url": "https://stackoverflow.com"}),
     (r"^open\s+(?:the\s+)?([a-z0-9-]+\.(?:com|org|net|io|dev|ai|me|co|app))$", "browser_navigate", {}),
 
-    # Web search
-    (r"^search\s+(?:the\s+web\s+)?(?:for\s+)?(.+)$", "browser_search", {}),
+    # Web search — YouTube-specific must come BEFORE generic search
     (r"^search\s+youtube\s+(?:for\s+)?(.+)$", "play_media", {}),
+    (r"^search\s+(?:the\s+web\s+)?(?:for\s+)?(.+)$", "browser_search", {}),
     (r"^google\s+(.+)$", "browser_search", {}),
     (r"^look\s+up\s+(.+)$", "browser_search", {}),
     (r"^find\s+(.+)$", "browser_search", {}),
     (r"^open\s+(?:a\s+|an\s+)?(?:video|song|music)\s+(?:on\s+)?youtube\s+(?:for\s+)?(.+)$", "play_media", {}),
+
+    # Close apps
+    (r"^close\s+(?:the\s+)?(firefox|browser|chrome|google\s*chrome|terminal|vs\s*code|vscode|spotify|discord|telegram|slack|notion|files|nautilus|calculator|settings|pycharm)$", "close_app", {}),
 
     # Volume
     (r"^volume\s*(up|increase|louder)$", "volume_up", {}),
@@ -354,7 +357,36 @@ class CommandRouter:
                         elif action_name == "scroll":
                             params["direction"] = g
                         elif action_name == "play_media":
+                            # For "search youtube for lo-fi" → play_media with YouTube search
+                            if g and "youtube" in g.lower() and ("for " in g.lower() or " " in g.strip()):
+                                # Convert "youtube for lo-fi" → query "lo-fi", force YouTube
+                                cleaned = g.strip()
+                                cleaned = re.sub(r"^\s*(?:for|about)\s+", "", cleaned, flags=re.IGNORECASE)
+                                params["query"] = cleaned
+                                params["youtube"] = True
+                            else:
+                                params["query"] = g
+                        elif action_name == "browser_search":
                             params["query"] = g
+                        elif action_name == "browser_navigate":
+                            # If URL was captured as a group (e.g. "example.com")
+                            if g and not params.get("url"):
+                                if not g.startswith(("http://", "https://")):
+                                    params["url"] = "https://" + g
+                                else:
+                                    params["url"] = g
+                        elif action_name == "close_app":
+                            # params["app"] set from the captured group
+                            app_canon = {
+                                "google chrome": "google-chrome",
+                                "google-chrome": "google-chrome",
+                                "vs code": "code",
+                                "vscode": "code",
+                                "files": "nautilus",
+                                "file manager": "nautilus",
+                                "terminal": "gnome-terminal",
+                            }
+                            params["app"] = app_canon.get(g.lower(), g.lower())
                         elif action_name == "desktop_open":
                             # Already set in base_params
                             pass
@@ -382,7 +414,9 @@ class CommandRouter:
                 "restart": "",
                 "scroll": "",
                 "desktop_open": "Opening.",
+                "browser_search": "Searching.",
                 "play_media": "Playing.",
+                "close_app": "Closed.",
             }
             conf = confirmations.get(action_name, "")
             return (action, conf)
