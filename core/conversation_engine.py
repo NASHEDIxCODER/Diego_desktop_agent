@@ -449,6 +449,10 @@ class ConversationEngine:
                 # ── Speak the response (conversation ONLY speaks) ──
                 if result.response:
                     await self._think_and_speak(result.response, events, canned=True)
+                    # If the action spoke immediately, speak the followup
+                    # confirmation after verification completes.
+                    if result.speak_immediately and result.followup_response:
+                        await self._think_and_speak(result.followup_response, events, canned=True)
 
                 # ── Record turn end ──
                 session_recorder.record_turn_end(

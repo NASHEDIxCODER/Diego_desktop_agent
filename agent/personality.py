@@ -1,9 +1,17 @@
 """
 LeoPersonality — Natural, varied conversational personality.
 
-Makes Leo sound alive instead of robotic. Generates varied greetings,
-acknowledgments, and filler responses so Leo never repeats the same
-phrase like "How may I assist you?"
+Makes Leo sound like a real desktop companion, not a chatbot.
+Generates varied greetings, acknowledgments, and filler responses
+so Leo never repeats the same phrase.
+
+NEVER says:
+  - "How may I assist you?"
+  - "Task completed."
+  - "Command executed."
+  - "Action successful."
+  - "Processing request."
+  - Robotic confirmation patterns
 
 Usage:
     from agent.personality import personality
@@ -26,12 +34,6 @@ class LeoPersonality:
 
     Tracks recently used phrases to avoid repetition.
     Adapts based on time of day, conversation context, mood, and user sentiment.
-
-    NEVER says:
-        - "How may I assist you?"
-        - "Task completed."
-        - "Done."
-        - Robotic confirmation patterns
     """
 
     def __init__(self):
@@ -39,7 +41,9 @@ class LeoPersonality:
         self._recent_acks: List[str] = []
         self._recent_results: List[str] = []
         self._recent_observations: List[str] = []
-        self._max_recent = 8     # Don't repeat last N phrases
+        self._recent_clarifications: List[str] = []
+        self._recent_errors: List[str] = []
+        self._max_recent = 10     # Don't repeat last N phrases
         self._session_greeting_count = 0
 
         # ── Greetings: varied by time of day + mood ──────
@@ -53,6 +57,9 @@ class LeoPersonality:
             "Good morning. Let's get to it.",
             "Morning. Got anything fun lined up?",
             "Hey. Fresh day, fresh code.",
+            "Morning. What's the plan?",
+            "Good morning. I'm all ears.",
+            "Morning. Let's make it count.",
         ]
 
         self._greetings_afternoon = [
@@ -65,6 +72,9 @@ class LeoPersonality:
             "Hey hey. What's on the docket?",
             "Afternoon. Anything interesting?",
             "Hey. How can I help?",
+            "What's happening?",
+            "Hey. What are we up to?",
+            "Afternoon. What's going on?",
         ]
 
         self._greetings_evening = [
@@ -76,6 +86,8 @@ class LeoPersonality:
             "Evening. Late session today?",
             "Good to see you. How was the day?",
             "Evening. Got something to wrap up?",
+            "Hey. How's the evening treating you?",
+            "Evening. What do you need?",
         ]
 
         self._greetings_night = [
@@ -87,6 +99,8 @@ class LeoPersonality:
             "Late shift. What do you need?",
             "Night owl mode. What's up?",
             "It's late. Everything okay?",
+            "Hey. Working late?",
+            "Still going? What's up?",
         ]
 
         self._greetings_returning = [
@@ -99,6 +113,7 @@ class LeoPersonality:
             "There you are. How's it going?",
             "You're back. Everything good?",
             "Hey again. What's going on?",
+            "Welcome back. Where were we?",
         ]
 
         self._greetings_generic = [
@@ -114,6 +129,8 @@ class LeoPersonality:
             "Present.",
             "Here.",
             "What can I do?",
+            "Hey. What's going on?",
+            "I'm here. What's up?",
         ]
 
         # ── Acknowledgments: short and natural ────────────
@@ -138,6 +155,26 @@ class LeoPersonality:
             "You got it.",
             "No problem.",
             "Alright, let me handle it.",
+            "Absolutely.",
+            "Sounds good.",
+            "Let's do it.",
+            "Working on it.",
+            "Right away.",
+            "Sure thing.",
+            "No worries.",
+            "Happy to.",
+            "Easy.",
+            "Done deal.",
+            "Perfect.",
+            "That works.",
+            "Good call.",
+            "Nice.",
+            "Alrighty.",
+            "You bet.",
+            "For sure.",
+            "Totally.",
+            "Agreed.",
+            "Makes total sense.",
         ]
 
         # ── Thinking fillers ──────────────────────────────
@@ -152,6 +189,10 @@ class LeoPersonality:
             "Let me look...",
             "Processing...",
             "Give me a moment...",
+            "Hmm...",
+            "Let me see...",
+            "One second...",
+            "Hold on...",
         ]
 
         # ── Farewells: varied ─────────────────────────────
@@ -168,6 +209,9 @@ class LeoPersonality:
             "See you around.",
             "Peace.",
             "Alright, I'll be listening.",
+            "Talk soon.",
+            "Goodbye. I'm around if you need me.",
+            "Later. I'll be right here.",
         ]
 
         # ── Error responses: natural, not robotic ─────────
@@ -182,11 +226,15 @@ class LeoPersonality:
             "That failed. But I've got other ideas.",
             "Nope, that didn't work. Let me try plan B.",
             "Struck out on that one. Let me switch tactics.",
+            "That didn't quite work. One more try.",
+            "Hmm, that didn't land. Let me fix it.",
+            "Not quite. Trying again.",
+            "That didn't go as planned. Give me a sec.",
+            "Missed that one. Let me adjust.",
         ]
 
         # ── Task confirmation: natural, never "Task completed" ──
         self._task_confirmations = [
-            "That worked.",
             "Done. {detail}",
             "{detail} — all set.",
             "Alright, {detail}",
@@ -198,6 +246,15 @@ class LeoPersonality:
             "{detail}. Done.",
             "All good. {detail}",
             "Handled. {detail}",
+            "{detail} — done.",
+            "There you go. {detail}",
+            "{detail}. Anything else?",
+            "That's sorted. {detail}",
+            "{detail} — all good.",
+            "Done and dusted. {detail}",
+            "{detail}. Easy.",
+            "All set. {detail}",
+            "{detail} — that's it.",
         ]
 
         # ── Status observations ──────────────────────────
@@ -209,15 +266,303 @@ class LeoPersonality:
             "Ah, {detail}.",
             "I see you have {detail}.",
             "Looks like {detail} is going on.",
+            "I noticed {detail}.",
+            "Seems like {detail}.",
+            "Oh, {detail}.",
+        ]
+
+        # ── Clarifications: one simple question ───────────
+        self._clarifications = [
+            "Which one?",
+            "Which browser?",
+            "Which folder?",
+            "Which project?",
+            "Which monitor?",
+            "Which app?",
+            "Which file?",
+            "Which one did you mean?",
+            "Can you be more specific?",
+            "Which of those?",
+            "Which one should I use?",
+            "Which one are you talking about?",
+        ]
+
+        # ── Corrections: user says "that's not what I meant" ──
+        self._corrections = [
+            "Got it. Tell me what you wanted instead.",
+            "Ah, my bad. What did you mean?",
+            "Okay, let me redo that. What were you thinking?",
+            "Understood. What should I do instead?",
+            "Right, let me fix that. What did you want?",
+            "Gotcha. What's the right way?",
+            "My mistake. What should it be?",
+        ]
+
+        # ── "How are you" responses ──────────────────────
+        self._how_are_you = [
+            "Doing well. What's up?",
+            "All good here. What do you need?",
+            "Can't complain. What's up?",
+            "Running smoothly. What are we doing?",
+            "Pretty good. What can I help with?",
+            "Solid. What's on your mind?",
+            "Doing great. What's going on?",
+            "All good. What are we up to?",
+            "Feeling sharp. What do you need?",
+            "Good, good. What's happening?",
+        ]
+
+        # ── Thanks responses ─────────────────────────────
+        self._thanks = [
+            "No problem.",
+            "Anytime.",
+            "You got it.",
+            "Don't mention it.",
+            "Happy to help.",
+            "Glad I could help.",
+            "That's what I'm here for.",
+            "Sure thing.",
+            "No worries at all.",
+            "My pleasure.",
+            "Easy. Happy to do it.",
+            "Anytime, that's what I'm for.",
+        ]
+
+        # ── "What can you do" responses ──────────────────
+        self._what_can_you_do = [
+            "I can open apps, control music, adjust volume and brightness, search the web, read your screen, and help with your projects. Just ask.",
+            "Open apps, play music, search, control your system, read screens, and help with code. What do you need?",
+            "I'm your desktop companion. Open things, play things, search things, and help you work. Try me.",
+        ]
+
+        # ── "Who are you" responses ──────────────────────
+        self._who_are_you = [
+            "I'm Leo, your desktop assistant.",
+            "Leo. Your desktop companion.",
+            "I'm Leo. I live on your desktop and help you get things done.",
+        ]
+
+        # ── "Who made you" responses ─────────────────────
+        self._who_made_you = [
+            "I was created by Yeshu.",
+            "Yeshu built me.",
+            "I'm Yeshu's creation.",
+        ]
+
+        # ── "What are you working on" responses ──────────
+        self._what_working_on = [
+            "You're working on {detail}.",
+            "Looks like {detail} is your current project.",
+            "You've been on {detail}.",
+            "{detail} — that's what you're working on.",
+        ]
+
+        # ── "Already running" responses ──────────────────
+        self._already_running = [
+            "{app} is already open.",
+            "{app} is already running.",
+            "Already open. {app} is up.",
+            "{app} is already there.",
+        ]
+
+        # ── "Opening" responses (speak immediately) ──────
+        self._opening = [
+            "Opening {app}.",
+            "Opening {app} now.",
+            "Sure, opening {app}.",
+            "On it — opening {app}.",
+            "Opening {app} for you.",
+            "{app} coming up.",
+        ]
+
+        # ── "Searching" responses ────────────────────────
+        self._searching = [
+            "Searching for {query}.",
+            "Looking up {query}.",
+            "Searching {query} now.",
+            "On it — searching for {query}.",
+            "Finding {query} for you.",
+        ]
+
+        # ── "Playing" responses ──────────────────────────
+        self._playing = [
+            "Playing {query}.",
+            "Starting {query}.",
+            "Playing {query} now.",
+            "On it — playing {query}.",
+            "{query} coming up.",
+        ]
+
+        # ── "Paused" responses ───────────────────────────
+        self._paused = [
+            "Paused.",
+            "Paused the music.",
+            "Stopped it.",
+            "Paused. Want me to resume?",
+        ]
+
+        # ── "Resumed" responses ──────────────────────────
+        self._resumed = [
+            "Resumed.",
+            "Playing again.",
+            "Back on.",
+            "Resumed the music.",
+        ]
+
+        # ── "Closed" responses ───────────────────────────
+        self._closed = [
+            "Closed {app}.",
+            "{app} is closed.",
+            "Done — closed {app}.",
+            "{app} shut down.",
+        ]
+
+        # ── "Volume" responses ───────────────────────────
+        self._volume_up = [
+            "Volume up.",
+            "Louder.",
+            "Turned it up.",
+            "Volume increased.",
+        ]
+
+        self._volume_down = [
+            "Volume down.",
+            "Quieter.",
+            "Turned it down.",
+            "Volume decreased.",
+        ]
+
+        self._volume_mute = [
+            "Muted.",
+            "Silenced.",
+            "Muted the sound.",
+        ]
+
+        self._volume_set = [
+            "Volume at {percent} percent.",
+            "Set to {percent} percent.",
+            "Volume is now {percent} percent.",
+        ]
+
+        # ── "Brightness" responses ───────────────────────
+        self._brightness_up = [
+            "Brightness up.",
+            "Brighter.",
+            "Turned it up.",
+        ]
+
+        self._brightness_down = [
+            "Brightness down.",
+            "Dimmer.",
+            "Turned it down.",
+        ]
+
+        self._brightness_set = [
+            "Brightness at {percent} percent.",
+            "Set to {percent} percent.",
+            "Brightness is now {percent} percent.",
+        ]
+
+        # ── "Locked" responses ───────────────────────────
+        self._locked = [
+            "Locked.",
+            "Screen locked.",
+            "Locked it up.",
+        ]
+
+        # ── "Next/Previous" responses ────────────────────
+        self._next = [
+            "Next track.",
+            "Skipping.",
+            "Next one.",
+        ]
+
+        self._previous = [
+            "Previous track.",
+            "Going back.",
+            "Previous one.",
+        ]
+
+        # ── "Shuffle/Repeat" responses ───────────────────
+        self._shuffle = [
+            "Shuffled.",
+            "Shuffle on.",
+            "Mixed it up.",
+        ]
+
+        self._repeat = [
+            "Repeat on.",
+            "Repeating.",
+            "Looping.",
+        ]
+
+        # ── "Time/Date" responses ────────────────────────
+        self._time = [
+            "It's {time}.",
+            "The time is {time}.",
+            "{time}.",
+        ]
+
+        self._date = [
+            "Today is {date}.",
+            "It's {date}.",
+            "{date}.",
+        ]
+
+        # ── "Screen" responses ───────────────────────────
+        self._screen = [
+            "Here's what's on your screen: {detail}",
+            "On your screen: {detail}",
+            "You're looking at {detail}",
+        ]
+
+        # ── "Continue" responses ─────────────────────────
+        self._continue = [
+            "Continuing with {goal}.",
+            "Picking up where we left off — {goal}.",
+            "Resuming {goal}.",
+            "Back to {goal}.",
+        ]
+
+        # ── "Go back" responses ──────────────────────────
+        self._go_back = [
+            "Going back.",
+            "Undoing that.",
+            "Back to before.",
+            "Reverting.",
+        ]
+
+        # ── "Not what I meant" responses ─────────────────
+        self._not_what_meant = [
+            "Got it. Tell me what you wanted instead.",
+            "Ah, my bad. What did you mean?",
+            "Okay, let me redo that. What were you thinking?",
+            "Understood. What should I do instead?",
+        ]
+
+        # ── "Yes/No" responses ───────────────────────────
+        self._yes = [
+            "Sure.",
+            "Yep.",
+            "Okay.",
+            "Absolutely.",
+            "On it.",
+            "Let's do it.",
+            "Right away.",
+            "Gotcha.",
+            "Sounds good.",
+            "You bet.",
+        ]
+
+        self._no = [
+            "Alright, never mind then.",
+            "Okay, skipping that.",
+            "Got it, not doing that.",
+            "Sure, leaving it.",
         ]
 
     def greeting(self, returning: bool = False) -> str:
-        """
-        Generate a varied greeting.
-
-        Args:
-            returning: True if the user is returning after a break.
-        """
+        """Generate a varied greeting."""
         if returning:
             pool = self._greetings_returning
         else:
@@ -249,10 +594,142 @@ class LeoPersonality:
 
     def error_response(self, detail: str = "") -> str:
         """Generate a varied error response, optionally with detail."""
-        response = random.choice(self._errors)
+        response = self._pick_varied(self._errors, self._recent_errors)
         if detail:
             response = response.rstrip(".") + f" ({detail})."
         return response
+
+    def clarification(self) -> str:
+        """Generate a natural clarification question."""
+        return self._pick_varied(self._clarifications, self._recent_clarifications)
+
+    def correction(self) -> str:
+        """Respond to a user correction naturally."""
+        return random.choice(self._corrections)
+
+    def how_are_you(self) -> str:
+        """Respond to 'how are you'."""
+        return random.choice(self._how_are_you)
+
+    def thanks(self) -> str:
+        """Respond to thanks."""
+        return random.choice(self._thanks)
+
+    def what_can_you_do(self) -> str:
+        """Respond to 'what can you do'."""
+        return random.choice(self._what_can_you_do)
+
+    def who_are_you(self) -> str:
+        """Respond to 'who are you'."""
+        return random.choice(self._who_are_you)
+
+    def who_made_you(self) -> str:
+        """Respond to 'who made you'."""
+        return random.choice(self._who_made_you)
+
+    def what_working_on(self, detail: str) -> str:
+        """Respond to 'what am I working on'."""
+        template = random.choice(self._what_working_on)
+        return template.format(detail=detail)
+
+    def already_running(self, app: str) -> str:
+        """Tell the user an app is already open."""
+        template = random.choice(self._already_running)
+        return template.format(app=app)
+
+    def opening(self, app: str) -> str:
+        """Speak immediately when opening an app."""
+        template = random.choice(self._opening)
+        return template.format(app=app)
+
+    def searching(self, query: str) -> str:
+        """Speak immediately when searching."""
+        template = random.choice(self._searching)
+        return template.format(query=query)
+
+    def playing(self, query: str) -> str:
+        """Speak immediately when playing media."""
+        template = random.choice(self._playing)
+        return template.format(query=query)
+
+    def paused(self) -> str:
+        """Confirm pause."""
+        return random.choice(self._paused)
+
+    def resumed(self) -> str:
+        """Confirm resume."""
+        return random.choice(self._resumed)
+
+    def closed(self, app: str) -> str:
+        """Confirm closing an app."""
+        template = random.choice(self._closed)
+        return template.format(app=app)
+
+    def volume_up(self) -> str:
+        return random.choice(self._volume_up)
+
+    def volume_down(self) -> str:
+        return random.choice(self._volume_down)
+
+    def volume_mute(self) -> str:
+        return random.choice(self._volume_mute)
+
+    def volume_set(self, percent: int) -> str:
+        template = random.choice(self._volume_set)
+        return template.format(percent=percent)
+
+    def brightness_up(self) -> str:
+        return random.choice(self._brightness_up)
+
+    def brightness_down(self) -> str:
+        return random.choice(self._brightness_down)
+
+    def brightness_set(self, percent: int) -> str:
+        template = random.choice(self._brightness_set)
+        return template.format(percent=percent)
+
+    def locked(self) -> str:
+        return random.choice(self._locked)
+
+    def next_track(self) -> str:
+        return random.choice(self._next)
+
+    def previous_track(self) -> str:
+        return random.choice(self._previous)
+
+    def shuffle(self) -> str:
+        return random.choice(self._shuffle)
+
+    def repeat(self) -> str:
+        return random.choice(self._repeat)
+
+    def time(self, time_str: str) -> str:
+        template = random.choice(self._time)
+        return template.format(time=time_str)
+
+    def date(self, date_str: str) -> str:
+        template = random.choice(self._date)
+        return template.format(date=date_str)
+
+    def screen(self, detail: str) -> str:
+        template = random.choice(self._screen)
+        return template.format(detail=detail)
+
+    def continue_goal(self, goal: str) -> str:
+        template = random.choice(self._continue)
+        return template.format(goal=goal)
+
+    def go_back(self) -> str:
+        return random.choice(self._go_back)
+
+    def not_what_meant(self) -> str:
+        return random.choice(self._not_what_meant)
+
+    def yes(self) -> str:
+        return random.choice(self._yes)
+
+    def no(self) -> str:
+        return random.choice(self._no)
 
     def _pick_varied(self, pool: List[str], recent: List[str]) -> str:
         """Pick a phrase from pool, avoiding recent ones."""
@@ -273,20 +750,12 @@ class LeoPersonality:
         Generate a natural task confirmation.
 
         NEVER "Task completed." or "Done." — always includes detail naturally.
-
-        Args:
-            detail: What was accomplished (e.g. "VS Code is open", "volume set to 50")
         """
         template = self._pick_varied(self._task_confirmations, self._recent_results)
         return template.format(detail=detail) if detail else template.replace("{detail}", "").strip()
 
     def observation(self, detail: str) -> str:
-        """
-        Generate a natural observation about the user's desktop state.
-
-        Args:
-            detail: What Leo noticed (e.g. "you're on GhostLine", "two failing tests")
-        """
+        """Generate a natural observation about the user's desktop state."""
         template = self._pick_varied(self._observations, self._recent_observations)
         return template.format(detail=detail)
 
@@ -304,32 +773,32 @@ class LeoPersonality:
 
         # How are you
         if any(phrase in text for phrase in ["how are you", "how's it going", "how are things"]):
-            responses = [
-                "Doing good. What about you?",
-                "All good here. What do you need?",
-                "Can't complain. What's up?",
-                "Running smoothly. What are we doing?",
-                "Pretty good. What can I help with?",
-                "Solid. What's on your mind?",
-            ]
-            return random.choice(responses)
+            return self.how_are_you()
 
         # Thanks
         if any(phrase in text for phrase in ["thank", "thanks", "appreciate"]):
-            responses = [
-                "No problem.",
-                "Anytime.",
-                "You got it.",
-                "Don't mention it.",
-                "Happy to help.",
-                "Glad I could help.",
-                "That's what I'm here for.",
-            ]
-            return random.choice(responses)
+            return self.thanks()
 
         # Goodbye
         if any(phrase in text for phrase in ["bye", "goodbye", "see you", "see ya", "later"]):
             return self.farewell()
+
+        # What can you do
+        if any(phrase in text for phrase in ["what can you do", "what are you capable", "what do you do"]):
+            return self.what_can_you_do()
+
+        # Who are you
+        if any(phrase in text for phrase in ["who are you", "what are you", "what is your name"]):
+            return self.who_are_you()
+
+        # Who made you
+        if any(phrase in text for phrase in ["who made you", "who created you", "who built you"]):
+            return self.who_made_you()
+
+        # Corrections
+        if any(phrase in text for phrase in ["not what i meant", "that's not what", "thats not what",
+                                              "not that", "wrong one", "i meant something else"]):
+            return self.correction()
 
         return None
 

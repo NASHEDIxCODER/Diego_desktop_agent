@@ -117,6 +117,8 @@ class CommandResult:
     path: str = ""                      # Which path resolved the command
     latency_ms: float = 0.0
     error: str = ""
+    speak_immediately: bool = False     # Speak now, verify in background
+    followup_response: str = ""         # Spoken after verification completes
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -356,6 +358,21 @@ class AgentBrain:
                                               "start", "run", "create", "write")):
             conv_memory.track_goal(text)
 
+        # ── Step 0.5: Conversation First (NEW) ────────────────
+        # Before ANY planning or action, check if this is just
+        # conversation. Greetings, thanks, how-are-you, corrections,
+        # and simple acknowledgments should NEVER invoke the planner
+        # or the LLM. Leo is a companion first, a tool second.
+        from agent.personality import personality
+        conversational = personality.contextual_response(text)
+        if conversational:
+            result.path = "CONVERSATION"
+            result.used_llm = False
+            result.response = conversational
+            conv_memory.add_assistant(conversational)
+            result.latency_ms = (time.time() - t0) * 1000
+            return result
+
         # ── Step 1: Perceive ─────────────────────────────────
         perception_ctx = await self._perceive()
 
@@ -366,6 +383,26 @@ class AgentBrain:
             # ── Simple path: no LLM needed ──────────────────
             result.path = decision.path.value
             result.used_llm = False
+
+            from agent.personality import personality
+
+            # ── Speak immediately for actions (NEW) ───────────
+            # Generate the immediate response BEFORE dispatching so the
+            # engine can speak "Opening Firefox." while the action runs.
+            # Verification happens in the background.
+            immediate_response = ""
+            if decision.action:
+                # Presence check: if the app is already running, say so
+                # instead of "Opening X." — Leo feels present.
+                already = self._check_already_running(decision.action)
+                if already:
+                    result.response = already
+                    result.speak_immediately = False
+                else:
+                    immediate_response = self._immediate_response(decision.action, personality)
+                    if immediate_response:
+                        result.response = immediate_response
+                        result.speak_immediately = True
 
             # Execute single action
             if decision.action:
@@ -394,14 +431,22 @@ class AgentBrain:
                     # All succeeded — use a natural confirmation.
                     # CRITICAL FIX: Use personality for variety instead of
                     # always "Done." — Leo should sound alive, not robotic.
-                    from agent.personality import personality
                     detail = self._action_detail(decision)
-                    result.response = personality.task_confirmation(detail) if detail else personality.acknowledgment()
+                    confirmation = personality.task_confirmation(detail) if detail else personality.acknowledgment()
+                    if result.speak_immediately:
+                        # Keep the immediate response as the primary,
+                        # set the confirmation as the followup.
+                        result.followup_response = confirmation
+                    else:
+                        result.response = confirmation
                 else:
                     # At least one action failed — be honest about the failure.
                     # The decision's response ("Opening.") must NOT be spoken
                     # when the action did not actually open anything.
-                    result.response = self._default_response(result)
+                    if result.speak_immediately:
+                        result.followup_response = self._default_response(result)
+                    else:
+                        result.response = self._default_response(result)
             else:
                 # No actions dispatched — conversational/cached responses are fine
                 result.response = decision.response or self._default_response(result)
@@ -796,6 +841,107 @@ class AgentBrain:
         if result.actions_failed == 0:
             return personality.task_confirmation()
         return f"Mostly done, but {result.actions_failed} step(s) had issues."
+
+    @staticmethod
+    def _check_already_running(action: Dict[str, Any]) -> str:
+        """Check if an app is already running and return a natural response.
+
+        Returns "" if the app is not running (proceed with opening).
+        Returns a natural "already open" response if it is.
+        """
+        try:
+            name = action.get("action", "")
+            if name != "desktop_open":
+                return ""
+            app = str(action.get("params", {}).get("app", "")).lower()
+            if not app:
+                return ""
+            import shutil
+            import subprocess
+            if not shutil.which("pgrep"):
+                return ""
+            proc_map = {
+                "code": "code", "vscode": "code", "vs code": "code",
+                "firefox": "firefox", "browser": "firefox",
+                "chrome": "chrome", "google-chrome": "chrome",
+                "spotify": "spotify", "gnome-terminal": "gnome-terminal",
+                "terminal": "gnome-terminal", "nautilus": "nautilus",
+                "files": "nautilus", "slack": "slack",
+                "discord": "discord", "telegram-desktop": "telegram",
+                "notion-app": "notion", "pycharm": "pycharm",
+            }
+            proc = proc_map.get(app, app)
+            chk = subprocess.run(
+                ["pgrep", "-f", proc],
+                capture_output=True, text=True, timeout=2,
+            )
+            if chk.returncode == 0:
+                from agent.personality import personality
+                return personality.already_running(app)
+        except Exception:
+            pass
+        return ""
+
+    @staticmethod
+    def _immediate_response(action: Dict[str, Any], personality) -> str:
+        """Generate an immediate spoken response for an action.
+
+        Speaks BEFORE the action executes so the user hears
+        "Opening Firefox." while Firefox launches.
+        """
+        try:
+            name = action.get("action", "")
+            params = action.get("params", {}) or {}
+            if name == "desktop_open":
+                app = params.get("app", "")
+                return personality.opening(app) if app else ""
+            if name == "browser_navigate":
+                url = params.get("url", "")
+                # Extract a friendly name from the URL
+                if url:
+                    domain = url.replace("https://", "").replace("http://", "").split("/")[0]
+                    domain = domain.replace("www.", "")
+                    return personality.opening(domain) if domain else ""
+            if name == "browser_search":
+                q = params.get("query", "")
+                return personality.searching(q) if q else ""
+            if name == "play_media":
+                q = params.get("query", "")
+                return personality.playing(q) if q else ""
+            if name == "close_app":
+                app = params.get("app", "")
+                return personality.closed(app) if app else ""
+            if name == "volume_up":
+                return personality.volume_up()
+            if name == "volume_down":
+                return personality.volume_down()
+            if name == "volume_mute":
+                return personality.volume_mute()
+            if name == "volume_set":
+                return personality.volume_set(params.get("percent", 50))
+            if name == "brightness_up":
+                return personality.brightness_up()
+            if name == "brightness_down":
+                return personality.brightness_down()
+            if name == "brightness_set":
+                return personality.brightness_set(params.get("percent", 70))
+            if name == "lock_screen":
+                return personality.locked()
+            if name == "music_pause":
+                return personality.paused()
+            if name == "music_resume":
+                return personality.resumed()
+            if name == "music_next":
+                return personality.next_track()
+            if name == "music_previous":
+                return personality.previous_track()
+            if name == "music_shuffle":
+                return personality.shuffle()
+            if name == "music_repeat":
+                return personality.repeat()
+        except Exception:
+            pass
+        return ""
 
     @staticmethod
     def _action_detail(decision) -> str:
