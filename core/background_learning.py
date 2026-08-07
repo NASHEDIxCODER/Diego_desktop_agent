@@ -121,14 +121,22 @@ class BackgroundLearner:
 
     @property
     def is_idle(self) -> bool:
-        """True when Leo is idle and learning can run."""
+        """True when Leo is idle and learning can run.
+
+        CRITICAL FIX: The engine stores state in `_state` (private), not
+        `state`. The EngineState enum has IDLE/WAKE/FACE_AUTH/LISTEN/
+        THINK/SPEAK — there is no WAKE_LISTEN or BOOT. Learning may only
+        run in IDLE or WAKE (wake-listening is idle from the user's
+        perspective). Any active state (LISTEN/THINK/SPEAK/FACE_AUTH)
+        must pause learning immediately.
+        """
         if self._conversation_engine is None:
             return True
-        state = getattr(self._conversation_engine, 'state', None)
+        state = getattr(self._conversation_engine, '_state', None)
         if state is None:
             return True
         from core.conversation_engine import EngineState
-        return state in (EngineState.WAKE_LISTEN, EngineState.IDLE, EngineState.BOOT)
+        return state in (EngineState.IDLE, EngineState.WAKE)
 
     # ── Lifecycle ──────────────────────────────────────────────────
 

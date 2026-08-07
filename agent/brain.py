@@ -288,6 +288,21 @@ class AgentBrain:
     #   perceive → decide → plan → dispatch → verify → learn → respond
     # ═══════════════════════════════════════════════════════════
 
+    # ── Per-stage profiling (Priority 7) ─────────────────────
+    # Records latency for each pipeline stage so bottlenecks can be
+    # identified. Reset at the start of each command.
+    _pipeline_timings: Dict[str, float] = {}
+
+    def _stage_start(self) -> float:
+        return time.time()
+
+    def _stage_end(self, stage: str, t_start: float) -> None:
+        ms = (time.time() - t_start) * 1000
+        if stage not in self._pipeline_timings:
+            self._pipeline_timings[stage] = ms
+        else:
+            self._pipeline_timings[stage] += ms
+
     async def process_command(self, text: str) -> CommandResult:
         """
         Process a spoken command through the full execution pipeline.
@@ -317,6 +332,8 @@ class AgentBrain:
         t0 = time.time()
         self._commands_processed += 1
         result = CommandResult()
+        # Reset per-stage profiling
+        self._pipeline_timings = {}
 
         # ── Step 0: Normalize (NEW) ──────────────────────────
         # Canonicalize the spoken command before any processing.
@@ -327,6 +344,17 @@ class AgentBrain:
         if normalized != text:
             logger.info("[Brain] Normalized: '%s' → '%s'", text[:50], normalized[:50])
         text = normalized
+
+        # ── Record user turn in conversation memory ──────────
+        # CRITICAL FIX: Without this, Leo has no memory of what the
+        # user said. Pronoun resolution, follow-ups, and context
+        # awareness all depend on conv_memory having the turns.
+        from agent.conversation_memory import conv_memory
+        conv_memory.add_user(text)
+        # Track the user's goal for "continue" / "go back" support
+        if any(kw in text.lower() for kw in ("open", "play", "search", "close",
+                                              "start", "run", "create", "write")):
+            conv_memory.track_goal(text)
 
         # ── Step 1: Perceive ─────────────────────────────────
         perception_ctx = await self._perceive()
@@ -363,8 +391,12 @@ class AgentBrain:
             # The user must hear the actual outcome, not a promise to act.
             if result.actions_executed > 0:
                 if result.actions_failed == 0:
-                    # All succeeded — use the decision's canned confirmation
-                    result.response = decision.response or "Done."
+                    # All succeeded — use a natural confirmation.
+                    # CRITICAL FIX: Use personality for variety instead of
+                    # always "Done." — Leo should sound alive, not robotic.
+                    from agent.personality import personality
+                    detail = self._action_detail(decision)
+                    result.response = personality.task_confirmation(detail) if detail else personality.acknowledgment()
                 else:
                     # At least one action failed — be honest about the failure.
                     # The decision's response ("Opening.") must NOT be spoken
@@ -397,6 +429,12 @@ class AgentBrain:
 
             # Step 7: Respond (LLM generates the response)
             result.response = await self._generate_response(text, perception_ctx, result)
+
+        # ── Record assistant turn in conversation memory ──────
+        # CRITICAL FIX: Leo must remember what it said so follow-ups
+        # like "what was that" / "say again" work.
+        if result.response:
+            conv_memory.add_assistant(result.response)
 
         result.latency_ms = (time.time() - t0) * 1000
         logger.info("[Brain] Command processed: '%s' path=%s actions=%d verified=%s latency=%.0fms",
@@ -704,7 +742,8 @@ class AgentBrain:
         # If actions were executed, give a natural confirmation
         if result.actions_executed > 0:
             if result.actions_failed == 0:
-                return "Done."
+                from agent.personality import personality
+                return personality.task_confirmation()
             return f"I ran into an issue with {result.actions_failed} of the steps."
 
         # Otherwise, use the LLM to generate a response
@@ -751,11 +790,64 @@ class AgentBrain:
     @staticmethod
     def _default_response(result: CommandResult) -> str:
         """Generate a default response based on execution results."""
+        from agent.personality import personality
         if result.actions_executed == 0:
-            return "On it."
+            return personality.acknowledgment()
         if result.actions_failed == 0:
-            return "Done."
+            return personality.task_confirmation()
         return f"Mostly done, but {result.actions_failed} step(s) had issues."
+
+    @staticmethod
+    def _action_detail(decision) -> str:
+        """Extract a natural detail string from a decision for confirmations."""
+        try:
+            if decision.action:
+                action = decision.action.get("action", "")
+                params = decision.action.get("params", {}) or {}
+                if action == "desktop_open":
+                    app = params.get("app", "")
+                    return f"{app} is open" if app else ""
+                if action == "browser_navigate":
+                    url = params.get("url", "")
+                    return f"opened {url}" if url else ""
+                if action == "browser_search":
+                    q = params.get("query", "")
+                    return f"searched for {q}" if q else ""
+                if action == "play_media":
+                    q = params.get("query", "")
+                    return f"playing {q}" if q else ""
+                if action == "close_app":
+                    app = params.get("app", "")
+                    return f"closed {app}" if app else ""
+                if action == "volume_up":
+                    return "volume up"
+                if action == "volume_down":
+                    return "volume down"
+                if action == "volume_mute":
+                    return "muted"
+                if action == "volume_set":
+                    return f"volume at {params.get('percent', '')} percent"
+                if action == "brightness_up":
+                    return "brightness up"
+                if action == "brightness_down":
+                    return "brightness down"
+                if action == "brightness_set":
+                    return f"brightness at {params.get('percent', '')} percent"
+                if action == "lock_screen":
+                    return "screen locked"
+                if action == "music_pause":
+                    return "paused"
+                if action == "music_resume":
+                    return "resumed"
+                if action == "music_next":
+                    return "next track"
+                if action == "music_previous":
+                    return "previous track"
+            if decision.actions:
+                return f"{len(decision.actions)} steps done"
+        except Exception:
+            pass
+        return ""
 
     @property
     def active_goal(self) -> Optional[Goal]:

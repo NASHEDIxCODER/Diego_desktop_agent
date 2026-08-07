@@ -399,11 +399,18 @@ class CommandNormalizer:
         # 3b. Strip Hindi verb suffixes and prefix "open" when needed
         # "open firefox karo" → "open firefox"
         # "firefox kholo" → "open firefox" (kholo = open)
-        # "volume badhao" → "volume badhao" (handled by verb aliases below)
+        # "volume badhao" → "volume up" (badhao = increase)
+        # "volume kam karo" → "volume down" (kam = decrease)
+        # "music chalao" → "play music" (chalao = play)
+        # CRITICAL FIX: More specific patterns MUST come first.
+        # `\s+karo$` would match "volume kam karo" and strip only "karo",
+        # leaving "volume kam". The specific `\s+kam\s+karo$` must be
+        # checked before the generic `\s+karo$`.
         _HINDI_SUFFIXES = [
-            r"\s+karo$", r"\s+kar\s+do$", r"\s+kholo$", r"\s+khol\s+do$",
-            r"\s+badhao$", r"\s+badha\s+do$", r"\s+kam\s+karo$", r"\s+kam\s+kar\s+do$",
-            r"\s+chalao$", r"\s+chala\s+do$",
+            r"\s+kam\s+karo$", r"\s+kam\s+kar\s+do$",
+            r"\s+khol\s+do$", r"\s+badha\s+do$", r"\s+chala\s+do$",
+            r"\s+karo$", r"\s+kar\s+do$", r"\s+kholo$",
+            r"\s+badhao$", r"\s+chalao$",
         ]
         for suffix in _HINDI_SUFFIXES:
             if re.search(suffix, text_lower):
@@ -414,6 +421,23 @@ class CommandNormalizer:
                 # prefix with "open "
                 if "khol" in suffix and not stripped_lower.startswith(("open", "start", "launch")):
                     text = "open " + stripped
+                # "badhao"/"badha do" = increase → "volume up"
+                elif "badha" in suffix and stripped_lower.startswith("volume"):
+                    text = "volume up"
+                # "kam karo"/"kam kar do" = decrease → "volume down"
+                # CRITICAL FIX: The suffix `\s+kam\s+karo$` strips "karo"
+                # but leaves "kam" — we must detect the full "kam karo"
+                # pattern and map it to "volume down".
+                elif "kam" in suffix and stripped_lower.startswith("volume"):
+                    text = "volume down"
+                # "chalao"/"chala do" = play → "play X"
+                # CRITICAL FIX: "lofi chalao" → "play lofi" (chalao = play)
+                elif "chala" in suffix and stripped_lower.startswith("music"):
+                    text = "play music"
+                elif "chala" in suffix and stripped_lower.startswith("song"):
+                    text = "play song"
+                elif "chala" in suffix:
+                    text = "play " + stripped
                 else:
                     text = stripped
                 text = re.sub(r'\s+', ' ', text).strip()

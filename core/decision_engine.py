@@ -93,6 +93,12 @@ class DecisionEngine:
         self._experience_db = None       # Lazy import
         self._wired = False
 
+        # ── Deterministic intent cache (Priority 4) ──────────
+        # Maps normalized command → (action, response) so repeated
+        # commands resolve in <1ms without re-running the router.
+        self._intent_cache: Dict[str, Decision] = {}
+        self._intent_cache_max = 200
+
         # Stats
         self._total_requests: int = 0
         self._path_counts: Dict[DecisionPath, int] = {
@@ -100,6 +106,7 @@ class DecisionEngine:
         }
         self._total_latency_us: float = 0.0
         self._llm_avoided: int = 0
+        self._cache_hits: int = 0
 
     # ── Wiring ──────────────────────────────────────────────
 
@@ -166,10 +173,25 @@ class DecisionEngine:
                 latency_us=(time.perf_counter_ns() - t_start) / 1000,
             )
 
+        # ── L0: Deterministic intent cache (NEW — Priority 4) ──
+        # Fastest path: if we've seen this exact command before and it
+        # resolved deterministically, return the cached decision.
+        # This makes repeated commands ("open firefox" twice) resolve
+        # in <1ms without re-running the router or LLM.
+        cache_key = self._cache_key(normalized)
+        cached = self._intent_cache.get(cache_key)
+        if cached is not None:
+            self._cache_hits += 1
+            self._llm_avoided += 1
+            logger.debug("[DECIDE:L0] Intent cache hit: '%s' → %s",
+                         normalized[:50], cached.path.value)
+            return cached
+
         # ── L1: Working Memory (conversation context) ──────
         result = await self._check_working_memory(normalized)
         if result is not None:
             self._record(DecisionPath.WORKING_MEMORY, t_start)
+            self._cache_decision(cache_key, result)
             return result
 
         # ── L2: Session Memory (unified memory, desktop) ───
@@ -182,12 +204,14 @@ class DecisionEngine:
         result = await self._check_direct_execution(normalized)
         if result is not None:
             self._record(DecisionPath.DIRECT_EXECUTION, t_start)
+            self._cache_decision(cache_key, result)
             return result
 
         # ── L4: Reuse Existing Plan (experience DB) ────────
         result = self._check_reusable_plan(normalized)
         if result is not None:
             self._record(DecisionPath.REUSED_PLAN, t_start)
+            self._cache_decision(cache_key, result)
             return result
 
         # ── L5: Vision needed? ─────────────────────────────
@@ -220,6 +244,24 @@ class DecisionEngine:
             confidence=0.3,
             latency_us=(time.perf_counter_ns() - t_start) / 1000,
         )
+
+    # ── Intent cache helpers ────────────────────────────────
+
+    @staticmethod
+    def _cache_key(text: str) -> str:
+        """Create a normalized cache key."""
+        import hashlib
+        normalized = " ".join(text.lower().split())
+        return hashlib.md5(normalized.encode()).hexdigest()[:16]
+
+    def _cache_decision(self, key: str, decision: Decision) -> None:
+        """Cache a deterministic decision for future reuse."""
+        if decision.needs_llm:
+            return  # Only cache deterministic resolutions
+        if len(self._intent_cache) >= self._intent_cache_max:
+            # Simple LRU: remove oldest (dict preserves insertion order)
+            self._intent_cache.pop(next(iter(self._intent_cache)))
+        self._intent_cache[key] = decision
 
     # ── Layer checks ────────────────────────────────────────
 
@@ -577,6 +619,8 @@ class DecisionEngine:
             "llm_avoidance_rate": f"{self.llm_avoidance_rate:.1%}",
             "avg_latency_us": f"{self.avg_latency_us:.0f}",
             "avg_latency_ms": f"{self.avg_latency_us / 1000:.3f}",
+            "cache_hits": self._cache_hits,
+            "intent_cache_size": len(self._intent_cache),
             "path_distribution": {
                 p.value: self._path_counts[p]
                 for p in DecisionPath

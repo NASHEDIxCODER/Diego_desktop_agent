@@ -583,7 +583,35 @@ class ConversationEngine:
             raise
 
     async def _one_line_stream(self, text: str) -> AsyncIterator[str]:
-        yield text
+        """Split a response into natural sentences with pauses.
+
+        CRITICAL FIX (Priority 2 — Speech Behaviour):
+        - Split on sentence boundaries so TTS can synthesize/play each
+          sentence with a natural pause between them.
+        - Short responses ("Done.", "Opening Firefox.") are yielded whole
+          so they play instantly with no artificial delay.
+        - Longer responses get natural sentence-level pauses.
+        """
+        import re as _re
+        text = (text or "").strip()
+        if not text:
+            return
+
+        # Short responses — yield whole for instant playback
+        if len(text) < 40:
+            yield text
+            return
+
+        # Split into sentences on . ! ? followed by space/end
+        sentences = _re.split(r'(?<=[.!?])\s+', text)
+        for i, sentence in enumerate(sentences):
+            sentence = sentence.strip()
+            if not sentence:
+                continue
+            yield sentence
+            # Natural pause between sentences (not after the last one)
+            if i < len(sentences) - 1:
+                await asyncio.sleep(0.15)
 
     async def _speak_line(self, text: str) -> None:
         """Speak a single line (used for error messages)."""
