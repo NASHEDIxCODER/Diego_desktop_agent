@@ -258,13 +258,17 @@ class DecisionEngine:
                         return routed
                 except Exception as e:
                     logger.debug("[DECIDE:L1] Resolved re-route failed: %s", e)
-            # Fallback: at least acknowledge, but never claim success.
+            # CRITICAL FIX: If the resolved text could not be re-routed to
+            # an action, do NOT return a response-only decision. That would
+            # make Leo say "I'll open firefox." but never actually open it.
+            # Instead, fall through to the LLM path so the Brain can plan
+            # and dispatch the resolved command properly.
             return Decision(
-                path=DecisionPath.WORKING_MEMORY,
-                needs_llm=False,
-                response=f"I'll {resolved}.",
-                confidence=0.85,
-                debug={"resolved_text": resolved, "original": text},
+                path=DecisionPath.LLM,
+                needs_llm=True,
+                confidence=0.5,
+                debug={"resolved_text": resolved, "original": text,
+                       "reason": "pronoun_resolved_but_no_action"},
             )
 
         # Memory fact queries

@@ -468,9 +468,17 @@ class AgentBrain:
 
         ORDER INVARIANT (CRITICAL):
           1. Capture pre-action screen state (BEFORE execution)
-          2. Execute the action exactly once (dispatch)
+          2. Execute the action (dispatch)
           3. Verify AFTER execution by comparing pre/post screen state
-          4. Learn the outcome
+          4. Retry on failure (up to MAX_ACTION_RETRIES)
+          5. Learn the outcome
+
+        RETRY POLICY (CRITICAL FIX):
+          Previously this dispatched exactly once and never retried.
+          If the first attempt failed (e.g. app not found, browser
+          not ready), the action was reported as failed even though
+          a retry with adjusted params would have succeeded. Now we
+          retry up to MAX_ACTION_RETRIES with parameter adjustment.
         """
         if not self._dispatcher:
             logger.warning("[Brain] No dispatcher — cannot execute action")
@@ -479,40 +487,91 @@ class AgentBrain:
         action_name = action.get("action", "")
         params = action.get("params", {}) or {}
 
-        # ── Step 4a: Capture PRE-action state (BEFORE dispatch) ──
-        # CRITICAL FIX: without a pre-action snapshot, the verifier
-        # cannot detect ANY screen change and always reports NO_CHANGE.
-        # This made every action fail verification even when it succeeded.
-        if self._verifier:
+        MAX_ACTION_RETRIES = 2
+
+        for attempt in range(MAX_ACTION_RETRIES + 1):
+            # ── Step 4a: Capture PRE-action state (BEFORE dispatch) ──
+            # CRITICAL FIX: without a pre-action snapshot, the verifier
+            # cannot detect ANY screen change and always reports NO_CHANGE.
+            # This made every action fail verification even when it succeeded.
+            if self._verifier:
+                try:
+                    self._verifier.capture_pre_action()
+                    logger.debug("[Brain] Pre-action capture for %s (attempt %d)",
+                                 action_name, attempt + 1)
+                except Exception as e:
+                    logger.debug("[Brain] Pre-action capture failed: %s", e)
+
+            # ── Step 4b: Dispatch (execute) ───────────────────
             try:
-                self._verifier.capture_pre_action()
-                logger.debug("[Brain] Pre-action capture for %s", action_name)
+                result = await self._dispatcher.execute(action)
+                self._actions_dispatched += 1
             except Exception as e:
-                logger.debug("[Brain] Pre-action capture failed: %s", e)
+                logger.warning("[Brain] Dispatch failed for %s (attempt %d): %s",
+                               action_name, attempt + 1, e)
+                if attempt < MAX_ACTION_RETRIES:
+                    action = self._adjust_params_for_retry(action_name, action)
+                    await asyncio.sleep(0.5)
+                    continue
+                self._actions_failed += 1
+                await self._learn(action_name, params, success=False, error=str(e))
+                return False
 
-        # ── Step 4b: Dispatch (execute exactly once) ───────────
-        try:
-            result = await self._dispatcher.execute(action)
-            self._actions_dispatched += 1
-        except Exception as e:
-            logger.warning("[Brain] Dispatch failed for %s: %s", action_name, e)
-            self._actions_failed += 1
-            await self._learn(action_name, params, success=False, error=str(e))
-            return False
+            # ── Step 5: Verify ──────────────────────────────────
+            verified = await self._verify(action_name, params, result)
+            self._actions_verified += 1
 
-        # ── Step 5: Verify ──────────────────────────────────
-        verified = await self._verify(action_name, params, result)
-        self._actions_verified += 1
+            if verified:
+                # ── Step 6: Learn ───────────────────────────────
+                await self._learn(action_name, params, success=True)
+                return True
 
-        if not verified:
-            logger.warning("[Brain] Action %s failed verification", action_name)
+            # Verification failed — retry with adjusted params
+            logger.warning("[Brain] Action %s failed verification (attempt %d)",
+                           action_name, attempt + 1)
+            if attempt < MAX_ACTION_RETRIES:
+                action = self._adjust_params_for_retry(action_name, action)
+                await asyncio.sleep(0.5)
+                continue
+
             self._actions_failed += 1
             await self._learn(action_name, params, success=False, error="Verification failed")
             return False
 
-        # ── Step 6: Learn ───────────────────────────────────
-        await self._learn(action_name, params, success=True)
-        return True
+        return False
+
+    @staticmethod
+    def _adjust_params_for_retry(action_name: str,
+                                  action: Dict[str, Any]) -> Dict[str, Any]:
+        """Adjust action params for a retry attempt."""
+        adjusted = dict(action)
+        params = dict(action.get("params", {}) or {})
+
+        if action_name == "desktop_open":
+            app = params.get("app", "")
+            alt_map = {
+                "code": "code-insiders",
+                "vscode": "code",
+                "vs code": "code",
+                "firefox": "firefox-esr",
+                "chrome": "chromium-browser",
+                "google-chrome": "chromium",
+                "gnome-terminal": "xterm",
+                "terminal": "xterm",
+                "nautilus": "thunar",
+                "files": "thunar",
+                "file manager": "thunar",
+            }
+            if app.lower() in alt_map:
+                params["app"] = alt_map[app.lower()]
+
+        if action_name == "browser_navigate":
+            url = params.get("url", "")
+            if url.startswith("https://"):
+                params["url"] = url.replace("https://", "http://")
+
+        adjusted["params"] = params
+        return adjusted
 
     async def _verify(self, action_name: str, params: Dict[str, Any],
                       result: Optional[str]) -> bool:
@@ -593,10 +652,19 @@ class AgentBrain:
                         return True
                     logger.warning("[Brain] Verify FAIL: %s — %s",
                                    action_name, vresult.explanation[:100])
-                    # If OS-level checks passed but vision says no change, the
-                    # action may still have succeeded (e.g., app already open).
-                    # IMPORTANT: Do NOT return False here — let the caller
-                    # decide based on dispatch result + OS checks above.
+                    # CRITICAL FIX: For UI actions (click, type, scroll,
+                    # key_press), vision verification is AUTHORITATIVE.
+                    # If the screen did not change, the action did not
+                    # have its expected effect. Previously this fell
+                    # through to "trust dispatch result" which made
+                    # verification failures invisible — the user was
+                    # told "Done." even when nothing happened.
+                    # Exception: for desktop_open / browser actions, the
+                    # OS-level process check above is authoritative and
+                    # already returned True if the process is running.
+                    # If we reach here, the OS check did NOT pass, so
+                    # vision NO_CHANGE means the action truly failed.
+                    return False
                 else:
                     # No verification type mapped — trust the dispatch result
                     return result is not None and "Couldn't" not in str(result)

@@ -479,8 +479,20 @@ class CommandListener:
                             can_endpoint = silence_run_ms >= LOW_CONFIDENCE_SILENCE_MS
 
                         # Transcript must be stable (or speech too long)
-                        if can_endpoint and speech_dur_ms < STABILITY_MAX_MS:
-                            can_endpoint = stable_count >= STABILITY_REQUIRED
+                        # CRITICAL FIX: For SHORT utterances (< STABILITY_MIN_MS),
+                        # do NOT require stability. A 1-second command like
+                        # "open firefox" only produces 1 partial (first partial
+                        # needs 800ms of audio), so stable_count is always 0.
+                        # Requiring stability here adds 3+ seconds of latency
+                        # to every short command. Only require stability for
+                        # longer utterances where the transcript may still be
+                        # evolving.
+                        if can_endpoint and speech_dur_ms >= STABILITY_MIN_MS:
+                            if speech_dur_ms < STABILITY_MAX_MS:
+                                can_endpoint = stable_count >= STABILITY_REQUIRED
+                            # else: speech too long — finalize even if unstable
+                        # else: short utterance — finalize on silence alone
+                        # (confidence gate already applied above)
 
                         if can_endpoint and silence_run_ms >= ENDPOINT_SILENCE_MS:
                             logger.info("[CMD-LISTEN] Endpoint (silence=%dms, duration=%.0fms, "

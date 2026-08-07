@@ -480,6 +480,35 @@ class ActionDispatcher:
         if name == "restart":
             return self._power("reboot")
 
+        # ── Time / date ───────────────────────────────────
+        if name == "get_time":
+            import datetime
+            now = datetime.datetime.now()
+            return f"It's {now.strftime('%-I:%M %p')}."
+
+        if name == "get_date":
+            import datetime
+            now = datetime.datetime.now()
+            return f"Today is {now.strftime('%A, %B %d, %Y')}."
+
+        # ── Window management (X11/Wayland via wmctrl/xdotool) ──
+        if name == "minimize_window":
+            return self._window_action("minimize")
+        if name == "maximize_window":
+            return self._window_action("maximize")
+        if name == "switch_workspace":
+            return self._window_action("workspace_next")
+        if name == "switch_workspace_prev":
+            return self._window_action("workspace_prev")
+        if name == "switch_window":
+            return self._window_action("window_next")
+        if name == "switch_window_prev":
+            return self._window_action("window_prev")
+        if name == "switch_tab":
+            return self._window_action("tab_next")
+        if name == "switch_tab_prev":
+            return self._window_action("tab_prev")
+
         logger.warning("[ACTIONS] Unknown action: %s", name)
         return None
 
@@ -578,6 +607,77 @@ class ActionDispatcher:
             if shutil.which(argv[0]) and self._run_cmd(argv):
                 return "Screen locked"
         return "Couldn't lock the screen"
+
+    def _window_action(self, action: str) -> str:
+        """Perform a window management action via wmctrl/xdotool."""
+        import shutil
+        import subprocess
+
+        # wmctrl (X11) — workspace switching
+        if action in ("workspace_next", "workspace_prev"):
+            if shutil.which("wmctrl"):
+                try:
+                    out = subprocess.run(
+                        ["wmctrl", "-d"], capture_output=True, text=True, timeout=2)
+                    if out.returncode == 0:
+                        lines = [l for l in out.stdout.splitlines() if l.strip()]
+                        current = next((i for i, l in enumerate(lines) if l.startswith("*")), 0)
+                        total = len(lines)
+                        target = (current + 1) % total if action == "workspace_next" else (current - 1) % total
+                        subprocess.run(
+                            ["wmctrl", "-s", str(target)],
+                            capture_output=True, text=True, timeout=2)
+                        return "Switched workspace"
+                except Exception:
+                    pass
+            # Fallback: xdotool keybinding
+            if shutil.which("xdotool"):
+                key = "super+Right" if action == "workspace_next" else "super+Left"
+                subprocess.run(["xdotool", "key", key],
+                               capture_output=True, text=True, timeout=2)
+                return "Switched workspace"
+            return "Workspace switching unavailable"
+
+        # wmctrl (X11) — minimize/maximize
+        if action in ("minimize", "maximize"):
+            if shutil.which("xdotool"):
+                try:
+                    out = subprocess.run(
+                        ["xdotool", "getactivewindow"],
+                        capture_output=True, text=True, timeout=2)
+                    if out.returncode == 0:
+                        wid = out.stdout.strip()
+                        if action == "minimize":
+                            subprocess.run(["xdotool", "windowminimize", wid],
+                                           capture_output=True, text=True, timeout=2)
+                            return "Minimized window"
+                        else:
+                            subprocess.run(["xdotool", "windowsize", wid, "100%", "100%"],
+                                           capture_output=True, text=True, timeout=2)
+                            return "Maximized window"
+                except Exception:
+                    pass
+            return f"Couldn't {action} window"
+
+        # Window switching (Alt+Tab)
+        if action in ("window_next", "window_prev"):
+            if shutil.which("xdotool"):
+                key = "alt+Tab" if action == "window_next" else "alt+shift+Tab"
+                subprocess.run(["xdotool", "key", key],
+                               capture_output=True, text=True, timeout=2)
+                return "Switched window"
+            return "Window switching unavailable"
+
+        # Tab switching (Ctrl+Tab)
+        if action in ("tab_next", "tab_prev"):
+            if shutil.which("xdotool"):
+                key = "ctrl+Tab" if action == "tab_next" else "ctrl+shift+Tab"
+                subprocess.run(["xdotool", "key", key],
+                               capture_output=True, text=True, timeout=2)
+                return "Switched tab"
+            return "Tab switching unavailable"
+
+        return f"Unknown window action: {action}"
 
     def _power(self, action: str) -> str:
         import shutil
