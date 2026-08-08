@@ -187,6 +187,7 @@ class FakeTTS:
     async def speak_sentences(self, sentences, _interrupt):
         async for s in sentences:
             self.spoken.append(s)
+        return True
 
     def stop(self):
         pass

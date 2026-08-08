@@ -47,7 +47,7 @@ import threading
 import time
 from enum import Enum
 from pathlib import Path
-from typing import AsyncIterator, List, Optional
+from typing import Any, AsyncIterator, List, Optional
 
 import numpy as np
 
@@ -62,6 +62,7 @@ from agent.conversation_memory import conv_memory
 from agent.personality import personality
 from core.benchmark import benchmark
 from core.manual_session_recorder import session_recorder
+from core.response_guarantee import response_guarantee
 
 logger = logging.getLogger(__name__)
 
@@ -426,33 +427,57 @@ class ConversationEngine:
                 self._set_state(EngineState.THINK)
 
                 from agent.brain import agent_brain
-                result = await agent_brain.process_command(text)
 
-                # ── Record decision ──
-                session_recorder.record_decision(
-                    classification=result.path or "BRAIN",
-                    confidence=1.0,
-                    latency_us=0.0,
-                    llm_used=result.used_llm,
-                    action=None,
-                    actions=None,
-                )
+                # ── RESPONSE GUARANTEE: never silent ──
+                # Wrap the full turn (process → speak) so that every
+                # completed utterance gets a spoken response. If the
+                # Brain fails, returns an empty response, or TTS fails,
+                # the guarantee layer speaks a recovery/generic fallback.
+                result_holder: dict = {}
 
-                benchmark.record_turn(
-                    text=text, llm_used=result.used_llm,
-                    router_kind=result.path,
-                    latency_ms=result.latency_ms,
-                    action_executed=result.actions_executed > 0,
-                    action_success=result.actions_failed == 0,
-                )
+                async def _process() -> Any:
+                    r = await agent_brain.process_command(text)
+                    result_holder["result"] = r
+                    return r
 
-                # ── Speak the response (conversation ONLY speaks) ──
-                if result.response:
-                    await self._think_and_speak(result.response, events, canned=True)
+                async def _speak(response: str) -> bool:
+                    spoke = await self._think_and_speak(response, events, canned=True)
                     # If the action spoke immediately, speak the followup
                     # confirmation after verification completes.
-                    if result.speak_immediately and result.followup_response:
-                        await self._think_and_speak(result.followup_response, events, canned=True)
+                    r = result_holder.get("result")
+                    if spoke and r is not None and getattr(r, "speak_immediately", False):
+                        followup = getattr(r, "followup_response", "") or ""
+                        if followup and followup.strip():
+                            spoke2 = await self._think_and_speak(followup, events, canned=True)
+                            spoke = spoke or spoke2
+                    return spoke
+
+                await response_guarantee.run_turn(
+                    transcript=text,
+                    process_fn=_process,
+                    speak_fn=_speak,
+                )
+
+                result = result_holder.get("result")
+
+                # ── Record decision ──
+                if result is not None:
+                    session_recorder.record_decision(
+                        classification=result.path or "BRAIN",
+                        confidence=1.0,
+                        latency_us=0.0,
+                        llm_used=result.used_llm,
+                        action=None,
+                        actions=None,
+                    )
+
+                    benchmark.record_turn(
+                        text=text, llm_used=result.used_llm,
+                        router_kind=result.path,
+                        latency_ms=result.latency_ms,
+                        action_executed=result.actions_executed > 0,
+                        action_success=result.actions_failed == 0,
+                    )
 
                 # ── Record turn end ──
                 session_recorder.record_turn_end(
@@ -506,13 +531,17 @@ class ConversationEngine:
     async def _think_and_speak(
         self, user_text: str, events: "asyncio.Queue[UtteranceEvent]",
         canned: bool = False,
-    ) -> List[str]:
+    ) -> bool:
         """
         SPEAK (TTS) for one turn.
 
         RESPONSIBILITY: The ConversationEngine ONLY speaks. The Brain
         generates all responses and executes all actions. This method
         receives a complete response string and speaks it via TTS.
+
+        Returns:
+            True if at least one audio chunk was queued for playback,
+            False if nothing was spoken (TTS unavailable or failed).
         """
         self._tts_interrupt.clear()
         interrupt = self._tts_interrupt
@@ -541,7 +570,7 @@ class ConversationEngine:
         first = await sentence_q.get()
         if first is None:
             await asyncio.gather(producer, return_exceptions=True)
-            return []
+            return False
 
         # ── STATE: SPEAK ──
         self._set_state(EngineState.SPEAK)
@@ -558,7 +587,7 @@ class ConversationEngine:
         monitor = asyncio.create_task(self._watch_interruption(events))
         command_listener.pause_listening()
         try:
-            await streaming_tts.speak_sentences(sentences(), interrupt)
+            played = await streaming_tts.speak_sentences(sentences(), interrupt)
         finally:
             command_listener.resume_listening()
             monitor.cancel()
@@ -566,7 +595,7 @@ class ConversationEngine:
                 interrupt.set()
             await asyncio.gather(producer, monitor, return_exceptions=True)
         logger.info("TTS end (%.0fms)", (time.time() - t_start) * 1000)
-        return []
+        return played
 
     async def _watch_interruption(
         self, events: "asyncio.Queue[UtteranceEvent]") -> None:
@@ -617,11 +646,14 @@ class ConversationEngine:
             if i < len(sentences) - 1:
                 await asyncio.sleep(0.15)
 
-    async def _speak_line(self, text: str) -> None:
-        """Speak a single line (used for error messages)."""
+    async def _speak_line(self, text: str) -> bool:
+        """Speak a single line (used for error messages).
+
+        Returns True if audio was queued for playback.
+        """
         async def _gen():
             yield text
-        await streaming_tts.speak_sentences(_gen(), None)
+        return await streaming_tts.speak_sentences(_gen(), None)
 
     def get_diagnostics(self) -> dict:
         return {
@@ -631,6 +663,7 @@ class ConversationEngine:
             "auth_user": self._auth_user,
             "running": self._running,
             "last_diag": self._diag,
+            "response_guarantee": response_guarantee.get_diagnostics(),
         }
 
 

@@ -490,22 +490,28 @@ class StreamingTTS:
         self,
         sentences: AsyncIterator[str],
         interrupt_event: Optional[asyncio.Event] = None,
-    ) -> None:
+    ) -> bool:
         """
         Consume an async stream of sentences; synthesize & play each.
 
         Synthesis of sentence N+1 overlaps playback of sentence N.
         If `interrupt_event` fires, playback and synthesis stop instantly.
+
+        Returns:
+            True if at least one audio chunk was queued for playback,
+            False if nothing was spoken (TTS unavailable, all synthesis
+            failed, or interrupted before any audio).
         """
         if not self._ready:
             # Lazy init
             ok = await asyncio.get_event_loop().run_in_executor(None, self.initialize)
             if not ok:
-                return
+                return False
 
         self._stop_event.clear()
         self._speaking.set()
         loop = asyncio.get_event_loop()
+        played_any = False
 
         try:
             async for sentence in sentences:
@@ -521,6 +527,7 @@ class StreamingTTS:
                     break
                 if pcm is not None and len(pcm):
                     self._player.enqueue(pcm)
+                    played_any = True
                     # Give the player a moment to start so is_playing is accurate
                     await asyncio.sleep(0)
 
@@ -529,6 +536,8 @@ class StreamingTTS:
                 self._player.finish()
         finally:
             self._speaking.clear()
+
+        return played_any
 
     def _should_stop(self, interrupt_event: Optional[asyncio.Event]) -> bool:
         if self._stop_event.is_set():
