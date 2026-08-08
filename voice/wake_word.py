@@ -146,20 +146,39 @@ def verify_wake_transcript(text: Optional[str], wake_score: float = 0.0) -> bool
     if not text:
         return False
 
-    # ── High-confidence model bypass ──
-    # openWakeWord scores of 0.995+ are virtually never false positives
-    # on real voice.  Whisper frequently mishears short wake words like
-    # "leo" as "hello", "the", "you" — these transcription errors must
-    # NOT block a confirmed detection.  The model already heard the wake
-    # word with near-certainty; the transcript check is a secondary
-    # safety net, not a gate that overrules the primary detector.
+    # ── High-confidence model path (CONSISTENCY REQUIRED) ──
+    # A wake_score >= 0.995 is strong evidence the model fired, but it
+    # MUST NOT override a transcript that clearly does not contain the
+    # wake phrase. A score of 1.000 with transcript "I'll try to wrap it."
+    # is evidence of a false positive, not a confirmation.
+    #
+    # The high-confidence shortcut is kept ONLY when the normalized
+    # transcript contains at least one distinctive wake word (or a
+    # phonetically-close match). If the transcript has no wake-word
+    # evidence at all, reject and keep listening.
     if wake_score >= 0.995:
+        norm_high = _normalize_wake_text(text)
+        high_words = set(norm_high.split())
+        high_distinctive = _distinctive_wake_words()
+        if any(
+            w in high_words or
+            (len(w) >= 2 and any(
+                _wake_word_confidence(w, d)[0] >= WAKE_VERIFY_MIN_RATIO
+                for d in high_distinctive
+            ))
+            for w in high_words
+        ):
+            logger.info(
+                "[WAKE-VERIFY] ACCEPTED (high-confidence + transcript "
+                "evidence): wake_score=%.3f ≥ 0.995 transcript='%s'",
+                wake_score, text.strip())
+            return True
         logger.info(
-            "[WAKE-VERIFY] ACCEPTED (high-confidence bypass): "
-            "wake_score=%.3f ≥ 0.995 — model certainty overrides "
-            "transcript='%s'",
+            "[WAKE-VERIFY] REJECTED (high-confidence but transcript "
+            "disagrees): wake_score=%.3f ≥ 0.995 transcript='%s' — "
+            "no wake-word evidence",
             wake_score, text.strip())
-        return True
+        return False
 
     norm = _normalize_wake_text(text)
     if not norm:

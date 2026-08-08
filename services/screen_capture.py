@@ -128,19 +128,33 @@ class ScreenCapture(BaseService):
 
     async def _start(self) -> bool:
         """Initialise the capture backend."""
+        import os as _os
+        # Verify DISPLAY is set for X11 capture backends
+        if not _os.environ.get("DISPLAY") and not _os.environ.get("WAYLAND_DISPLAY"):
+            logger.warning("[ScreenCapture] No DISPLAY/WAYLAND_DISPLAY env — capture may fail")
+
         if _HAS_MSS:
             try:
                 self._mss = _mss_lib.mss()
                 self._monitors = list(self._mss.monitors)
-                self._backend = "mss"
-                logger.info(
-                    "[ScreenCapture] backend=mss monitors=%d",
-                    len(self._monitors) - 1,  # monitor[0] is the virtual combined screen
-                )
-                self.set_health("mss ready", {"backend": "mss", "monitors": len(self._monitors) - 1})
-                return True
+                if len(self._monitors) > 1:
+                    self._backend = "mss"
+                    logger.info(
+                        "[ScreenCapture] backend=mss monitors=%d",
+                        len(self._monitors) - 1,  # monitor[0] is the virtual combined screen
+                    )
+                    self.set_health("mss ready", {"backend": "mss", "monitors": len(self._monitors) - 1})
+                    return True
+                else:
+                    logger.warning("[ScreenCapture] mss found no monitors — falling back")
+                    try:
+                        self._mss.close()
+                    except Exception:
+                        pass
+                    self._mss = None
             except Exception as e:
                 logger.warning("[ScreenCapture] mss init failed: %s", e)
+                self._mss = None
 
         if _HAS_PYAUTOGUI:
             self._backend = "pyautogui"
@@ -166,7 +180,12 @@ class ScreenCapture(BaseService):
 
     @property
     def ready(self) -> bool:
-        return self._backend != "none" and self._mss is not None
+        """True if any capture backend is available."""
+        if self._backend == "none":
+            return False
+        if self._backend == "mss":
+            return self._mss is not None
+        return True  # pyautogui backend is always ready if imported
 
     # ── Public capture API ────────────────────────────────────────
 

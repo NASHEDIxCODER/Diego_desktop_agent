@@ -225,7 +225,12 @@ class _InterruptiblePlayer:
             self._execute_stop()
 
     def _execute_stop(self) -> None:
-        """Execute stream.stop() from the worker thread and signal completion."""
+        """Execute stream.stop() from the worker thread and signal completion.
+
+        After stopping, RESTARTS the stream so the next utterance can
+        write immediately. Without this, the stream stays in a STOPPED
+        state and the next write() fails with PaErrorCode -9983
+        (paStreamIsStopped)."""
         tid = threading.get_ident()
         logger.info("[PLAYER] STOP EXECUTED thread=%s/%s  "
                     "stream_id=%s",
@@ -239,6 +244,25 @@ class _InterruptiblePlayer:
                                 "(stream alive)  stream_id=%s", id(self._stream))
                 except Exception as e:
                     logger.debug("[PLAYER] Stream stop error (benign): %s", e)
+                # CRITICAL FIX: Restart the stream so the next write works.
+                # A stopped OutputStream raises paStreamIsStopped (-9983)
+                # on write(). Restarting here (worker thread) is the only
+                # safe place — this thread owns stream lifecycle.
+                try:
+                    self._stream.start()
+                    logger.info("[PLAYER] Stream RESTARTED after stop — "
+                                "next write will succeed stream_id=%s",
+                                id(self._stream))
+                except Exception as e:
+                    logger.warning("[PLAYER] Stream restart failed: %s", e)
+                    # Stream is broken — mark for lazy recreation on next
+                    # write by closing it. _ensure_stream() will recreate.
+                    try:
+                        self._stream.close()
+                    except Exception:
+                        pass
+                    self._stream = None
+                    logger.info("[PLAYER] Stream CLOSED — will recreate on next write")
         self._stop_requested.clear()
         self._stop_executed.set()
 

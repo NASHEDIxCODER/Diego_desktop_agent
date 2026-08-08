@@ -60,7 +60,7 @@ class AgentMemory:
         self._last_action: Optional[str] = None
         self._last_screenshot: Optional[str] = None
         self._browser_url: Optional[str] = None
-        self._browser_tabs: List[str] = field(default_factory=list)
+        self._browser_tabs: List[str] = []
         self._active_tab_index: int = 0
         self._conversation: List[Dict[str, str]] = []
         self._error_history: List[Dict[str, Any]] = []

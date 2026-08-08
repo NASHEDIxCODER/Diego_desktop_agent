@@ -47,7 +47,7 @@
       "source": "/usr/share/doc/gef/api.md",
       "summary": "Now you have a new GEF command which you can load, either from cli:",
       "created_at": 1786174867.834992,
-      "access_count": 0,
+      "access_count": 3,
       "confidence": 1.0
     },
     {
@@ -77,7 +77,7 @@
       "source": "/usr/share/doc/gef/api.md",
       "summary": "Sometimes you want something similar to a command to run on each break-like event and display itself\nas a part of the GEF context. This can be achieved using the following\nfunction `register_external_context_pane()`.",
       "created_at": 1786174867.8350346,
-      "access_count": 0,
+      "access_count": 4,
       "confidence": 1.0
     },
     {
@@ -347,7 +347,7 @@
       "source": "/usr/share/doc/gef/api.md",
       "summary": "This decorator aims to facilitate the argument passing to a command. If added, it will use the\n`argparse` module to parse arguments, and will store them in the `kwargs[\"arguments\"]` of the\ncalling function (therefore the function **must** have `*args, **kwargs` added to its signature).",
       "created_at": 1786174867.8355472,
-      "access_count": 0,
+      "access_count": 1,
       "confidence": 1.0
     },
     {
@@ -12947,7 +12947,7 @@
       "source": "/usr/share/doc/rulesfinder/README.md",
       "summary": "This tool finds efficient password mangling rules (for John the Ripper or Hashcat) for a given dictionary and a list of passwords.",
       "created_at": 1786174867.912839,
-      "access_count": 0,
+      "access_count": 1,
       "confidence": 1.0
     },
     {
@@ -13677,7 +13677,7 @@
       "source": "/usr/share/doc/php-malware-finder/README.md",
       "summary": "Oh, and by the way, you can run the *comprehensive* testsuite with `make tests`.",
       "created_at": 1786174867.9155831,
-      "access_count": 0,
+      "access_count": 1,
       "confidence": 1.0
     },
     {
@@ -49312,19 +49312,19 @@
     }
   ],
   "crawled_sources": [
-    "https://developer.mozilla.org/en-US/docs/Web/",
     "https://kubernetes.io/docs/",
     "https://git-scm.com/docs",
-    "https://docs.python.org/3/",
+    "https://nodejs.org/docs/latest/api/",
     "https://docs.docker.com/",
+    "https://docs.github.com/en",
+    "https://docs.python.org/3/",
     "https://archlinux.org/packages/",
     "https://doc.rust-lang.org/book/",
-    "https://nodejs.org/docs/latest/api/",
-    "https://docs.github.com/en"
+    "https://developer.mozilla.org/en-US/docs/Web/"
   ],
   "action_successes": {},
   "action_failures": {},
   "workflow_patterns": {},
   "learn_count": 214,
-  "updated_at": 1786174889.3541276
+  "updated_at": 1786175591.6161964
 }

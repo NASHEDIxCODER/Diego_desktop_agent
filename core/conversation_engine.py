@@ -54,7 +54,7 @@ import numpy as np
 from core.gui_dispatcher import gui
 from voice.audio_manager import audio_manager
 from voice.audio_processing import peak_monitor
-from voice.command_listener import command_listener, is_filler, UtteranceEvent
+from voice.command_listener import command_listener, is_filler, is_garbage, UtteranceEvent
 from voice.streaming_tts import streaming_tts
 from voice.wake_listener import WakeListener, WakeEvent
 from voice.wake_model_manager import wake_model_manager

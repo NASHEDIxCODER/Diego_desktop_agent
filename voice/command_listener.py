@@ -45,15 +45,15 @@ logger = logging.getLogger(__name__)
 
 # ── Tuning ─────────────────────────────────────────────────────
 MIN_CONTEXT_MS = 800          # Minimum audio before Whisper sees anything
-ENDPOINT_SILENCE_MS = 900     # Silence this long → finalize utterance
-MIN_UTTERANCE_MS = 250        # Shorter than this → discard
+ENDPOINT_SILENCE_MS = 1200    # Silence this long → finalize utterance (raised from 900)
+MIN_UTTERANCE_MS = 600        # Shorter than this → discard (raised from 250)
 MAX_UTTERANCE_S = 20.0        # Hard cap on utterance length
 PARTIAL_INTERVAL_S = 0.20     # 200ms between partial updates
 PARTIAL_MIN_NEW_MS = 200      # Minimum new audio before running partial
 PRE_ROLL_MS = 600             # Pre-roll to prevent first-word clipping
 INTERRUPT_MIN_MS = 90         # Speech duration to trigger interruption
 
-# ── Transcript stabilization (NEW) ─────────────────────────────
+# ── Transcript stabilization ───────────────────────────────────
 # Do NOT trust the first transcript. Compare consecutive partial
 # hypotheses and only finalize when the transcript is stable.
 STABILITY_REQUIRED = 2        # Consecutive matching partials before finalize
@@ -61,12 +61,36 @@ STABILITY_SIMILARITY = 0.85   # Similarity threshold for "same" transcript
 STABILITY_MIN_MS = 1200       # Minimum speech before stability matters
 STABILITY_MAX_MS = 4000       # After this, finalize even if unstable
 
-# ── Endpoint confidence (NEW) ─────────────────────────────────
+# ── Endpoint confidence ───────────────────────────────────────
 # Finalize only when: min_speech + min_silence + stability + confidence
-MIN_SPEECH_MS = 400           # Minimum speech duration before endpoint
-MIN_SILENCE_MS = 500          # Minimum silence before endpoint
-CONFIDENCE_THRESHOLD = -0.5   # Whisper avg_logprob threshold (higher = better)
-LOW_CONFIDENCE_SILENCE_MS = 1500  # Longer silence for low-confidence transcripts
+MIN_SPEECH_MS = 600           # Minimum speech duration before endpoint (raised from 400)
+MIN_SILENCE_MS = 600          # Minimum silence before endpoint (raised from 500)
+CONFIDENCE_THRESHOLD = -0.3   # Whisper avg_logprob threshold (raised from -0.5)
+LOW_CONFIDENCE_SILENCE_MS = 2000  # Longer silence for low-confidence transcripts (raised from 1500)
+
+# ── Garbage transcript rejection ──────────────────────────────
+# Whisper sometimes hallucinates short, low-confidence fragments.
+# These patterns are unlikely to be real user commands.
+MIN_TRANSCRIPT_WORDS = 1      # Minimum words in a final transcript
+MIN_TRANSCRIPT_CHARS = 2      # Minimum characters (reject single chars like "I", "a")
+MAX_TRANSCRIPT_CHARS = 100    # Sanity cap on transcript length
+GARBAGE_PATTERNS = [
+    r"^i'?m? (sorry|gonna|going to|not sure|afraid|just|so)",
+    r"^i don'?t (know|think|have|understand|see)",
+    r"^i (can'?t|cannot)",
+    r"^i (was|am|will)",
+    r"^oh[,.\s]?$",
+    r"^uh[,.\s]?$",
+    r"^um[,.\s]?$",
+    r"^hmm[,.\s]?$",
+    r"^thank you[,.\s]?$",
+    r"^that'?s (a|an|not|all|what)",
+    r"^this is( |$)(a|an|the|not)?",
+    r"^there is( |$)(a|an|no)?",
+    r"^it'?s( |$)(a|an|the|not|just|like)?",
+    r"^let me (think|see|check|look|try|know)",
+    r"^(i|i'm|im|you|it|that|this)[.!?]?$",
+]
 
 # ── Filler words ───────────────────────────────────────────────
 FILLERS = {
@@ -86,6 +110,33 @@ def is_filler(text: str) -> bool:
     if not t:
         return True
     return bool(_FILLER_RE.match(t))
+
+
+def is_garbage(text: str) -> bool:
+    """True if the transcript is unlikely to be a real user command.
+
+    Rejects:
+      - Empty or very short text
+      - Whisper hallucinated phrases ("I'm sorry", "I don't know", etc.)
+      - Single-word fragments that are unlikely commands
+      - Very low-confidence transcripts (handled separately by confidence gate)
+
+    NOTE: This is NOT a replacement for the confidence gate. Garbage
+    transcripts can have high confidence (Whisper is confident it heard
+    "I'm sorry" even when the user said nothing). This function catches
+    those patterns by content, not by confidence.
+    """
+    t = text.strip().lower()
+    if not t:
+        return True
+    if len(t) < MIN_TRANSCRIPT_CHARS:
+        return True
+    # Check against known garbage patterns
+    import re as _re
+    for pattern in GARBAGE_PATTERNS:
+        if _re.match(pattern, t):
+            return True
+    return False
 
 
 # ── Essential Whisper corrections (kept minimal) ───────────────
@@ -596,6 +647,27 @@ class CommandListener:
             return None
 
         text = _postprocess(raw_text)
+
+        # ── Garbage rejection ──────────────────────────────
+        # Reject Whisper hallucinated transcripts that are not real
+        # user commands. These are logged but NOT yielded to the engine.
+        if is_garbage(text):
+            logger.info("[CMD-LISTEN] Utterance DISCARDED (garbage transcript: '%s', %.0fms, "
+                        "conf=%.3f)", text, dur_ms, confidence)
+            return None
+
+        # ── Confidence gate ────────────────────────────────
+        # Very low-confidence transcripts are likely noise.
+        # But allow short commands ("stop", "yes", "no") with low confidence
+        # since they are easy to mis-transcribe but critical to hear.
+        short_commands = {"stop", "yes", "no", "go", "on", "off", "up", "down",
+                          "open", "run", "play", "pause", "next", "back", "close",
+                          "quit", "exit", "help", "menu", "home", "back", "cancel"}
+        is_short_command = len(text.split()) <= 2 and text.lower().strip() in short_commands
+        if not is_short_command and confidence < CONFIDENCE_THRESHOLD:
+            logger.info("[CMD-LISTEN] Utterance DISCARDED (low confidence: %.3f < %.3f, "
+                        "text='%s', %.0fms)", confidence, CONFIDENCE_THRESHOLD, text, dur_ms)
+            return None
 
         logger.info("[CMD-LISTEN] FINALIZED: '%s' (raw='%s', duration=%.0fms, "
                     "whisper_latency=%.0fms, confidence=%.3f, endpoint=%s)",
