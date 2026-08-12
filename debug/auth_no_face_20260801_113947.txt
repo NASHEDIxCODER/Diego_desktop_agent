@@ -1,6 +1,0 @@
-time: 20260801_113947
-blur_score: 16.58
-brightness: 119.26
-resolution: 640x480
-detector_backend: yunet
-info: frames=26, backend=yunet

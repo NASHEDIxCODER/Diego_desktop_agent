@@ -39,34 +39,53 @@ import numpy as np
 
 from voice.audio_manager import audio_manager, SAMPLE_RATE, FRAME_SAMPLES
 from voice.audio_processing import float32_to_int16
-from voice.vad import unified_vad, SPEECH_THRESHOLD
+from voice.vad import unified_vad
 
 logger = logging.getLogger(__name__)
 
-# ── Tuning ─────────────────────────────────────────────────────
-MIN_CONTEXT_MS = 800          # Minimum audio before Whisper sees anything
-ENDPOINT_SILENCE_MS = 1200    # Silence this long → finalize utterance (raised from 900)
-MIN_UTTERANCE_MS = 600        # Shorter than this → discard (raised from 250)
-MAX_UTTERANCE_S = 20.0        # Hard cap on utterance length
-PARTIAL_INTERVAL_S = 0.20     # 200ms between partial updates
-PARTIAL_MIN_NEW_MS = 200      # Minimum new audio before running partial
-PRE_ROLL_MS = 600             # Pre-roll to prevent first-word clipping
-INTERRUPT_MIN_MS = 90         # Speech duration to trigger interruption
+# ── Command-capture tuning ─────────────────────────────────────
+# Single source of truth for the post-wake command pipeline.
+# Every value is runtime-configurable (replace `command_config` or
+# mutate it) so there are no scattered magic numbers.
+@dataclass
+class CommandListenerConfig:
+    # VAD speech threshold (Silero probability 0..1). Logging is
+    # rate-limited by vad_log_interval_s so we don't spam per-frame.
+    vad_speech_threshold: float = 0.5
+    vad_log_interval_s: float = 0.5
 
-# ── Transcript stabilization ───────────────────────────────────
-# Do NOT trust the first transcript. Compare consecutive partial
-# hypotheses and only finalize when the transcript is stable.
-STABILITY_REQUIRED = 2        # Consecutive matching partials before finalize
-STABILITY_SIMILARITY = 0.85   # Similarity threshold for "same" transcript
-STABILITY_MIN_MS = 1200       # Minimum speech before stability matters
-STABILITY_MAX_MS = 4000       # After this, finalize even if unstable
+    # Endpoint detection (milliseconds of audio, sample-accurate).
+    min_context_ms: int = 800         # Minimum audio before Whisper sees anything
+    endpoint_silence_ms: int = 1200   # Trailing silence that finalizes an utterance
+    min_utterance_ms: int = 600       # Shorter than this → discard
+    max_utterance_s: float = 20.0     # Hard cap on utterance length
+    min_speech_ms: int = 600          # Minimum speech before endpoint
+    min_silence_ms: int = 600         # Minimum silence before endpoint
+    low_confidence_silence_ms: int = 2000  # Longer silence for low-confidence audio
 
-# ── Endpoint confidence ───────────────────────────────────────
-# Finalize only when: min_speech + min_silence + stability + confidence
-MIN_SPEECH_MS = 600           # Minimum speech duration before endpoint (raised from 400)
-MIN_SILENCE_MS = 600          # Minimum silence before endpoint (raised from 500)
-CONFIDENCE_THRESHOLD = -0.3   # Whisper avg_logprob threshold (raised from -0.5)
-LOW_CONFIDENCE_SILENCE_MS = 2000  # Longer silence for low-confidence transcripts (raised from 1500)
+    # Streaming partials.
+    partial_interval_s: float = 0.20  # Seconds between partial updates
+    pre_roll_ms: int = 400            # Pre-roll to prevent first-word clipping
+
+    # Transcript stabilization.
+    stability_required: int = 2       # Consecutive matching partials before finalize
+    stability_similarity: float = 0.85
+    stability_min_ms: int = 1200      # Minimum speech before stability matters
+    stability_max_ms: int = 4000      # After this, finalize even if unstable
+
+    # Confidence.
+    confidence_threshold: float = -0.3  # Whisper avg_logprob threshold
+
+    # Interruption.
+    interrupt_min_ms: int = 90
+
+    def samples(self, ms: int) -> int:
+        """Convert milliseconds to sample count at SAMPLE_RATE."""
+        return int(SAMPLE_RATE * ms / 1000.0)
+
+
+# Runtime-configurable singleton. Tests and diagnostics may swap it.
+command_config = CommandListenerConfig()
 
 # ── Garbage transcript rejection ──────────────────────────────
 # Whisper sometimes hallucinates short, low-confidence fragments.
@@ -336,7 +355,7 @@ class CommandListener:
     Clean streaming speech-to-text with continuously growing context windows.
 
     KEY PROPERTIES:
-      - Whisper receives minimum ~800ms of audio (MIN_CONTEXT_MS)
+      - Whisper receives minimum ~800ms of audio (command_config.min_context_ms)
       - Context window grows continuously from speech start to endpoint
       - Simple silence-based endpoint — no stability heuristics
       - Single VAD instance (unified_vad)
@@ -393,6 +412,16 @@ class CommandListener:
           - speech_start: when speech begins
           - partial: incremental transcription (~every 200ms)
           - final: the complete utterance (silence endpoint or max duration)
+
+        POST-WAKE CAPTURE CONTRACT (sample-accurate, no wall-clock races):
+          1. Establish a clear command_session_start boundary at the current
+             ring-buffer write position. Samples OLDER than this boundary are
+             ignored (they are wake-word / chime / TTS contamination).
+          2. Consume only fresh samples after the boundary.
+          3. Keep a small rolling pre-roll so the first syllable after the
+             wake word is never clipped.
+          4. Drive VAD / endpoint / partial timing from SAMPLE COUNTS, not
+             time.time(), so the pipeline is deterministic and testable.
         """
         if not self._ready:
             if not self.initialize():
@@ -400,60 +429,73 @@ class CommandListener:
 
         self.reset_cancel()
         loop = asyncio.get_event_loop()
+        cfg = command_config
 
-        # Drain TTS-contaminated audio
-        drain_start = audio_manager.total_samples
-        logger.info("[CMD-LISTEN] Draining TTS-contaminated audio (total_samples=%d)", drain_start)
-        last_total = drain_start
+        # ── COMMAND_SESSION_START boundary ──────────────────────
+        # The ring buffer is a non-destructive, cursor-based peek. We do NOT
+        # copy the 20+ second historical buffer into recognition — we only
+        # advance our read cursor to the current write position. Everything
+        # written before this boundary (wake word, chime, TTS) is discarded.
+        command_session_start = audio_manager.total_samples
+        logger.info("[CMD] session_start total_samples=%d", command_session_start)
+        logger.info("[CMD] buffer_before_flush=%d buffer_after_flush=0", command_session_start)
+        last_total = command_session_start
 
-        # Audio buffers
-        audio_buffer: List[np.ndarray] = []
-        pre_roll: List[np.ndarray] = []
+        # ── Sample-accurate state ───────────────────────────────
+        audio_buffer: List[np.ndarray] = []   # collected speech frames (512 samples)
+        pre_roll: List[np.ndarray] = []       # rolling pre-roll frames
+        pending: np.ndarray = np.array([], dtype=np.float32)
         in_speech = False
-        speech_start_time = 0.0
-        last_voice_time = 0.0
-        silence_run_ms = 0.0
-        last_partial_time = 0.0
-        _frame_remainder: np.ndarray = np.array([], dtype=np.float32)
+        speech_samples = 0                    # speech samples captured (excluding pre-roll)
+        silence_samples = 0                   # consecutive trailing silence samples
+        last_partial_samples = 0              # samples captured since last partial
+        speech_start_time = 0.0               # wall-clock (diagnostic only)
 
-        # ── Transcript stabilization state (NEW) ─────────────
-        # Track consecutive partial hypotheses to detect stability.
-        # Do NOT trust the first transcript.
+        # Transcript stabilization
         last_partial_text: str = ""
         stable_count: int = 0
         last_partial_confidence: float = 0.0
 
-        # VAD step (50% overlap = 256 samples = 16ms)
-        VAD_STEP = FRAME_SAMPLES // 2
+        frame_ms = FRAME_SAMPLES / SAMPLE_RATE * 1000.0  # 32 ms
+        max_pre_frames = max(1, int(cfg.pre_roll_ms / frame_ms))
+        endpoint_silence_samples = cfg.samples(cfg.endpoint_silence_ms)
+        min_silence_samples = cfg.samples(cfg.min_silence_ms)
+        min_speech_samples = cfg.samples(cfg.min_speech_ms)
+        max_utterance_samples = cfg.samples(int(cfg.max_utterance_s * 1000))
 
-        # Non-overlap tracking (global sample offset)
-        _last_nonoverlap_idx: int = -1
-        _chunk_base_sample: int = 0
+        last_vad_log = 0.0
+        last_received_log = 0.0
+        _received_total = 0
 
-        logger.info("[CMD-LISTEN] Listening started (endpoint=%dms, min_context=%dms, "
-                    "partial_interval=%dms)",
-                    ENDPOINT_SILENCE_MS, MIN_CONTEXT_MS, int(PARTIAL_INTERVAL_S * 1000))
+        logger.info("[CMD] Listening started (endpoint=%dms, min_context=%dms, "
+                    "partial_interval=%dms, pre_roll=%dms)",
+                    cfg.endpoint_silence_ms, cfg.min_context_ms,
+                    int(cfg.partial_interval_s * 1000), cfg.pre_roll_ms)
 
         while not self._cancel.is_set():
             await self._listen_enabled.wait()
             if self._cancel.is_set():
                 break
 
-            # Drain-on-resume: skip TTS-contaminated audio
+            # Drain-on-resume: skip TTS-contaminated audio produced while
+            # Leo was speaking. Reset the cursor to the current write head.
             if self._drain_requested:
                 self._drain_requested = False
                 old_total = last_total
                 last_total = audio_manager.total_samples
                 skipped = last_total - old_total
                 if skipped > 0:
-                    logger.info("[CMD-LISTEN] Drain-on-resume: skipped %d samples (%.0fms)",
+                    logger.info("[CMD] Drain-on-resume skipped=%d samples (%.0fms)",
                                 skipped, skipped / 16.0)
                 in_speech = False
                 audio_buffer.clear()
-                silence_run_ms = 0.0
-                _last_nonoverlap_idx = -1
-                _frame_remainder = np.array([], dtype=np.float32)
                 pre_roll.clear()
+                pending = np.array([], dtype=np.float32)
+                speech_samples = 0
+                silence_samples = 0
+                last_partial_samples = 0
+                last_partial_text = ""
+                stable_count = 0
                 continue
 
             new_audio, last_total = audio_manager.read_since(last_total)
@@ -461,102 +503,97 @@ class CommandListener:
                 await asyncio.sleep(0.01)
                 continue
 
-            # Prepend frame remainder
-            if len(_frame_remainder) > 0:
-                new_audio = np.concatenate([_frame_remainder, new_audio])
-                _frame_remainder = np.array([], dtype=np.float32)
+            # Trace received samples (rate-limited so we don't spam).
+            _received_total += len(new_audio)
+            now_mono = time.monotonic()
+            if now_mono - last_received_log >= 1.0:
+                last_received_log = now_mono
+                logger.info("[CMD] received_samples=%d (total since session=%d)",
+                            len(new_audio), _received_total)
 
-            _chunk_base_sample = last_total - len(new_audio)
+            pending = np.concatenate([pending, new_audio.astype(np.float32, copy=False)])
 
-            # VAD: overlapping frames
-            last_vad_idx = -1
-            for i, frame in self._iter_frames_overlap(new_audio, VAD_STEP):
-                last_vad_idx = i
+            # Process complete 512-sample frames. The remainder is carried
+            # forward so no sample is ever dropped.
+            n_frames = len(pending) // FRAME_SAMPLES
+            for fi in range(n_frames):
+                frame = pending[fi * FRAME_SAMPLES:(fi + 1) * FRAME_SAMPLES]
                 prob = await loop.run_in_executor(None, unified_vad.speech_prob, frame)
-                is_speech = prob > SPEECH_THRESHOLD
-                now = time.time()
+                is_speech = prob > cfg.vad_speech_threshold
 
-                # Collect NON-overlapping frame for audio buffer
-                global_sample = _chunk_base_sample + i
-                nonoverlap_idx = global_sample // FRAME_SAMPLES
-                is_new_nonoverlap = nonoverlap_idx > _last_nonoverlap_idx
-                if is_new_nonoverlap:
-                    _last_nonoverlap_idx = nonoverlap_idx
-                    frame_start = i
-                    frame_end = i + FRAME_SAMPLES
-                    if frame_end <= len(new_audio):
-                        clean_frame = new_audio[frame_start:frame_end].copy()
-                    else:
-                        clean_frame = frame.copy()
+                now_mono = time.monotonic()
+                if now_mono - last_vad_log >= cfg.vad_log_interval_s:
+                    last_vad_log = now_mono
+                    logger.info("[CMD] vad_probability=%.3f speech=%s", prob, bool(is_speech))
 
-                    pre_roll.append(clean_frame)
-                    max_pre = max(1, int((PRE_ROLL_MS / 1000.0) / (FRAME_SAMPLES / SAMPLE_RATE * 1000)))
-                    if len(pre_roll) > max_pre:
-                        pre_roll.pop(0)
-
-                    if in_speech:
-                        audio_buffer.append(clean_frame)
+                # Rolling pre-roll (always updated so onset keeps context).
+                pre_roll.append(frame.copy())
+                if len(pre_roll) > max_pre_frames:
+                    pre_roll.pop(0)
 
                 if is_speech:
                     if not in_speech:
                         in_speech = True
-                        speech_start_time = now
-                        audio_buffer = list(pre_roll)
-                        last_partial_time = now
+                        speech_start_time = time.time()
+                        speech_samples = 0
+                        silence_samples = 0
+                        last_partial_samples = 0
                         last_partial_text = ""
                         stable_count = 0
-                        logger.info("[CMD-LISTEN] Speech start (VAD_prob=%.2f, pre_roll_frames=%d)",
+                        # Pre-roll (already contains the current frame) prevents
+                        # first-syllable clipping.
+                        audio_buffer = list(pre_roll)
+                        logger.info("[CMD] speech_started vad_prob=%.2f pre_roll_frames=%d",
                                     prob, len(pre_roll))
-                        yield UtteranceEvent(kind="speech_start", started_at=now)
-                    last_voice_time = now
-                    silence_run_ms = 0.0
+                        yield UtteranceEvent(kind="speech_start", started_at=speech_start_time)
+                    else:
+                        audio_buffer.append(frame.copy())
+                    speech_samples += FRAME_SAMPLES
+                    silence_samples = 0
                 else:
                     if in_speech:
-                        silence_run_ms = (now - last_voice_time) * 1000.0
-                        dur_ms = len(audio_buffer) * (FRAME_SAMPLES / SAMPLE_RATE * 1000)
-                        speech_dur_ms = (now - speech_start_time) * 1000.0
+                        audio_buffer.append(frame.copy())
+                        silence_samples += FRAME_SAMPLES
+                        if silence_samples == FRAME_SAMPLES:
+                            logger.info("[CMD] silence_started")
+                        elif silence_samples % (FRAME_SAMPLES * 8) == 0:
+                            logger.info("[CMD] silence_ms=%d",
+                                        int(silence_samples / SAMPLE_RATE * 1000))
 
-                        # ── Endpoint decision (NEW) ─────────────
-                        # Finalize only when:
-                        #   min_speech + min_silence + stability + confidence
-                        # Do NOT finalize immediately after silence.
+                        speech_dur_ms = speech_samples / SAMPLE_RATE * 1000.0
+
+                        # ── Endpoint decision (sample-accurate) ──
+                        # Do not finalize after tiny fragments; do not wait
+                        # forever. Start on VAD speech, continue during
+                        # speech, end after sustained silence.
                         can_endpoint = (
-                            dur_ms >= MIN_SPEECH_MS and
-                            silence_run_ms >= MIN_SILENCE_MS
+                            speech_samples >= min_speech_samples and
+                            silence_samples >= min_silence_samples
                         )
 
-                        # Low-confidence transcripts need longer silence
-                        if can_endpoint and last_partial_confidence < CONFIDENCE_THRESHOLD:
-                            can_endpoint = silence_run_ms >= LOW_CONFIDENCE_SILENCE_MS
+                        if can_endpoint and last_partial_confidence < cfg.confidence_threshold:
+                            can_endpoint = silence_samples >= cfg.samples(cfg.low_confidence_silence_ms)
 
-                        # Transcript must be stable (or speech too long)
-                        # CRITICAL FIX: For SHORT utterances (< STABILITY_MIN_MS),
-                        # do NOT require stability. A 1-second command like
-                        # "open firefox" only produces 1 partial (first partial
-                        # needs 800ms of audio), so stable_count is always 0.
-                        # Requiring stability here adds 3+ seconds of latency
-                        # to every short command. Only require stability for
-                        # longer utterances where the transcript may still be
-                        # evolving.
-                        if can_endpoint and speech_dur_ms >= STABILITY_MIN_MS:
-                            if speech_dur_ms < STABILITY_MAX_MS:
-                                can_endpoint = stable_count >= STABILITY_REQUIRED
-                            # else: speech too long — finalize even if unstable
-                        # else: short utterance — finalize on silence alone
-                        # (confidence gate already applied above)
-
-                        if can_endpoint and silence_run_ms >= ENDPOINT_SILENCE_MS:
-                            logger.info("[CMD-LISTEN] Endpoint (silence=%dms, duration=%.0fms, "
-                                        "stable=%d, conf=%.3f, frames=%d)",
-                                        int(silence_run_ms), dur_ms, stable_count,
+                        # Endpoint is driven by sustained silence + minimum
+                        # speech, NOT by partial-transcript stability. The old
+                        # stability gate could block short commands that never
+                        # produced enough matching partials, hanging the turn
+                        # until the max-duration cap. (The confidence gate above
+                        # already handles noisy/low-quality audio.)
+                        if can_endpoint and silence_samples >= endpoint_silence_samples:
+                            logger.info("[CMD] endpoint silence=%dms speech=%.0fms "
+                                        "stable=%d conf=%.3f frames=%d",
+                                        int(silence_samples / SAMPLE_RATE * 1000),
+                                        speech_dur_ms, stable_count,
                                         last_partial_confidence, len(audio_buffer))
                             final = await self._finalize(
                                 audio_buffer, speech_start_time,
-                                endpoint_reason=f"silence_{int(silence_run_ms)}ms")
+                                endpoint_reason="silence_%dms" % int(silence_samples / SAMPLE_RATE * 1000))
                             in_speech = False
                             audio_buffer = []
-                            silence_run_ms = 0.0
-                            _last_nonoverlap_idx = -1
+                            silence_samples = 0
+                            speech_samples = 0
+                            last_partial_samples = 0
                             last_partial_text = ""
                             stable_count = 0
                             if final is not None:
@@ -566,28 +603,22 @@ class CommandListener:
                                 yield final
                             continue
 
-                # Partial transcription
-                if in_speech:
-                    context_ms = len(audio_buffer) * (FRAME_SAMPLES / SAMPLE_RATE * 1000)
-                    if context_ms < MIN_CONTEXT_MS:
-                        continue  # Not enough audio yet
-
-                    if (now - last_partial_time) >= PARTIAL_INTERVAL_S:
+                # Partial transcription (sample-gated, not wall-clock-gated)
+                if in_speech and speech_samples >= cfg.samples(cfg.min_context_ms):
+                    new_since_partial = speech_samples - last_partial_samples
+                    partial_interval_samples = cfg.samples(int(cfg.partial_interval_s * 1000))
+                    if new_since_partial >= partial_interval_samples:
+                        last_partial_samples = speech_samples
                         pcm = self._frames_to_bytes(audio_buffer)
                         t_partial_start = time.time()
-                        # Use fast transcription for partials (beam_size=1)
                         text, confidence = await loop.run_in_executor(
                             None, self._whisper.transcribe_fast, pcm, SAMPLE_RATE)
                         t_partial_elapsed = (time.time() - t_partial_start) * 1000
-                        last_partial_time = now
 
                         if text and not is_filler(text):
-                            # ── Transcript stabilization (NEW) ──
-                            # Compare consecutive partial hypotheses.
-                            # Only increment stable_count when they match.
                             normalized = _postprocess(text).lower()
                             if last_partial_text and self._similarity(
-                                    last_partial_text, normalized) >= STABILITY_SIMILARITY:
+                                    last_partial_text, normalized) >= cfg.stability_similarity:
                                 stable_count += 1
                             else:
                                 stable_count = 0
@@ -596,30 +627,30 @@ class CommandListener:
 
                             logger.info("[CMD-LISTEN] Partial (%.0fms audio, %.0fms latency): '%s' "
                                         "(conf=%.3f, stable=%d)",
-                                        context_ms, t_partial_elapsed, text, confidence, stable_count)
+                                        speech_samples / SAMPLE_RATE * 1000,
+                                        t_partial_elapsed, text, confidence, stable_count)
                             yield UtteranceEvent(
                                 kind="partial", text=text, is_final=False,
                                 started_at=speech_start_time,
                                 confidence=confidence,
-                                audio_duration_ms=context_ms,
+                                audio_duration_ms=speech_samples / SAMPLE_RATE * 1000,
                                 whisper_latency_ms=t_partial_elapsed)
 
-                # Hard cap
-                if in_speech and (now - speech_start_time) >= MAX_UTTERANCE_S:
-                    logger.info("[CMD-LISTEN] Utterance capped at %.1fs", MAX_UTTERANCE_S)
+                # Hard cap — never wait indefinitely
+                if in_speech and speech_samples >= max_utterance_samples:
+                    logger.info("[CMD] utterance capped at %.1fs", cfg.max_utterance_s)
                     final = await self._finalize(
                         audio_buffer, speech_start_time, endpoint_reason="max_duration")
                     in_speech = False
                     audio_buffer = []
-                    _last_nonoverlap_idx = -1
+                    silence_samples = 0
+                    speech_samples = 0
+                    last_partial_samples = 0
                     if final is not None and not is_filler(final.text):
                         yield final
 
-            # Carry frame remainder forward
-            if last_vad_idx >= 0:
-                remainder_start = last_vad_idx + VAD_STEP
-                if remainder_start < len(new_audio):
-                    _frame_remainder = new_audio[remainder_start:].copy()
+            pending = pending[n_frames * FRAME_SAMPLES:]
+
 
     async def _finalize(
         self,
@@ -628,19 +659,23 @@ class CommandListener:
         endpoint_reason: str = "",
     ) -> Optional[UtteranceEvent]:
         """Transcribe the complete utterance."""
+        cfg = command_config
         pcm = self._frames_to_bytes(frames)
         dur_ms = len(frames) * (FRAME_SAMPLES / SAMPLE_RATE * 1000)
         num_samples = len(pcm) // 2
 
-        if dur_ms < MIN_UTTERANCE_MS or len(pcm) < 512:
+        if dur_ms < cfg.min_utterance_ms or len(pcm) < 512:
             logger.info("[CMD-LISTEN] Utterance DISCARDED (too_short: %.0fms)", dur_ms)
             return None
 
         loop = asyncio.get_event_loop()
+        logger.info("[CMD] whisper_start duration=%.2fs samples=%d", dur_ms / 1000.0, num_samples)
         t_whisper = time.time()
         raw_text, confidence = await loop.run_in_executor(
             None, self._whisper.transcribe, pcm, SAMPLE_RATE)
         whisper_latency = (time.time() - t_whisper) * 1000
+        logger.info("[CMD] whisper_result text=%r confidence=%.3f latency=%.0fms",
+                    raw_text or "", confidence, whisper_latency)
 
         if not raw_text:
             logger.info("[CMD-LISTEN] Utterance DISCARDED (empty transcript, %.0fms audio)", dur_ms)
@@ -664,9 +699,9 @@ class CommandListener:
                           "open", "run", "play", "pause", "next", "back", "close",
                           "quit", "exit", "help", "menu", "home", "back", "cancel"}
         is_short_command = len(text.split()) <= 2 and text.lower().strip() in short_commands
-        if not is_short_command and confidence < CONFIDENCE_THRESHOLD:
+        if not is_short_command and confidence < cfg.confidence_threshold:
             logger.info("[CMD-LISTEN] Utterance DISCARDED (low confidence: %.3f < %.3f, "
-                        "text='%s', %.0fms)", confidence, CONFIDENCE_THRESHOLD, text, dur_ms)
+                        "text='%s', %.0fms)", confidence, cfg.confidence_threshold, text, dur_ms)
             return None
 
         logger.info("[CMD-LISTEN] FINALIZED: '%s' (raw='%s', duration=%.0fms, "
@@ -750,7 +785,7 @@ class CommandListener:
                 prob = await loop.run_in_executor(None, unified_vad.speech_prob, frame)
                 if prob > 0.6:
                     speech_run_ms += 32
-                    if speech_run_ms >= INTERRUPT_MIN_MS:
+                    if speech_run_ms >= command_config.interrupt_min_ms:
                         logger.info("[CMD-LISTEN] Interruption detected (user speaking)")
                         stop_event.set()
                         return
