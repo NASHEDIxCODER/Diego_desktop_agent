@@ -269,7 +269,12 @@ async def _main_async(no_auth: bool, record_session: bool = False) -> None:
 
     for t in pending:
         t.cancel()
-    await shutdown()
+    try:
+        # Shutdown must have a hard upper timeout (Phase 12) so a hung
+        # worker cannot prevent Leo from exiting.
+        await asyncio.wait_for(shutdown(), timeout=15.0)
+    except asyncio.TimeoutError:
+        logger.error("[SHUTDOWN] Hard timeout exceeded 15s — exiting anyway")
     # Drain cancelled tasks
     await asyncio.gather(*pending, return_exceptions=True)
 

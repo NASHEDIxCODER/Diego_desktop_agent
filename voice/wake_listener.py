@@ -53,6 +53,7 @@ SCORE_LOG_INTERVAL_S = 0.5             # "Wake score=…" cadence while idle
 VAD_LOG_INTERVAL_S = 1.0               # "VAD probability=…" cadence while gate open
 MODEL_RETRY_S = 5.0                    # missing-model retry cadence (never exits)
 STALL_DUMP_S = 2.0                     # "NO INFERENCE" watchdog cadence
+VERIFY_TIMEOUT_S = 30.0                # Whisper verification hard timeout
 TRIGGER_SETTLE_FRAMES = 5
 TRIGGER_MAX_FRAMES = 15
 
@@ -381,9 +382,21 @@ class WakeListener:
                     self._last_model_retry = now
                     logger.warning("[WAKE] Wake model NOT loaded (%s) — retrying",
                                    wake_model_manager.load_error or "no model")
-                    ok = await loop.run_in_executor(None, wake_model_manager.load)
-                    if ok:
-                        self.prime()
+                    try:
+                        ok = await loop.run_in_executor(None, wake_model_manager.load)
+                        if ok:
+                            self.prime()
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as e:
+                        # A model reload failure must never kill the wake
+                        # loop. Report it as a structured worker error and
+                        # keep retrying on the next cadence.
+                        logger.exception(
+                            "[WORKER-CRASH] worker=wake_listener exception=%s "
+                            "message=%s — model reload failed; retrying",
+                            type(e).__name__, str(e),
+                        )
                 await asyncio.sleep(0.25)
                 continue
 
@@ -411,8 +424,19 @@ class WakeListener:
 
                         logger.info("Wake trigger (score=%.3f ≥ %.2f) — verifying transcript…",
                                     score, wake_model_manager.threshold)
-                        result = await loop.run_in_executor(
-                            None, self.verify_with_whisper, score)
+                        try:
+                            result = await asyncio.wait_for(
+                                loop.run_in_executor(
+                                    None, self.verify_with_whisper, score),
+                                timeout=VERIFY_TIMEOUT_S)
+                        except asyncio.TimeoutError:
+                            logger.error(
+                                "[WAKE] TIMEOUT verification=%.0fms_budget_exceeded "
+                                "— rejecting trigger and resuming detector",
+                                VERIFY_TIMEOUT_S * 1000.0)
+                            self._verifying = False
+                            await asyncio.sleep(0.1)
+                            continue
                         verified, transcript, correlation, verify_sha, wake_sha = result
 
                         self._verifying = False

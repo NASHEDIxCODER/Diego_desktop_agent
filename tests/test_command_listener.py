@@ -42,13 +42,29 @@ class FakeAudioManager:
     after `last_total` without removing them, exactly like the production
     RingBuffer. Feeding is instantaneous; the command listener drains to the
     current write head when its session starts.
+
+    Also mirrors the frame-sequence diagnostics (frame_id /
+    last_frame_timestamp / last_frame_rms / get_frame_state) added to the
+    production AudioManager so the CMD-AUDIO handoff regression test can
+    assert that FRESH frames arrive after LISTEN.
     """
 
     def __init__(self):
         self._buf = np.zeros(0, dtype=np.float32)
+        self.frame_id = 0
+        self.last_frame_timestamp = 0.0
+        self.last_frame_rms = 0.0
 
     def feed(self, audio: np.ndarray) -> None:
-        self._buf = np.concatenate([self._buf, np.asarray(audio, dtype=np.float32)])
+        import time as _time
+        audio = np.asarray(audio, dtype=np.float32)
+        self._buf = np.concatenate([self._buf, audio])
+        # Advance the frame sequence as the real callback would (one frame
+        # per FRAME_SAMPLES chunk).
+        n_frames = int(audio.size // FRAME_SAMPLES)
+        for _ in range(n_frames):
+            self.frame_id += 1
+            self.last_frame_timestamp = _time.time()
 
     @property
     def total_samples(self) -> int:
@@ -59,6 +75,24 @@ class FakeAudioManager:
         if last_total >= self._buf.size:
             return np.array([], dtype=np.float32), int(self._buf.size)
         return self._buf[last_total:].copy(), int(self._buf.size)
+
+    def get_frame_state(self) -> dict:
+        return {
+            "stream_running": True,
+            "stream_state": "open",
+            "callback_count": self.frame_id,
+            "frame_id": self.frame_id,
+            "last_frame_timestamp": self.last_frame_timestamp,
+            "last_frame_rms": self.last_frame_rms,
+            "ring_buffer_samples": int(self._buf.size),
+            "ring_buffer_frames": int(self._buf.size // FRAME_SAMPLES),
+            "ring_buffer_seconds": self._buf.size / SAMPLE_RATE,
+            "dropped_frames": 0,
+            "digital_silence": False,
+            "zero_streak": 0,
+            "speech_channel": 0,
+            "energy_threshold": 300.0,
+        }
 
 
 class FakeVAD:
@@ -320,6 +354,64 @@ def test_empty_audio_no_hang(monkeypatch):
         events = await _collect(cl, feed, timeout=2.0)
         assert events == [], f"expected no events for pure silence, got {[e.kind for e in events]}"
         assert not whisper.final_calls, "Whisper must not be called for silence"
+
+    asyncio.run(impl())
+
+
+# ═══════════════════════════════════════════════════════════════
+# H. REGRESSION: LISTEN starts → fresh audio arrives → consumed
+# ═══════════════════════════════════════════════════════════════
+# This is the dedicated regression test for the "no fresh microphone audio
+# after LISTEN" bug. It proves the CommandListener observes the AudioManager
+# frame sequence ADVANCE after the session boundary, i.e. the callback is
+# still producing NEW frames and the listener consumes them (not stale
+# ring-buffer history).
+
+def test_listen_receives_fresh_audio_after_session_start(monkeypatch):
+    async def impl():
+        am = FakeAudioManager()
+        # Pre-populate stale history (wake word + chime) — frame_id advances.
+        am.feed(tone(3.0, freq=300.0, amp=0.9))
+        stale_frame_id = am.frame_id
+        assert stale_frame_id > 0
+
+        whisper = FakeWhisper()
+        monkeypatch.setattr(CL, "audio_manager", am)
+        monkeypatch.setattr(CL, "unified_vad", FakeVAD())
+        cl = _make_listener(whisper)
+
+        # Capture the frame_id the listener snapshots at session start.
+        observed_start_frame_id = []
+
+        # Wrap read_since to record the frame_id the listener sees on its
+        # FIRST successful read (i.e. after the session boundary).
+        orig_read_since = am.read_since
+        first_read_frame_id = []
+
+        def tracked_read_since(last_total):
+            result = orig_read_since(last_total)
+            if len(result[0]) > 0 and not first_read_frame_id:
+                first_read_frame_id.append(am.frame_id)
+            return result
+
+        am.read_since = tracked_read_since
+
+        async def feed():
+            # Fresh command audio AFTER the listener has entered LISTEN.
+            am.feed(tone(1.0, freq=200.0, amp=0.2))
+            am.feed(silence(1.5))
+
+        events = await _collect(cl, feed)
+        kinds = [e.kind for e in events]
+        assert "final" in kinds, f"expected final event, got {kinds}"
+
+        # The listener must have consumed audio produced AFTER the stale
+        # history — the frame sequence advanced beyond the stale frame_id.
+        assert first_read_frame_id, "listener never read fresh audio"
+        assert first_read_frame_id[0] > stale_frame_id, (
+            f"listener consumed STALE audio: first_read_frame_id={first_read_frame_id[0]} "
+            f"<= stale_frame_id={stale_frame_id}"
+        )
 
     asyncio.run(impl())
 

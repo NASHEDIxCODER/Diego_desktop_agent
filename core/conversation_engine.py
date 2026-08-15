@@ -68,6 +68,16 @@ logger = logging.getLogger(__name__)
 
 # ── Tuning ─────────────────────────────────────────────────────
 CONVERSATION_TIMEOUT_S = 60.0
+# Per-state watchdog ceilings (Phase 3). Any state held longer than its
+# ceiling is reported as a structured STATE TIMEOUT record and the turn
+# recovers safely. WAKE and FACE_AUTH are intentionally unbounded (Leo
+# waits forever for the wake word / camera popup), so they are NOT listed.
+STATE_WATCHDOG_INTERVAL_S = 1.0
+STATE_TIMEOUTS_S = {
+    "LISTEN": CONVERSATION_TIMEOUT_S + 15.0,
+    "THINK": 60.0,
+    "SPEAK": 120.0,
+}
 GOODBYE_PHRASES = {
     "bye", "goodbye", "see you", "see ya", "later", "that's all",
     "thats all", "nothing else", "i'm done", "im done", "stop listening",
@@ -238,6 +248,9 @@ class ConversationEngine:
                     "ready" if unified_vad.ready else "fallback",
                     "ready" if command_listener.ready else "unavailable")
 
+        # ── State watchdog (Phase 3) ──
+        watchdog = asyncio.create_task(self._state_watchdog())
+
         # ── Forever loop ──
         try:
             while self._running:
@@ -286,6 +299,50 @@ class ConversationEngine:
             logger.info("[ENGINE] Conversation engine cancelled")
         finally:
             self._running = False
+            watchdog.cancel()
+            await asyncio.gather(watchdog, return_exceptions=True)
+
+    # ── State watchdog (Phase 3) ─────────────────────────────────
+
+    async def _state_watchdog(self) -> None:
+        """Log a structured STATE TIMEOUT whenever a bounded state exceeds
+        its ceiling, and drive a safe recovery. Runs until cancelled."""
+        prev_state: Optional[str] = None
+        try:
+            while self._running:
+                await asyncio.sleep(STATE_WATCHDOG_INTERVAL_S)
+                if self._state is None:
+                    continue
+                name = self._state.value
+                ceiling = STATE_TIMEOUTS_S.get(name)
+                if ceiling is None:
+                    prev_state = name
+                    continue
+
+                elapsed = time.monotonic() - self._state_entered
+                if elapsed <= ceiling:
+                    prev_state = name
+                    continue
+
+                logger.error(
+                    "STATE TIMEOUT state=%s previous=%s elapsed=%.1fs "
+                    "ceiling=%.1fs thread=%s audio_running=%s active_threads=%s",
+                    name, prev_state or "START", elapsed, ceiling,
+                    threading.current_thread().name, audio_manager.is_running,
+                    threading.active_count())
+
+                # Safe recovery: break a stalled LISTEN/THINK/SPEAK by
+                # cancelling the current conversation session's stream pump.
+                try:
+                    command_listener.stop_streaming()
+                except Exception:
+                    pass
+
+                # Prevent a spurious repeated log for the same stall.
+                self._state_entered = time.monotonic()
+                prev_state = name
+        except asyncio.CancelledError:
+            pass
 
     # ── Helpers ───────────────────────────────────────────
 

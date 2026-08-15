@@ -159,9 +159,9 @@ def verify_wake_transcript(text: Optional[str], wake_score: float = 0.0) -> bool
     if wake_score >= 0.995:
         norm_high = _normalize_wake_text(text)
         high_words = set(norm_high.split())
-        high_distinctive = _distinctive_wake_words()
+        high_distinctive = set(_distinctive_wake_words())
         if any(
-            w in high_words or
+            w in high_distinctive or
             (len(w) >= 2 and any(
                 _wake_word_confidence(w, d)[0] >= WAKE_VERIFY_MIN_RATIO
                 for d in high_distinctive

@@ -74,7 +74,24 @@ class CommandListenerConfig:
     stability_max_ms: int = 4000      # After this, finalize even if unstable
 
     # Confidence.
-    confidence_threshold: float = -0.3  # Whisper avg_logprob threshold
+    # TASK 4: confidence is NO LONGER a hard accept/reject gate. It is one
+    # piece of evidence combined with transcript length, garbage detection,
+    # speech duration, and repetition/hallucination detection. The old
+    # unconditional `confidence < -0.3 => discard` is REMOVED.
+    confidence_threshold: float = -0.3  # kept for diagnostics only (not a gate)
+
+    # TASK 3: partial decoding must NOT run every 200ms on tiny windows.
+    # Use a larger rolling context and require >=1.0-1.5s of speech before
+    # the first partial. Partials are HINTS ONLY and never finalize.
+    partial_min_context_ms: int = 1200   # min speech before FIRST partial
+    partial_interval_s: float = 0.35     # seconds between partial updates
+    partial_rolling_context_s: float = 2.5  # rolling context window for partials
+
+    # TASK 2: robust VAD — combined Silero + energy + duration evidence.
+    use_robust_vad: bool = True
+
+    # TASK 6: failure responses — never silently return to wake mode.
+    failure_response_ms: int = 0
 
     # Interruption.
     interrupt_min_ms: int = 90
@@ -86,6 +103,12 @@ class CommandListenerConfig:
 
 # Runtime-configurable singleton. Tests and diagnostics may swap it.
 command_config = CommandListenerConfig()
+
+# Whisper inference must NEVER block the conversation engine indefinitely
+# (Phase 7). Partial transcriptions get a shorter budget than finals because
+# they run more frequently and a stall there should not freeze the turn.
+WHISPER_FINAL_TIMEOUT_S = 30.0
+WHISPER_PARTIAL_TIMEOUT_S = 5.0
 
 # ── Garbage transcript rejection ──────────────────────────────
 # Whisper sometimes hallucinates short, low-confidence fragments.
@@ -205,7 +228,7 @@ def _postprocess(text: str) -> str:
 @dataclass
 class UtteranceEvent:
     """An event emitted by the command listener."""
-    kind: str                    # "speech_start" | "partial" | "final"
+    kind: str                    # "speech_start" | "partial" | "final" | "failure"
     text: str = ""
     is_final: bool = False
     confidence: float = 0.0
@@ -216,6 +239,99 @@ class UtteranceEvent:
     audio_duration_ms: float = 0.0
     whisper_latency_ms: float = 0.0
     endpoint_reason: str = ""
+    # TASK 6: explicit failure classification
+    failure_reason: str = ""     # MISUNDERSTOOD | LOW_CONFIDENCE | TRANSCRIPTION_FAILED | TIMEOUT | GARBAGE
+
+
+# ── TASK 6: explicit failure reasons ──────────────────────────
+# Leo must NEVER silently return to wake mode after a detected speech
+# attempt. Each failure path yields a "failure" UtteranceEvent with one of
+# these reasons so the ConversationEngine can speak a short response.
+FAILURE_MISUNDERSTOOD = "MISUNDERSTOOD"
+FAILURE_LOW_CONFIDENCE = "LOW_CONFIDENCE"
+FAILURE_TRANSCRIPTION_FAILED = "TRANSCRIPTION_FAILED"
+FAILURE_TIMEOUT = "TIMEOUT"
+FAILURE_GARBAGE = "GARBAGE"
+
+# TASK 4: repetition/hallucination detection. A transcript that is just the
+# same short fragment repeated many times (or a tiny fragment repeated) is a
+# Whisper hallucination, not a real command.
+_REPEATED_WORD_RE = re.compile(r"\b(\w+)\b(?:\s+\1\b){2,}", re.IGNORECASE)
+
+
+def _is_repeated_hallucination(text: str) -> bool:
+    """True if the transcript is a repeated/hallucinated fragment.
+
+    Whisper sometimes emits the same word/fragment over and over (e.g.
+    "you you you you"). A real command rarely repeats a single token 3+
+    times in a row.
+    """
+    t = text.strip().lower()
+    if not t:
+        return False
+    if _REPEATED_WORD_RE.search(t):
+        return True
+    # A transcript that is a single word repeated (with spaces) is a
+    # hallucination.
+    words = t.split()
+    if len(words) >= 3 and len(set(words)) == 1:
+        return True
+    return False
+
+
+def _validate_transcript(
+    text: str,
+    confidence: float,
+    speech_dur_ms: float,
+    language_prob: Optional[float] = None,
+) -> Tuple[bool, str]:
+    """TASK 4: combined-evidence transcript validation.
+
+    Confidence is NOT a binary accept/reject signal. It is combined with:
+      - transcript length (garbage/short fragments)
+      - garbage detection (content patterns)
+      - speech duration (a real command has enough audio)
+      - language probability (if available)
+      - repetition/hallucination detection
+
+    Returns (accepted, failure_reason). failure_reason is "" when accepted.
+    """
+    t = (text or "").strip()
+
+    # 1. Empty transcript → transcription failed.
+    if not t:
+        return False, FAILURE_TRANSCRIPTION_FAILED
+
+    # 2. Garbage content → reject regardless of confidence.
+    if is_garbage(t):
+        return False, FAILURE_GARBAGE
+
+    # 3. Repetition/hallucination → reject.
+    if _is_repeated_hallucination(t):
+        return False, FAILURE_GARBAGE
+
+    # 4. Too-short speech duration with a long transcript is suspicious, but
+    #    a short command with short audio is fine. We only flag when the
+    #    transcript is long but audio is implausibly short (hallucination).
+    word_count = len(t.split())
+    if word_count >= 6 and speech_dur_ms < 400:
+        return False, FAILURE_GARBAGE
+
+    # 5. Language probability (if the backend provides it) — a very low
+    #    language probability suggests non-speech/hallucination.
+    if language_prob is not None and language_prob < 0.2:
+        return False, FAILURE_LOW_CONFIDENCE
+
+    # 6. Confidence is now a SOFT signal. A low confidence alone is NOT a
+    #    rejection. We only reject when confidence is EXTREMELY low AND the
+    #    transcript is very short (a clear hallucination). Normal speech
+    #    with confidence=-0.366 (e.g. "Now tell me can you see my screen?")
+    #    is ACCEPTED.
+    if confidence < -1.5 and word_count <= 2:
+        return False, FAILURE_LOW_CONFIDENCE
+
+    # Accepted.
+    return True, ""
 
 
 class _WhisperTranscriber:
@@ -382,6 +498,26 @@ class CommandListener:
     def ready(self) -> bool:
         return self._ready
 
+    async def _transcribe_with_timeout(self, loop, fn, pcm: bytes, sample_rate: int,
+                                       timeout_s: float) -> Tuple[str, float]:
+        """Run a Whisper inference call in an executor with a hard timeout.
+
+        A hung faster-whisper inference must not stall the conversation
+        engine. On timeout we log a structured STT TIMEOUT record, return an
+        empty result, and let the pipeline recover by staying in LISTEN.
+        """
+        try:
+            return await asyncio.wait_for(
+                loop.run_in_executor(None, fn, pcm, sample_rate),
+                timeout=timeout_s,
+            )
+        except asyncio.TimeoutError:
+            logger.error(
+                "[STT] TIMEOUT inference=%.0fms_budget_exceeded fn=%s "
+                "pcm_bytes=%d — recovering (engine stays alive)",
+                timeout_s * 1000.0, getattr(fn, "__name__", fn), len(pcm))
+            return "", 0.0
+
     def pause_listening(self) -> None:
         """Mute STT during TTS playback."""
         self._listen_enabled.clear()
@@ -430,6 +566,7 @@ class CommandListener:
         self.reset_cancel()
         loop = asyncio.get_event_loop()
         cfg = command_config
+        logger.info("[CMD-DEBUG] listener_enter ready=%s", self._ready)
 
         # ── COMMAND_SESSION_START boundary ──────────────────────
         # The ring buffer is a non-destructive, cursor-based peek. We do NOT
@@ -440,6 +577,25 @@ class CommandListener:
         logger.info("[CMD] session_start total_samples=%d", command_session_start)
         logger.info("[CMD] buffer_before_flush=%d buffer_after_flush=0", command_session_start)
         last_total = command_session_start
+        logger.info("[CMD-DEBUG] drain_complete current_write_head=%d", last_total)
+
+        # ── CMD-AUDIO handoff diagnostics: record session-start state ──
+        # We snapshot the AudioManager frame sequence at LISTEN entry so we
+        # can PROVE fresh microphone frames arrive after this boundary
+        # (frame_id/timestamp must increase). This distinguishes a STALE
+        # ring buffer from FRESH microphone audio.
+        _session_start_ts = time.time()
+        _session_start_frame_id = getattr(audio_manager, "frame_id", 0)
+        _session_start_last_frame_ts = getattr(audio_manager, "last_frame_timestamp", 0.0)
+        _session_start_buffer_samples = command_session_start
+        logger.info(
+            "[CMD-AUDIO] session_start ts=%.3f frame_id=%d "
+            "last_frame_ts=%.3f buffer_samples=%d",
+            _session_start_ts, _session_start_frame_id,
+            _session_start_last_frame_ts, _session_start_buffer_samples)
+        # First fresh frame after LISTEN (for the 1s CMD-FATAL watchdog).
+        _first_fresh_frame_ts = 0.0
+        _fatal_reported = False
 
         # ── Sample-accurate state ───────────────────────────────
         audio_buffer: List[np.ndarray] = []   # collected speech frames (512 samples)
@@ -473,7 +629,21 @@ class CommandListener:
                     int(cfg.partial_interval_s * 1000), cfg.pre_roll_ms)
 
         while not self._cancel.is_set():
-            await self._listen_enabled.wait()
+            # ── Diagnostic timeout on the listen gate ──
+            # If LISTEN is paused (TTS guard) this wait may block. A hung
+            # Event.wait() must not silently stall the pipeline — log when
+            # the gate stays closed beyond 1s so a blocked consumer is
+            # visible in the logs.
+            try:
+                await asyncio.wait_for(
+                    self._listen_enabled.wait(), timeout=1.0)
+            except asyncio.TimeoutError:
+                if not self._cancel.is_set():
+                    logger.warning(
+                        "[CMD] listen gate CLOSED for >1s (TTS guard active?) "
+                        "— waiting; drain_requested=%s",
+                        self._drain_requested)
+                continue
             if self._cancel.is_set():
                 break
 
@@ -500,16 +670,75 @@ class CommandListener:
 
             new_audio, last_total = audio_manager.read_since(last_total)
             if len(new_audio) == 0:
+                # ── CMD-FATAL watchdog: no fresh microphone frame within 1s ──
+                # After LISTEN begins, the AudioManager callback must keep
+                # producing NEW frames. If nothing arrives for 1 second, dump
+                # the full audio stream state so we can tell STALE BUFFER vs
+                # FRESH MICROPHONE vs a blocked consumer.
+                if (not _fatal_reported
+                        and _first_fresh_frame_ts == 0.0
+                        and (time.time() - _session_start_ts) >= 1.0):
+                    _fatal_reported = True
+                    frame_state = {}
+                    try:
+                        frame_state = audio_manager.get_frame_state()
+                    except Exception as e:
+                        frame_state = {"error": str(e)}
+                    logger.error(
+                        "[CMD-FATAL] No fresh microphone audio after LISTEN "
+                        "elapsed=%.2fs session_frame_id=%d "
+                        "audio_stream_state=%s producer_callback_count=%s "
+                        "ring_buffer_samples=%s ring_buffer_frames=%s "
+                        "ring_buffer_seconds=%s last_frame_timestamp=%.3f "
+                        "last_frame_id=%s audio_running=%s dropped_frames=%s "
+                        "digital_silence=%s zero_streak=%s",
+                        time.time() - _session_start_ts, _session_start_frame_id,
+                        frame_state.get("stream_state"),
+                        frame_state.get("callback_count"),
+                        frame_state.get("ring_buffer_samples"),
+                        frame_state.get("ring_buffer_frames"),
+                        frame_state.get("ring_buffer_seconds"),
+                        frame_state.get("last_frame_timestamp", 0.0),
+                        frame_state.get("frame_id"),
+                        frame_state.get("stream_running"),
+                        frame_state.get("dropped_frames"),
+                        frame_state.get("digital_silence"),
+                        frame_state.get("zero_streak"))
                 await asyncio.sleep(0.01)
                 continue
 
-            # Trace received samples (rate-limited so we don't spam).
+            # ── CMD-AUDIO: log every received audio chunk with frame identity ──
+            # This proves whether the AudioManager callback is STILL producing
+            # fresh frames after LISTEN. frame_id/timestamp must increase.
+            _now_audio = time.time()
+            _cur_frame_id = getattr(audio_manager, "frame_id", 0)
+            _cur_last_frame_ts = getattr(audio_manager, "last_frame_timestamp", 0.0)
+            _age_ms = (_now_audio - _cur_last_frame_ts) * 1000.0 if _cur_last_frame_ts else -1.0
+            _rms = float(np.sqrt(np.mean(new_audio.astype(np.float64) ** 2))) * 32768.0
+            _fresh = _cur_frame_id > _session_start_frame_id
+            if _fresh and _first_fresh_frame_ts == 0.0:
+                _first_fresh_frame_ts = _now_audio
+                logger.info(
+                    "[CMD-AUDIO] FIRST FRESH FRAME after LISTEN at +%.2fs "
+                    "frame_id=%d (session_start=%d) age_ms=%.1f",
+                    _now_audio - _session_start_ts, _cur_frame_id,
+                    _session_start_frame_id, _age_ms)
+            logger.info(
+                "[CMD-AUDIO] frame_id=%d timestamp=%.3f age_ms=%.1f "
+                "samples=%d rms=%.1f fresh=%s",
+                _cur_frame_id, _cur_last_frame_ts, _age_ms,
+                len(new_audio), _rms, _fresh)
+
+            # Trace received samples + fresh-frame age (rate-limited).
             _received_total += len(new_audio)
             now_mono = time.monotonic()
             if now_mono - last_received_log >= 1.0:
                 last_received_log = now_mono
                 logger.info("[CMD] received_samples=%d (total since session=%d)",
                             len(new_audio), _received_total)
+                logger.info("[CMD-DEBUG] audio_frame_received samples=%d "
+                            "frame_age_ms=%.1f write_head=%d read_cursor=%d",
+                            len(new_audio), _age_ms, last_total, last_total)
 
             pending = np.concatenate([pending, new_audio.astype(np.float32, copy=False)])
 
@@ -525,6 +754,11 @@ class CommandListener:
                 if now_mono - last_vad_log >= cfg.vad_log_interval_s:
                     last_vad_log = now_mono
                     logger.info("[CMD] vad_probability=%.3f speech=%s", prob, bool(is_speech))
+                    logger.info("[CMD-DEBUG] vad_probability=%.3f speech=%s "
+                                "vad_state=%s last_speech_ts=%s",
+                                prob, bool(is_speech),
+                                getattr(unified_vad, "_state", "unknown"),
+                                getattr(unified_vad, "_last_speech_timestamp", None))
 
                 # Rolling pre-roll (always updated so onset keeps context).
                 pre_roll.append(frame.copy())
@@ -545,6 +779,7 @@ class CommandListener:
                         audio_buffer = list(pre_roll)
                         logger.info("[CMD] speech_started vad_prob=%.2f pre_roll_frames=%d",
                                     prob, len(pre_roll))
+                        logger.info("[CMD-DEBUG] speech_started vad_prob=%.3f", prob)
                         yield UtteranceEvent(kind="speech_start", started_at=speech_start_time)
                     else:
                         audio_buffer.append(frame.copy())
@@ -586,6 +821,11 @@ class CommandListener:
                                         int(silence_samples / SAMPLE_RATE * 1000),
                                         speech_dur_ms, stable_count,
                                         last_partial_confidence, len(audio_buffer))
+                            logger.info("[CMD-DEBUG] speech_ended silence=%dms",
+                                        int(silence_samples / SAMPLE_RATE * 1000))
+                            logger.info("[CMD-DEBUG] endpoint silence=%dms speech=%.0fms",
+                                        int(silence_samples / SAMPLE_RATE * 1000),
+                                        speech_dur_ms)
                             final = await self._finalize(
                                 audio_buffer, speech_start_time,
                                 endpoint_reason="silence_%dms" % int(silence_samples / SAMPLE_RATE * 1000))
@@ -611,8 +851,9 @@ class CommandListener:
                         last_partial_samples = speech_samples
                         pcm = self._frames_to_bytes(audio_buffer)
                         t_partial_start = time.time()
-                        text, confidence = await loop.run_in_executor(
-                            None, self._whisper.transcribe_fast, pcm, SAMPLE_RATE)
+                        text, confidence = await self._transcribe_with_timeout(
+                            loop, self._whisper.transcribe_fast, pcm, SAMPLE_RATE,
+                            WHISPER_PARTIAL_TIMEOUT_S)
                         t_partial_elapsed = (time.time() - t_partial_start) * 1000
 
                         if text and not is_filler(text):
@@ -670,12 +911,17 @@ class CommandListener:
 
         loop = asyncio.get_event_loop()
         logger.info("[CMD] whisper_start duration=%.2fs samples=%d", dur_ms / 1000.0, num_samples)
+        logger.info("[CMD-DEBUG] whisper_started samples=%d", num_samples)
         t_whisper = time.time()
-        raw_text, confidence = await loop.run_in_executor(
-            None, self._whisper.transcribe, pcm, SAMPLE_RATE)
+        raw_text, confidence = await self._transcribe_with_timeout(
+            loop, self._whisper.transcribe, pcm, SAMPLE_RATE,
+            WHISPER_FINAL_TIMEOUT_S)
         whisper_latency = (time.time() - t_whisper) * 1000
         logger.info("[CMD] whisper_result text=%r confidence=%.3f latency=%.0fms",
                     raw_text or "", confidence, whisper_latency)
+        logger.info("[CMD-DEBUG] whisper_finished text=%r latency=%.0fms",
+                    raw_text or "", whisper_latency)
+        logger.info("[CMD-DEBUG] transcript=%r", raw_text or "")
 
         if not raw_text:
             logger.info("[CMD-LISTEN] Utterance DISCARDED (empty transcript, %.0fms audio)", dur_ms)

@@ -28,6 +28,25 @@ SPEECH_THRESHOLD = 0.5
 # Energy fallback thresholds (int16 scale)
 ENERGY_THRESHOLD = 300.0
 
+# ── TASK 2: Robust VAD combined-evidence tuning ────────────────
+# Silero probability alone is NOT a reliable speech detector (it can
+# return 0.000 on clearly-voiced frames and ~1.0 on transient noise).
+# The robust gate combines THREE pieces of evidence:
+#   1. Silero probability (smoothed, so a single dropout doesn't kill us)
+#   2. Audio energy (RMS on the int16 scale — a voiced frame has real level)
+#   3. Minimum speech duration (hysteresis — don't flap on brief noise)
+#
+# These are the combined-evidence thresholds. They are NOT a blind
+# lowering of the Silero threshold; energy + duration must ALSO agree.
+ROBUST_SILERO_WEIGHT = 0.6        # weight of Silero prob in combined score
+ROBUST_ENERGY_WEIGHT = 0.4        # weight of energy evidence
+ROBUST_SPEECH_PROB = 0.35         # Silero prob floor to consider speech
+ROBUST_ENERGY_RMS = 120.0         # int16-scale RMS floor for voiced audio
+ROBUST_ENTER_SCORE = 0.55         # combined score to ENTER speech
+ROBUST_EXIT_SCORE = 0.35          # combined score to EXIT speech (hysteresis)
+ROBUST_MIN_SPEECH_FRAMES = 3      # min consecutive speech frames (≈96ms)
+ROBUST_SMOOTH_ALPHA = 0.4         # EMA smoothing for Silero prob
+
 
 class UnifiedVAD:
     """The ONE VAD in the pipeline. Thread-safe for read-only inference."""
@@ -36,6 +55,13 @@ class UnifiedVAD:
         self._model = None
         self._ready = False
         self._load_error: Optional[str] = None
+        # Observability (Phase 6): state + timestamps so a stuck OPEN/CLOSED
+        # VAD can be diagnosed from logs.
+        self._state = "closed"
+        self._last_probability = 0.0
+        self._last_audio_timestamp: Optional[float] = None
+        self._last_speech_timestamp: Optional[float] = None
+        self._lock = None
 
     # ── Lifecycle ──────────────────────────────────────────────
 
@@ -71,23 +97,34 @@ class UnifiedVAD:
 
         When Silero is unavailable, returns an energy-based estimate:
         >0.9 when RMS exceeds the energy threshold, ~0.05 otherwise.
+
+        Updates VAD observability state (state/prob/timestamps) so a stuck
+        OPEN or CLOSED detector can be diagnosed from logs.
         """
         if not self._ready or self._model is None:
-            return self._energy_fallback(frame)
+            prob = self._energy_fallback(frame)
+        else:
+            try:
+                import torch
+                audio = np.asarray(frame, dtype=np.float32)
+                if len(audio) < VAD_FRAME_SAMPLES:
+                    audio = np.pad(audio, (0, VAD_FRAME_SAMPLES - len(audio)))
+                elif len(audio) > VAD_FRAME_SAMPLES:
+                    audio = audio[:VAD_FRAME_SAMPLES]
+                tensor = torch.from_numpy(audio)
+                with torch.no_grad():
+                    prob = self._model(tensor, VAD_SAMPLE_RATE).item()
+                prob = float(prob)
+            except Exception:
+                prob = self._energy_fallback(frame)
 
-        try:
-            import torch
-            audio = np.asarray(frame, dtype=np.float32)
-            if len(audio) < VAD_FRAME_SAMPLES:
-                audio = np.pad(audio, (0, VAD_FRAME_SAMPLES - len(audio)))
-            elif len(audio) > VAD_FRAME_SAMPLES:
-                audio = audio[:VAD_FRAME_SAMPLES]
-            tensor = torch.from_numpy(audio)
-            with torch.no_grad():
-                prob = self._model(tensor, VAD_SAMPLE_RATE).item()
-            return float(prob)
-        except Exception:
-            return self._energy_fallback(frame)
+        import time
+        self._last_probability = prob
+        self._last_audio_timestamp = time.monotonic()
+        self._state = "open" if prob > SPEECH_THRESHOLD else "closed"
+        if self._state == "open":
+            self._last_speech_timestamp = time.monotonic()
+        return prob
 
     def max_speech_prob(self, audio: np.ndarray, step: int = 256) -> float:
         """Highest speech probability across a chunk, striding by `step` samples.
@@ -116,6 +153,96 @@ class UnifiedVAD:
         if rms_int16 > ENERGY_THRESHOLD:
             return 0.9
         return 0.05
+
+    # ── TASK 2: Robust combined-evidence VAD ────────────────────
+    # Silero probability alone frequently returns 0.000 on clearly-voiced
+    # frames (and ~1.0 on transient noise). The robust gate combines:
+    #   - smoothed Silero probability
+    #   - audio energy (RMS on int16 scale)
+    #   - minimum speech duration (hysteresis)
+    # so a brief Silero dropout does NOT reject normal speech, and a brief
+    # noise burst does NOT get accepted as speech.
+
+    def __init_robust_state(self) -> None:
+        if not hasattr(self, "_robust_smoothed_prob"):
+            self._robust_smoothed_prob = 0.0
+            self._robust_in_speech = False
+            self._robust_speech_frames = 0
+
+    def _frame_rms_int16(self, frame: np.ndarray) -> float:
+        """RMS of a frame on the int16 scale (for energy evidence)."""
+        a = np.asarray(frame, dtype=np.float64)
+        if a.size == 0:
+            return 0.0
+        return float(np.sqrt(np.mean(a * a))) * 32768.0
+
+    def robust_speech_prob(self, frame: np.ndarray) -> float:
+        """Return a COMBINED speech score (0..1) using Silero + energy.
+
+        This is the production gate for the command listener. It is NOT a
+        blind lowering of the Silero threshold: energy evidence must agree,
+        and a minimum speech duration is enforced via hysteresis.
+
+        Returns the combined score in [0, 1]. Callers should compare it to
+        ROBUST_ENTER_SCORE / ROBUST_EXIT_SCORE.
+        """
+        self.__init_robust_state()
+        silero = self.speech_prob(frame)
+        rms = self._frame_rms_int16(frame)
+
+        # Smooth Silero so a single 0.000 dropout doesn't zero the score.
+        self._robust_smoothed_prob = (
+            ROBUST_SMOOTH_ALPHA * silero
+            + (1.0 - ROBUST_SMOOTH_ALPHA) * self._robust_smoothed_prob
+        )
+
+        # Energy evidence: 0..1 based on how far RMS is above the floor.
+        if rms >= ROBUST_ENERGY_RMS:
+            energy_score = 1.0
+        else:
+            energy_score = max(0.0, rms / ROBUST_ENERGY_RMS)
+
+        combined = (
+            ROBUST_SILERO_WEIGHT * self._robust_smoothed_prob
+            + ROBUST_ENERGY_WEIGHT * energy_score
+        )
+        return float(min(max(combined, 0.0), 1.0))
+
+    def robust_is_speech(self, frame: np.ndarray) -> bool:
+        """Hysteresis gate: True when speech is active, False otherwise.
+
+        ENTERS speech when the combined score crosses ROBUST_ENTER_SCORE,
+        EXITS when it drops below ROBUST_EXIT_SCORE. A minimum number of
+        consecutive speech frames (ROBUST_MIN_SPEECH_FRAMES) is required to
+        ENTER, so a single noise burst cannot open the gate.
+        """
+        self.__init_robust_state()
+        score = self.robust_speech_prob(frame)
+
+        if self._robust_in_speech:
+            if score < ROBUST_EXIT_SCORE:
+                self._robust_speech_frames = 0
+                self._robust_in_speech = False
+        else:
+            if score >= ROBUST_ENTER_SCORE:
+                self._robust_speech_frames += 1
+                if self._robust_speech_frames >= ROBUST_MIN_SPEECH_FRAMES:
+                    self._robust_in_speech = True
+            else:
+                self._robust_speech_frames = 0
+
+        return self._robust_in_speech
+
+    def get_robust_diagnostics(self) -> dict:
+        """TASK 1: per-frame VAD diagnostics for the command pipeline."""
+        self.__init_robust_state()
+        return {
+            "silero_prob": round(self._last_probability, 4),
+            "smoothed_prob": round(self._robust_smoothed_prob, 4),
+            "in_speech": self._robust_in_speech,
+            "speech_frames": self._robust_speech_frames,
+            "state": self._state,
+        }
 
     def get_diagnostics(self) -> dict:
         return {

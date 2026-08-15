@@ -675,6 +675,14 @@ class AudioManager:
         self._channel_rms: dict = {}      # channel index -> latest RMS (float scale)
         self._last_raw_dump: float = 0.0  # last time a raw WAV was dumped
 
+        # ── Frame-sequence diagnostics (CMD-AUDIO handoff tracing) ──
+        # Monotonic frame ID + wall-clock timestamp of the newest frame the
+        # callback produced. Used by CommandListener to distinguish STALE
+        # ring-buffer audio from FRESH microphone frames after LISTEN.
+        self._frame_id: int = 0            # incremented once per callback frame
+        self._last_frame_timestamp: float = 0.0  # time.time() of last frame put
+        self._last_frame_rms: float = 0.0  # RMS (int16 scale) of last frame
+
         # ── TASK 2: digital-silence watchdog state ──
         self._zero_streak: int = 0        # consecutive all-zero RAW frames
         self._digital_silence: bool = False  # latched once abort threshold hit
@@ -1086,6 +1094,16 @@ class AudioManager:
         peak_monitor.log("callback_highpass", audio_hp)
 
         self._ring_buffer.put(audio_hp)
+
+        # ── Frame-sequence diagnostics: monotonic frame ID + timestamp ──
+        # Every callback frame advances _frame_id. CommandListener records
+        # this at session start and compares it on each received frame to
+        # prove FRESH microphone audio is arriving after LISTEN (not stale
+        # ring-buffer history).
+        self._frame_id += 1
+        self._last_frame_timestamp = time.time()
+        self._last_frame_rms = float(np.sqrt(np.mean(
+            audio_hp.astype(np.float64) ** 2))) * 32768.0
 
         # VAD: lightweight energy check. Thresholds stay on the int16
         # scale (300 default) — measured float RMS is scaled ×32768.
@@ -1933,6 +1951,41 @@ class AudioManager:
     def energy_threshold(self) -> float:
         """Get the current energy threshold."""
         return self._energy_threshold
+
+    # ── Frame-sequence diagnostics (CMD-AUDIO handoff tracing) ──
+    @property
+    def frame_id(self) -> int:
+        """Monotonic frame ID of the newest callback frame (0 = none yet)."""
+        return self._frame_id
+
+    @property
+    def last_frame_timestamp(self) -> float:
+        """Wall-clock timestamp (time.time()) of the newest callback frame."""
+        return self._last_frame_timestamp
+
+    @property
+    def last_frame_rms(self) -> float:
+        """RMS (int16 scale) of the newest callback frame."""
+        return self._last_frame_rms
+
+    def get_frame_state(self) -> dict:
+        """Snapshot of the audio stream + frame sequence for CMD-FATAL dump."""
+        return {
+            "stream_running": self._running,
+            "stream_state": "open" if (self._stream is not None and self._running) else "closed",
+            "callback_count": self._callback_count,
+            "frame_id": self._frame_id,
+            "last_frame_timestamp": self._last_frame_timestamp,
+            "last_frame_rms": self._last_frame_rms,
+            "ring_buffer_samples": self._ring_buffer.total_samples,
+            "ring_buffer_frames": len(self._ring_buffer._buffer),
+            "ring_buffer_seconds": self._ring_buffer.available_seconds,
+            "dropped_frames": self._dropped_frames,
+            "digital_silence": self._digital_silence,
+            "zero_streak": self._zero_streak,
+            "speech_channel": self._speech_channel,
+            "energy_threshold": self._energy_threshold,
+        }
 
     def get_diagnostics(self) -> dict:
         """Get diagnostic information."""

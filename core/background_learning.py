@@ -179,8 +179,13 @@ class BackgroundLearner:
 
                 try:
                     await self._learn_one_cycle()
+                except asyncio.CancelledError:
+                    raise
                 except Exception as e:
-                    logger.debug("[BG-LEARN] Learning cycle error: %s", e)
+                    logger.exception(
+                        "[WORKER-CRASH] worker=background_learner exception=%s "
+                        "message=%s — cycle failed; learner stays alive",
+                        type(e).__name__, str(e))
 
         except asyncio.CancelledError:
             pass
