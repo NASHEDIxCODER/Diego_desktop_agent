@@ -18,3 +18,5 @@ models/wake/negatives/*.wav
 models/wake/positives/*.wav
 debug/*
 data/asr_models/*.onnx
+data/asr_models/zipformer-streaming-en-int8/*.onnx
+data/asr_models/*
