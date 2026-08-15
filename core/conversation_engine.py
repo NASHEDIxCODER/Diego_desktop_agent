@@ -288,6 +288,12 @@ class ConversationEngine:
                         conv_memory.set_user_name(name)
                         logger.info("[FACE_AUTH] Authenticated: %s", name)
                         session_recorder.record_face_auth(auth_latency, True, name)
+                        # Greet the user by name after successful auth.
+                        # Uses the guarded path so the greeting is NEVER
+                        # transcribed as a user command (laptop speakers).
+                        greeting = f"Welcome back, {name}!"
+                        logger.info("[FACE_AUTH] Greeting: '%s'", greeting)
+                        await self._speak_guarded(greeting)
                     else:
                         logger.warning("[FACE_AUTH] Failed — continuing unauthenticated")
                         session_recorder.record_face_auth(auth_latency, False)
@@ -403,7 +409,7 @@ class ConversationEngine:
             ok = await loop.run_in_executor(None, command_listener.initialize)
             if not ok:
                 logger.error("[LISTEN] Whisper unavailable — returning to IDLE")
-                await self._speak_line("My speech recognizer isn't available right now.")
+                await self._speak_guarded("My speech recognizer isn't available right now.")
                 return
 
         events: "asyncio.Queue[UtteranceEvent]" = asyncio.Queue()
@@ -494,6 +500,13 @@ class ConversationEngine:
                 #   perceive → decide → plan → dispatch → verify → learn → respond
                 # The engine ONLY speaks the response. No bypass is possible.
                 self._set_state(EngineState.THINK)
+
+                # Pause listening during THINK so the command listener does
+                # not keep streaming and queue "speech_start" events from the
+                # user's continued speech (or TTS echo). Those stale events
+                # would otherwise be seen by the interruption monitor when
+                # TTS starts, causing an immediate false interrupt.
+                command_listener.pause_listening()
 
                 from agent.brain import agent_brain
 
@@ -653,11 +666,25 @@ class ConversationEngine:
                     break
                 yield item
 
+        # Drain stale events before TTS so the interruption monitor never
+        # mistakes a previous turn's speech (or TTS echo) for a new
+        # interruption. This breaks the self-listening loop where Leo
+        # transcribes its own voice and responds forever.
+        while True:
+            try:
+                events.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+
         monitor = asyncio.create_task(self._watch_interruption(events))
         command_listener.pause_listening()
         try:
             played = await streaming_tts.speak_sentences(sentences(), interrupt)
         finally:
+            # Let the TTS echo decay before resuming, so Leo never
+            # transcribes its own voice as a user command. 0.5s covers
+            # laptop-speaker reverberation in a normal room.
+            await asyncio.sleep(0.5)
             command_listener.resume_listening()
             monitor.cancel()
             if not producer.done():
@@ -724,6 +751,26 @@ class ConversationEngine:
             yield text
         return await streaming_tts.speak_sentences(_gen(), None)
 
+    async def _speak_guarded(self, text: str) -> bool:
+        """Speak while muting STT so Leo NEVER transcribes its own voice.
+
+        Pause the command listener, speak, let the speaker echo decay, then
+        drain the ring buffer and resume. Every TTS path that runs outside
+        the normal _think_and_speak flow (greeting, failure responses) MUST
+        use this so the microphone never picks up Leo's own output through
+        the laptop speakers (no headphones required).
+        """
+        command_listener.pause_listening()
+        try:
+            spoke = await self._speak_line(text)
+        finally:
+            # Laptop-speaker echo decays quickly; give it time before we
+            # re-arm the mic, then discard everything captured while muted.
+            await asyncio.sleep(0.4)
+            command_listener.resume_listening()
+            audio_manager.read_since(audio_manager.total_samples)
+        return spoke
+
     # ── TASK 6: explicit failure responses ─────────────────
     # Leo must NEVER silently return to wake mode after a detected speech
     # attempt. Each failure reason maps to a short spoken response.
@@ -739,13 +786,16 @@ class ConversationEngine:
     async def _speak_failure_response(self, reason: str) -> bool:
         """Speak a short response for a failed speech attempt.
 
+        Uses the guarded path so the failure response is never transcribed
+        as a new command (it would otherwise echo forever).
+
         Returns True if audio was queued for playback.
         """
         text = self.FAILURE_RESPONSES.get(
             reason, self.FAILURE_RESPONSES["MISUNDERSTOOD"])
         logger.info("[LISTEN] Speaking failure response: '%s' (reason=%s)",
                     text, reason)
-        return await self._speak_line(text)
+        return await self._speak_guarded(text)
 
     def get_diagnostics(self) -> dict:
         return {

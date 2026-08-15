@@ -54,7 +54,10 @@ IMAGES_DIR = BASE_DIR / "images"
 DEBUG_DIR = Path(__file__).resolve().parent.parent / "debug"
 
 # Default tolerance — overridden by .env
-FACE_TOLERANCE = float(os.environ.get("FACE_TOLERANCE", "0.55"))
+# The face_recognition library's standard tolerance is 0.6. A stricter
+# 0.55 rejected legitimate users whose distance sat just above it
+# (e.g. dist=0.5578), so the default is aligned with the library standard.
+FACE_TOLERANCE = float(os.environ.get("FACE_TOLERANCE", "0.6"))
 
 # ── Camera configuration ───────────────────────────────────────
 CAM_WIDTH = 640
