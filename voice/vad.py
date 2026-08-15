@@ -62,6 +62,10 @@ class UnifiedVAD:
         self._last_audio_timestamp: Optional[float] = None
         self._last_speech_timestamp: Optional[float] = None
         self._lock = None
+        # TASK 1: rate-limit the out-of-range probability bug log so a single
+        # bad frame does not flood the terminal.
+        self._out_of_range_logged = False
+        self.__init_robust_state()
 
     # ── Lifecycle ──────────────────────────────────────────────
 
@@ -119,6 +123,21 @@ class UnifiedVAD:
                 prob = self._energy_fallback(frame)
 
         import time
+        # ── TASK 1: clamp/validate every individual VAD probability ──
+        # A probability MUST be in [0.0, 1.0]. Silero can emit values slightly
+        # outside this range (or NaN) on edge frames; without clamping,
+        # vad_avg becomes impossible (>1.0, e.g. 17.201 / 42.801). NaN is
+        # treated as 0.0 (not speech).
+        if prob != prob:  # NaN check
+            if not self._out_of_range_logged:
+                logger.error("[VAD] BUG: probability is NaN — clamping to 0.0")
+                self._out_of_range_logged = True
+            prob = 0.0
+        elif prob < 0.0 or prob > 1.0:
+            if not self._out_of_range_logged:
+                logger.error("[VAD] BUG: probability out of range %.6f — clamping to [0,1]", prob)
+                self._out_of_range_logged = True
+            prob = min(max(prob, 0.0), 1.0)
         self._last_probability = prob
         self._last_audio_timestamp = time.monotonic()
         self._state = "open" if prob > SPEECH_THRESHOLD else "closed"
@@ -243,6 +262,21 @@ class UnifiedVAD:
             "speech_frames": self._robust_speech_frames,
             "state": self._state,
         }
+
+    def reset_state(self) -> None:
+        """TASK 1: reset ALL VAD state so stale values never leak into a new
+        command session (previous wake verification, face auth, TTS, or a
+        previous command must not influence the next utterance)."""
+        self.__init_robust_state()
+        self._robust_smoothed_prob = 0.0
+        self._robust_in_speech = False
+        self._robust_speech_frames = 0
+        self._last_probability = 0.0
+        self._state = "closed"
+        self._last_audio_timestamp = None
+        self._last_speech_timestamp = None
+        self._out_of_range_logged = False
+        logger.info("[VAD] state reset (new command session)")
 
     def get_diagnostics(self) -> dict:
         return {

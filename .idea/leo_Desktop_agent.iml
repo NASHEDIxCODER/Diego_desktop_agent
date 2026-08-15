@@ -21,6 +21,10 @@
       <excludeFolder url="file://$MODULE_DIR$/data/asr_models/zipformer-streaming-en-int8/.cache" />
       <excludeFolder url="file://$MODULE_DIR$/data/asr_models/zipformer-streaming-en-int8/.cache/huggingface/download" />
       <excludeFolder url="file://$MODULE_DIR$/data/asr_models/zipformer-streaming-en-int8/.cache/huggingface/trees" />
+      <excludeFolder url="file://$MODULE_DIR$/models/wake/negatives" />
+      <excludeFolder url="file://$MODULE_DIR$/models/wake/positives" />
+      <excludeFolder url="file://$MODULE_DIR$/models/wake/positives_backup" />
+      <excludeFolder url="file://$MODULE_DIR$/models/wake/positives_orig" />
     </content>
     <orderEntry type="jdk" jdkName="Python 3.14 (leo_desktop_assistant)" jdkType="Python SDK" />
     <orderEntry type="sourceFolder" forTests="false" />

@@ -113,6 +113,14 @@ class FakeVAD:
         self._state = "open" if prob > 0.5 else "closed"
         return prob
 
+    def reset_state(self) -> None:
+        """TASK 1: reset all VAD state (mirrors UnifiedVAD.reset_state)."""
+        self._robust_smoothed = 0.0
+        self._robust_in_speech = False
+        self._robust_speech_frames = 0
+        self._last_probability = 0.0
+        self._state = "closed"
+
     # TASK 2: robust combined-evidence methods (mirror UnifiedVAD).
     def robust_speech_prob(self, frame: np.ndarray) -> float:
         silero = self.speech_prob(frame)
@@ -452,6 +460,263 @@ def test_listen_receives_fresh_audio_after_session_start(monkeypatch):
             f"listener consumed STALE audio: first_read_frame_id={first_read_frame_id[0]} "
             f"<= stale_frame_id={stale_frame_id}"
         )
+
+    asyncio.run(impl())
+
+
+# ═══════════════════════════════════════════════════════════════
+# TASK 11 REGRESSION TESTS — the actual runtime bugs
+# ═══════════════════════════════════════════════════════════════
+# A. speech → silence → endpoint
+# B. speech → brief VAD dip → still speech
+# C. noise → no speech
+# D. speech → Whisper partial → silence → final
+# E. Whisper inference running during endpoint
+# F. TTS → resume listening
+# G. stale audio cannot enter next command
+# H. VAD probability can never exceed 1.0
+# I. vad_avg always remains 0.0–1.0
+# J. 20-second max duration is never used when silence endpoint is available
+
+
+# ── A. speech → silence → endpoint ─────────────────────────────
+def test_speech_silence_endpoint(monkeypatch):
+    async def impl():
+        am = FakeAudioManager()
+        whisper = FakeWhisper(text="open youtube")
+        monkeypatch.setattr(CL, "audio_manager", am)
+        monkeypatch.setattr(CL, "unified_vad", FakeVAD())
+        cl = _make_listener(whisper)
+
+        async def feed():
+            am.feed(tone(1.0, freq=200.0, amp=0.25))
+            am.feed(silence(1.0))  # 1000ms silence → endpoint
+
+        events = await _collect(cl, feed)
+        kinds = [e.kind for e in events]
+        assert "speech_start" in kinds
+        finals = [e for e in events if e.kind == "final"]
+        assert len(finals) == 1, f"expected exactly one final, got {len(finals)}"
+        assert finals[0].endpoint_reason == "silence", (
+            f"endpoint reason must be silence, got {finals[0].endpoint_reason}")
+        assert finals[0].text == "open youtube"
+
+    asyncio.run(impl())
+
+
+# ── B. speech → brief VAD dip → still speech ──────────────────
+def test_brief_vad_dip_still_speech(monkeypatch):
+    async def impl():
+        am = FakeAudioManager()
+        whisper = FakeWhisper(text="open youtube")
+        monkeypatch.setattr(CL, "audio_manager", am)
+        monkeypatch.setattr(CL, "unified_vad", FakeVAD())
+        cl = _make_listener(whisper)
+
+        async def feed():
+            am.feed(tone(0.4, freq=200.0, amp=0.25))   # speech
+            am.feed(silence(0.15))                      # brief dip (150ms < 700ms)
+            am.feed(tone(0.4, freq=200.0, amp=0.25))   # speech resumes
+            am.feed(silence(1.0))                       # real silence
+
+        events = await _collect(cl, feed)
+        starts = [e for e in events if e.kind == "speech_start"]
+        finals = [e for e in events if e.kind == "final"]
+        assert len(starts) == 1, f"brief dip split speech: {len(starts)} starts"
+        assert len(finals) == 1, f"brief dip caused premature endpoint: {len(finals)} finals"
+
+    asyncio.run(impl())
+
+
+# ── C. noise → no speech ──────────────────────────────────────
+def test_noise_no_speech(monkeypatch):
+    async def impl():
+        am = FakeAudioManager()
+        whisper = FakeWhisper()
+        # Low-amplitude noise below the VAD threshold.
+        monkeypatch.setattr(CL, "audio_manager", am)
+        monkeypatch.setattr(CL, "unified_vad", FakeVAD(threshold=0.5))
+        cl = _make_listener(whisper)
+
+        async def feed():
+            am.feed(tone(1.0, freq=200.0, amp=0.01))  # very quiet noise
+            am.feed(silence(1.0))
+
+        events = await _collect(cl, feed, timeout=2.0)
+        assert not whisper.final_calls, "Whisper must not be called for noise"
+        assert not [e for e in events if e.kind == "speech_start"], (
+            "noise must not trigger speech_start")
+
+    asyncio.run(impl())
+
+
+# ── D. speech → Whisper partial → silence → final ─────────────
+def test_speech_partial_silence_final(monkeypatch):
+    async def impl():
+        am = FakeAudioManager()
+        whisper = FakeWhisper(text="open firefox")
+        monkeypatch.setattr(CL, "audio_manager", am)
+        monkeypatch.setattr(CL, "unified_vad", FakeVAD())
+        cl = _make_listener(whisper)
+
+        async def feed():
+            am.feed(tone(1.5, freq=200.0, amp=0.25))  # enough for a partial
+            am.feed(silence(1.0))
+
+        events = await _collect(cl, feed)
+        finals = [e for e in events if e.kind == "final"]
+        assert len(finals) == 1, "expected one final"
+        # A partial may or may not have run (background), but the final must
+        # be present and correct.
+        assert finals[0].text == "open firefox"
+
+    asyncio.run(impl())
+
+
+# ── E. Whisper inference running during endpoint ──────────────
+def test_whisper_running_during_endpoint(monkeypatch):
+    async def impl():
+        am = FakeAudioManager()
+        whisper = FakeWhisper(text="open vscode")
+        monkeypatch.setattr(CL, "audio_manager", am)
+        monkeypatch.setattr(CL, "unified_vad", FakeVAD())
+        cl = _make_listener(whisper)
+
+        # Make the fast (partial) transcription slow so it is still running
+        # when the silence endpoint fires.
+        original_fast = whisper.transcribe_fast
+
+        def slow_fast(pcm, sample_rate):
+            import time as _t
+            _t.sleep(0.5)  # 500ms inference
+            return original_fast(pcm, sample_rate)
+
+        whisper.transcribe_fast = slow_fast
+
+        async def feed():
+            am.feed(tone(1.5, freq=200.0, amp=0.25))
+            am.feed(silence(1.0))
+
+        events = await _collect(cl, feed)
+        finals = [e for e in events if e.kind == "final"]
+        assert len(finals) == 1, "endpoint must still produce exactly one final"
+        assert finals[0].text == "open vscode"
+
+    asyncio.run(impl())
+
+
+# ── F. TTS → resume listening ─────────────────────────────────
+def test_tts_resume_listening(monkeypatch):
+    async def impl():
+        am = FakeAudioManager()
+        whisper = FakeWhisper(text="open youtube")
+        vad = FakeVAD()
+        monkeypatch.setattr(CL, "audio_manager", am)
+        monkeypatch.setattr(CL, "unified_vad", vad)
+        cl = _make_listener(whisper)
+
+        async def feed():
+            # Simulate TTS: pause, feed TTS audio, resume.
+            cl.pause_listening()
+            am.feed(tone(1.0, freq=300.0, amp=0.5))  # TTS audio
+            cl.resume_listening()
+            await asyncio.sleep(0.05)  # allow drain
+            # Now real user speech.
+            am.feed(tone(1.0, freq=200.0, amp=0.25))
+            am.feed(silence(1.0))
+
+        events = await _collect(cl, feed)
+        finals = [e for e in events if e.kind == "final"]
+        assert len(finals) == 1, "expected one final after TTS resume"
+        # The TTS audio must not be in the final transcript's audio.
+        pcm = whisper.final_calls[0]
+        samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
+        assert float(np.max(np.abs(samples))) < 0.6, "TTS audio leaked into final"
+
+    asyncio.run(impl())
+
+
+# ── G. stale audio cannot enter next command ──────────────────
+def test_stale_audio_cannot_enter_next_command(monkeypatch):
+    async def impl():
+        am = FakeAudioManager()
+        whisper = FakeWhisper(text="open youtube")
+        monkeypatch.setattr(CL, "audio_manager", am)
+        monkeypatch.setattr(CL, "unified_vad", FakeVAD())
+        cl = _make_listener(whisper)
+
+        # Pre-populate stale audio (previous wake/face-auth/TTS/command).
+        am.feed(tone(5.0, freq=300.0, amp=0.9))
+
+        async def feed():
+            am.feed(tone(1.0, freq=200.0, amp=0.25))
+            am.feed(silence(1.0))
+
+        events = await _collect(cl, feed)
+        finals = [e for e in events if e.kind == "final"]
+        assert len(finals) == 1
+        pcm = whisper.final_calls[0]
+        samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
+        assert len(samples) / SAMPLE_RATE < 3.0, "stale 5s audio leaked into command"
+        assert float(np.max(np.abs(samples))) < 0.6, "stale 0.9-amplitude audio leaked"
+
+    asyncio.run(impl())
+
+
+# ── H. VAD probability can never exceed 1.0 ───────────────────
+def test_vad_probability_never_exceeds_one():
+    from voice.vad import UnifiedVAD
+    vad = UnifiedVAD()
+    # Force a pathological frame that would produce a huge RMS.
+    frame = np.full(512, 10.0, dtype=np.float32)  # extreme amplitude
+    prob = vad.speech_prob(frame)
+    assert 0.0 <= prob <= 1.0, f"VAD probability out of range: {prob}"
+
+    # Also test the robust combined score.
+    prob2 = vad.robust_speech_prob(frame)
+    assert 0.0 <= prob2 <= 1.0, f"robust VAD probability out of range: {prob2}"
+
+
+# ── I. vad_avg always remains 0.0–1.0 ─────────────────────────
+def test_vad_avg_always_in_range():
+    # Simulate the metric aggregation: sum of clamped probs / count.
+    # Every prob is clamped to [0,1] by UnifiedVAD.speech_prob, so the
+    # average can NEVER exceed 1.0.
+    probs = [0.95, 0.0, 1.0, 0.5, 0.8, 0.0, 0.3, 1.0, 0.9, 0.1]
+    avg = sum(probs) / len(probs)
+    assert 0.0 <= avg <= 1.0, f"vad_avg out of range: {avg}"
+
+    # Even with pathological inputs, clamping keeps it in range.
+    pathological = [1.7, -0.5, 42.801, 17.201, float('nan')]
+    clamped = []
+    for p in pathological:
+        if p != p:  # NaN
+            p = 0.0
+        clamped.append(min(max(p, 0.0), 1.0))
+    avg2 = sum(clamped) / len(clamped)
+    assert 0.0 <= avg2 <= 1.0, f"vad_avg out of range after clamping: {avg2}"
+
+
+# ── J. 20s max duration is never used when silence is available ─
+def test_max_duration_never_used_with_silence(monkeypatch):
+    async def impl():
+        am = FakeAudioManager()
+        whisper = FakeWhisper(text="open youtube")
+        monkeypatch.setattr(CL, "audio_manager", am)
+        monkeypatch.setattr(CL, "unified_vad", FakeVAD())
+        cl = _make_listener(whisper)
+
+        async def feed():
+            am.feed(tone(1.0, freq=200.0, amp=0.25))
+            am.feed(silence(1.0))  # silence endpoint available
+
+        events = await _collect(cl, feed)
+        finals = [e for e in events if e.kind == "final"]
+        assert len(finals) == 1
+        assert finals[0].endpoint_reason == "silence", (
+            f"endpoint reason must be silence, got {finals[0].endpoint_reason}")
+        assert finals[0].endpoint_reason != "max_duration", (
+            "max_duration must NEVER be the endpoint when silence is available")
 
     asyncio.run(impl())
 

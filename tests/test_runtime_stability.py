@@ -79,6 +79,14 @@ class FakeVAD:
         self._state = "open" if prob > 0.5 else "closed"
         return prob
 
+    def reset_state(self) -> None:
+        """TASK 1: reset all VAD state (mirrors UnifiedVAD.reset_state)."""
+        self._robust_smoothed = 0.0
+        self._robust_in_speech = False
+        self._robust_speech_frames = 0
+        self._last_probability = 0.0
+        self._state = "closed"
+
     # TASK 2: robust combined-evidence methods (mirror UnifiedVAD).
     def robust_speech_prob(self, frame: np.ndarray) -> float:
         silero = self.speech_prob(frame)

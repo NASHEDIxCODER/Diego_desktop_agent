@@ -54,6 +54,13 @@ EAR_THRESHOLD = 0.22
 # Frame pacing
 FRAME_DELAY = 0.033            # ~30 FPS
 
+# Best-frame selection: after the FIRST frame passes all quality gates,
+# keep scanning for this long and retain the highest-quality candidate
+# (largest + sharpest face) so the encoder receives the best input — not
+# just the first frame that barely passed. This directly reduces the
+# face-distance (dist) that caused "dist=0.6133 > tol=0.55" rejections.
+BEST_FRAME_WINDOW_S = 1.0
+
 
 def _tolerance() -> float:
     try:
@@ -350,18 +357,43 @@ def authenticate_live(stop_event: Optional[threading.Event] = None,
             except Exception:
                 pass  # can't check eyes/pose → proceed anyway
 
-            # ── ALL QUALITY GATES PASSED — capture this frame ──
-            captured_frame = frame.copy()
-            captured_face = face
-            logger.info("[LIVE-AUTH] ✓ High-quality face captured "
-                        "(w=%d bright=%.1f blur=%.1f)",
-                        face.w, bright, blur)
+            # ── ALL QUALITY GATES PASSED — begin best-frame selection ──
+            # The FIRST passing frame is often suboptimal (subtle motion
+            # blur or a slightly off-angle face the gates don't catch),
+            # which produced high face-distance rejections (dist=0.61 >
+            # tol=0.55). Instead of capturing immediately, keep scanning
+            # for BEST_FRAME_WINDOW_S and retain the largest + sharpest
+            # candidate so the encoder receives the best input.
+            if captured_frame is None:
+                captured_frame = frame.copy()
+                captured_face = face
+                best_score = face.w * face.h * blur
+                settle_start = time.time()
+                logger.info("[LIVE-AUTH] ✓ First high-quality face found "
+                            "(w=%d bright=%.1f blur=%.1f) — selecting best frame...",
+                            face.w, bright, blur)
+                _ui(frame, "detected", "Face captured — hold still...", box,
+                    "Selecting best frame...", landmarks=last_landmarks)
+                time.sleep(FRAME_DELAY)
+                continue
 
-            # Show verified briefly
-            _ui(frame, "detected", "Face captured — verifying...", box,
-                "Processing...", landmarks=last_landmarks)
+            # Within the settle window, keep the best candidate.
+            if time.time() - settle_start < BEST_FRAME_WINDOW_S:
+                score = face.w * face.h * blur
+                if score > best_score:
+                    best_score = score
+                    captured_frame = frame.copy()
+                    captured_face = face
+                _ui(frame, "detected", "Face captured — hold still...", box,
+                    "Selecting best frame...", landmarks=last_landmarks)
+                time.sleep(FRAME_DELAY)
+                continue
 
-            # ── Close popup IMMEDIATELY ──
+            # ── Settle window elapsed — use the best frame ──
+            logger.info("[LIVE-AUTH] ✓ Best frame selected (w=%d blur=%.1f)",
+                        captured_face.w, blur)
+            _ui(captured_frame, "detected", "Face captured — verifying...",
+                box, "Processing...", landmarks=last_landmarks)
             break
 
     except Exception as e:
