@@ -438,6 +438,18 @@ class ConversationEngine:
                                 ev.text, ev.confidence, ev.audio_duration_ms)
                     continue
 
+                # ── TASK 6: explicit failure responses ──
+                # Leo must NEVER silently return to wake mode after a
+                # detected speech attempt. A "failure" event carries an
+                # explicit reason and must be spoken.
+                if ev.kind == "failure":
+                    reason = getattr(ev, "failure_reason", "") or "MISUNDERSTOOD"
+                    logger.info("[LISTEN] Failure event (reason=%s, audio=%.0fms)",
+                                reason, ev.audio_duration_ms)
+                    self._session_deadline = time.monotonic() + CONVERSATION_TIMEOUT_S
+                    await self._speak_failure_response(reason)
+                    continue
+
                 if ev.kind != "final":
                     continue
 
@@ -711,6 +723,29 @@ class ConversationEngine:
         async def _gen():
             yield text
         return await streaming_tts.speak_sentences(_gen(), None)
+
+    # ── TASK 6: explicit failure responses ─────────────────
+    # Leo must NEVER silently return to wake mode after a detected speech
+    # attempt. Each failure reason maps to a short spoken response.
+
+    FAILURE_RESPONSES = {
+        "MISUNDERSTOOD": "I didn't catch that. Could you say that again?",
+        "LOW_CONFIDENCE": "I'm not sure I heard you. Could you say that again?",
+        "TRANSCRIPTION_FAILED": "Sorry, I missed that. Could you say that again?",
+        "TIMEOUT": "I didn't hear anything. Could you say that again?",
+        "GARBAGE": "I didn't catch that. Could you say that again?",
+    }
+
+    async def _speak_failure_response(self, reason: str) -> bool:
+        """Speak a short response for a failed speech attempt.
+
+        Returns True if audio was queued for playback.
+        """
+        text = self.FAILURE_RESPONSES.get(
+            reason, self.FAILURE_RESPONSES["MISUNDERSTOOD"])
+        logger.info("[LISTEN] Speaking failure response: '%s' (reason=%s)",
+                    text, reason)
+        return await self._speak_line(text)
 
     def get_diagnostics(self) -> dict:
         return {

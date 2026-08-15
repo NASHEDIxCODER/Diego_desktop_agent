@@ -99,11 +99,51 @@ class FakeVAD:
     def __init__(self, threshold: float = 0.02):
         self.threshold = threshold
         self.calls = 0
+        self._robust_smoothed = 0.0
+        self._robust_in_speech = False
+        self._robust_speech_frames = 0
+        self._last_probability = 0.0
+        self._state = "closed"
 
     def speech_prob(self, frame: np.ndarray) -> float:
         self.calls += 1
         rms = float(np.sqrt(np.mean(np.asarray(frame, np.float32) ** 2)))
-        return 0.95 if rms > self.threshold else 0.05
+        prob = 0.95 if rms > self.threshold else 0.05
+        self._last_probability = prob
+        self._state = "open" if prob > 0.5 else "closed"
+        return prob
+
+    # TASK 2: robust combined-evidence methods (mirror UnifiedVAD).
+    def robust_speech_prob(self, frame: np.ndarray) -> float:
+        silero = self.speech_prob(frame)
+        rms = float(np.sqrt(np.mean(np.asarray(frame, np.float32) ** 2))) * 32768.0
+        self._robust_smoothed = 0.4 * silero + 0.6 * self._robust_smoothed
+        energy_score = 1.0 if rms >= 120.0 else max(0.0, rms / 120.0)
+        return float(min(max(0.6 * self._robust_smoothed + 0.4 * energy_score, 0.0), 1.0))
+
+    def robust_is_speech(self, frame: np.ndarray) -> bool:
+        score = self.robust_speech_prob(frame)
+        if self._robust_in_speech:
+            if score < 0.35:
+                self._robust_speech_frames = 0
+                self._robust_in_speech = False
+        else:
+            if score >= 0.55:
+                self._robust_speech_frames += 1
+                if self._robust_speech_frames >= 3:
+                    self._robust_in_speech = True
+            else:
+                self._robust_speech_frames = 0
+        return self._robust_in_speech
+
+    def get_robust_diagnostics(self) -> dict:
+        return {
+            "silero_prob": round(self._last_probability, 4),
+            "smoothed_prob": round(self._robust_smoothed, 4),
+            "in_speech": self._robust_in_speech,
+            "speech_frames": self._robust_speech_frames,
+            "state": self._state,
+        }
 
 
 class FakeWhisper:

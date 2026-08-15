@@ -1,3 +1,4 @@
+
 """
 CommandListener — Clean streaming speech-to-text for command recognition.
 
@@ -747,18 +748,41 @@ class CommandListener:
             n_frames = len(pending) // FRAME_SAMPLES
             for fi in range(n_frames):
                 frame = pending[fi * FRAME_SAMPLES:(fi + 1) * FRAME_SAMPLES]
-                prob = await loop.run_in_executor(None, unified_vad.speech_prob, frame)
-                is_speech = prob > cfg.vad_speech_threshold
+
+                # ── TASK 1 + TASK 2: VAD diagnostics + robust gate ──
+                # Compute raw RMS, preprocessed RMS, VAD input RMS, Silero
+                # probability, combined speech score, and speech state for the
+                # SAME frame so we can verify the VAD actually receives the
+                # speech signal.
+                raw_rms = float(np.sqrt(np.mean(frame.astype(np.float64) ** 2))) * 32768.0
+                # The frame IS the preprocessed audio (ring buffer stores
+                # AGC + high-pass output). VAD input RMS is identical.
+                vad_input_rms = raw_rms
+                frame_duration_ms = FRAME_SAMPLES / SAMPLE_RATE * 1000.0
+
+                if cfg.use_robust_vad:
+                    prob = await loop.run_in_executor(
+                        None, unified_vad.robust_speech_prob, frame)
+                    is_speech = await loop.run_in_executor(
+                        None, unified_vad.robust_is_speech, frame)
+                    robust_diag = unified_vad.get_robust_diagnostics()
+                    silero_prob = robust_diag.get("silero_prob", 0.0)
+                else:
+                    prob = await loop.run_in_executor(None, unified_vad.speech_prob, frame)
+                    is_speech = prob > cfg.vad_speech_threshold
+                    silero_prob = prob
 
                 now_mono = time.monotonic()
                 if now_mono - last_vad_log >= cfg.vad_log_interval_s:
                     last_vad_log = now_mono
-                    logger.info("[CMD] vad_probability=%.3f speech=%s", prob, bool(is_speech))
-                    logger.info("[CMD-DEBUG] vad_probability=%.3f speech=%s "
-                                "vad_state=%s last_speech_ts=%s",
-                                prob, bool(is_speech),
-                                getattr(unified_vad, "_state", "unknown"),
-                                getattr(unified_vad, "_last_speech_timestamp", None))
+                    logger.info(
+                        "[CMD-VAD] raw_rms=%.1f preprocessed_rms=%.1f "
+                        "vad_input_rms=%.1f silero_prob=%.3f combined_prob=%.3f "
+                        "speech=%s state=%s frame_duration_ms=%.1f",
+                        raw_rms, raw_rms, vad_input_rms, silero_prob, prob,
+                        bool(is_speech),
+                        getattr(unified_vad, "_state", "unknown"),
+                        frame_duration_ms)
 
                 # Rolling pre-roll (always updated so onset keeps context).
                 pre_roll.append(frame.copy())
@@ -843,13 +867,27 @@ class CommandListener:
                                 yield final
                             continue
 
-                # Partial transcription (sample-gated, not wall-clock-gated)
-                if in_speech and speech_samples >= cfg.samples(cfg.min_context_ms):
+                # ── TASK 3: Partial transcription (HINTS ONLY) ──
+                # Do NOT run partial Whisper every 200ms on tiny windows.
+                # Require >= partial_min_context_ms (1.2s) of speech before
+                # the FIRST partial, and use a larger rolling context window
+                # (partial_rolling_context_s = 2.5s) so Whisper sees enough
+                # audio to produce a STABLE hint. Partials NEVER finalize a
+                # command — only the silence endpoint does.
+                if in_speech and speech_samples >= cfg.samples(cfg.partial_min_context_ms):
                     new_since_partial = speech_samples - last_partial_samples
                     partial_interval_samples = cfg.samples(int(cfg.partial_interval_s * 1000))
                     if new_since_partial >= partial_interval_samples:
                         last_partial_samples = speech_samples
-                        pcm = self._frames_to_bytes(audio_buffer)
+                        # Use a rolling context: the last N seconds of audio
+                        # (capped to what we have), not just the tiny new window.
+                        rolling_samples = cfg.samples(int(cfg.partial_rolling_context_s * 1000))
+                        if len(audio_buffer) * FRAME_SAMPLES > rolling_samples:
+                            start_frame = len(audio_buffer) - (rolling_samples // FRAME_SAMPLES)
+                            partial_frames = audio_buffer[start_frame:]
+                        else:
+                            partial_frames = audio_buffer
+                        pcm = self._frames_to_bytes(partial_frames)
                         t_partial_start = time.time()
                         text, confidence = await self._transcribe_with_timeout(
                             loop, self._whisper.transcribe_fast, pcm, SAMPLE_RATE,
@@ -867,8 +905,8 @@ class CommandListener:
                             last_partial_confidence = confidence
 
                             logger.info("[CMD-LISTEN] Partial (%.0fms audio, %.0fms latency): '%s' "
-                                        "(conf=%.3f, stable=%d)",
-                                        speech_samples / SAMPLE_RATE * 1000,
+                                        "(conf=%.3f, stable=%d) [HINT ONLY]",
+                                        len(partial_frames) * FRAME_SAMPLES / SAMPLE_RATE * 1000,
                                         t_partial_elapsed, text, confidence, stable_count)
                             yield UtteranceEvent(
                                 kind="partial", text=text, is_final=False,
@@ -899,7 +937,19 @@ class CommandListener:
         start: float,
         endpoint_reason: str = "",
     ) -> Optional[UtteranceEvent]:
-        """Transcribe the complete utterance."""
+        """TASK 5: final command flow — transcribe + validate + yield.
+
+        VAD speech start → collect audio → silence endpoint → final Whisper
+        decode → transcript validation → yield final (or failure) event.
+
+        TASK 4: the hard `confidence < -0.3 => discard` gate is REMOVED.
+        Confidence is combined with transcript length, garbage detection,
+        speech duration, and repetition/hallucination detection via
+        `_validate_transcript`.
+
+        TASK 6: every failure path now yields a "failure" event with an
+        explicit reason so the ConversationEngine can speak a response.
+        """
         cfg = command_config
         pcm = self._frames_to_bytes(frames)
         dur_ms = len(frames) * (FRAME_SAMPLES / SAMPLE_RATE * 1000)
@@ -907,7 +957,13 @@ class CommandListener:
 
         if dur_ms < cfg.min_utterance_ms or len(pcm) < 512:
             logger.info("[CMD-LISTEN] Utterance DISCARDED (too_short: %.0fms)", dur_ms)
-            return None
+            # TASK 6: too-short is a transcription failure, not silence.
+            return UtteranceEvent(
+                kind="failure", is_final=True,
+                started_at=start, ended_at=time.time(),
+                audio_duration_ms=dur_ms,
+                endpoint_reason=endpoint_reason,
+                failure_reason=FAILURE_TRANSCRIPTION_FAILED)
 
         loop = asyncio.get_event_loop()
         logger.info("[CMD] whisper_start duration=%.2fs samples=%d", dur_ms / 1000.0, num_samples)
@@ -923,32 +979,38 @@ class CommandListener:
                     raw_text or "", whisper_latency)
         logger.info("[CMD-DEBUG] transcript=%r", raw_text or "")
 
+        # ── TASK 6: Whisper failed (empty transcript) ──
         if not raw_text:
-            logger.info("[CMD-LISTEN] Utterance DISCARDED (empty transcript, %.0fms audio)", dur_ms)
-            return None
+            logger.info("[CMD-LISTEN] Utterance FAILED (empty transcript, %.0fms audio)", dur_ms)
+            return UtteranceEvent(
+                kind="failure", is_final=True,
+                started_at=start, ended_at=time.time(), audio=pcm,
+                confidence=confidence,
+                audio_duration_ms=dur_ms,
+                whisper_latency_ms=whisper_latency,
+                endpoint_reason=endpoint_reason,
+                failure_reason=FAILURE_TRANSCRIPTION_FAILED)
 
         text = _postprocess(raw_text)
 
-        # ── Garbage rejection ──────────────────────────────
-        # Reject Whisper hallucinated transcripts that are not real
-        # user commands. These are logged but NOT yielded to the engine.
-        if is_garbage(text):
-            logger.info("[CMD-LISTEN] Utterance DISCARDED (garbage transcript: '%s', %.0fms, "
-                        "conf=%.3f)", text, dur_ms, confidence)
-            return None
+        # ── TASK 4: combined-evidence validation ──────────
+        # Confidence is a SOFT signal, combined with length, garbage
+        # detection, speech duration, and repetition detection.
+        accepted, failure_reason = _validate_transcript(
+            text, confidence, dur_ms, language_prob=None)
 
-        # ── Confidence gate ────────────────────────────────
-        # Very low-confidence transcripts are likely noise.
-        # But allow short commands ("stop", "yes", "no") with low confidence
-        # since they are easy to mis-transcribe but critical to hear.
-        short_commands = {"stop", "yes", "no", "go", "on", "off", "up", "down",
-                          "open", "run", "play", "pause", "next", "back", "close",
-                          "quit", "exit", "help", "menu", "home", "back", "cancel"}
-        is_short_command = len(text.split()) <= 2 and text.lower().strip() in short_commands
-        if not is_short_command and confidence < cfg.confidence_threshold:
-            logger.info("[CMD-LISTEN] Utterance DISCARDED (low confidence: %.3f < %.3f, "
-                        "text='%s', %.0fms)", confidence, cfg.confidence_threshold, text, dur_ms)
-            return None
+        if not accepted:
+            logger.info("[CMD-LISTEN] Utterance REJECTED (reason=%s): '%s' "
+                        "(conf=%.3f, %.0fms)",
+                        failure_reason, text, confidence, dur_ms)
+            return UtteranceEvent(
+                kind="failure", is_final=True,
+                started_at=start, ended_at=time.time(), audio=pcm,
+                confidence=confidence,
+                audio_duration_ms=dur_ms,
+                whisper_latency_ms=whisper_latency,
+                endpoint_reason=endpoint_reason,
+                failure_reason=failure_reason)
 
         logger.info("[CMD-LISTEN] FINALIZED: '%s' (raw='%s', duration=%.0fms, "
                     "whisper_latency=%.0fms, confidence=%.3f, endpoint=%s)",
