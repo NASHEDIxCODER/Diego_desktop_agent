@@ -6,6 +6,21 @@
       <excludeFolder url="file://$MODULE_DIR$/.venv" />
       <excludeFolder url="file://$MODULE_DIR$/venv" />
       <excludeFolder url="file://$MODULE_DIR$/.venv1" />
+      <excludeFolder url="file://$MODULE_DIR$/data/asr_models/firered-asr2-ctc-zh-en-int8/.cache" />
+      <excludeFolder url="file://$MODULE_DIR$/data/asr_models/firered-asr2-ctc-zh-en-int8/.cache/huggingface/download" />
+      <excludeFolder url="file://$MODULE_DIR$/data/asr_models/firered-asr2-ctc-zh-en-int8/.cache/huggingface/trees" />
+      <excludeFolder url="file://$MODULE_DIR$/data/asr_models/parakeet-ctc-1.1b-int8/.cache" />
+      <excludeFolder url="file://$MODULE_DIR$/data/asr_models/parakeet-ctc-1.1b-int8/.cache/huggingface/download" />
+      <excludeFolder url="file://$MODULE_DIR$/data/asr_models/parakeet-ctc-1.1b-int8/.cache/huggingface/trees" />
+      <excludeFolder url="file://$MODULE_DIR$/data/asr_models/qwen3-asr-0.6b-int8/.cache" />
+      <excludeFolder url="file://$MODULE_DIR$/data/asr_models/qwen3-asr-0.6b-int8/.cache/huggingface/download" />
+      <excludeFolder url="file://$MODULE_DIR$/data/asr_models/qwen3-asr-0.6b-int8/.cache/huggingface/trees" />
+      <excludeFolder url="file://$MODULE_DIR$/data/asr_models/sensevoice-int8/.cache" />
+      <excludeFolder url="file://$MODULE_DIR$/data/asr_models/sensevoice-int8/.cache/huggingface/download" />
+      <excludeFolder url="file://$MODULE_DIR$/data/asr_models/sensevoice-int8/.cache/huggingface/trees" />
+      <excludeFolder url="file://$MODULE_DIR$/data/asr_models/zipformer-streaming-en-int8/.cache" />
+      <excludeFolder url="file://$MODULE_DIR$/data/asr_models/zipformer-streaming-en-int8/.cache/huggingface/download" />
+      <excludeFolder url="file://$MODULE_DIR$/data/asr_models/zipformer-streaming-en-int8/.cache/huggingface/trees" />
     </content>
     <orderEntry type="jdk" jdkName="Python 3.14 (leo_desktop_assistant)" jdkType="Python SDK" />
     <orderEntry type="sourceFolder" forTests="false" />

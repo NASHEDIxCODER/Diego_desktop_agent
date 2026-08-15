@@ -213,7 +213,10 @@ class WakeListener:
             self.last_score = score
             threshold = wake_model_manager.threshold
 
-            if score >= threshold or now - self._last_score_log >= SCORE_LOG_INTERVAL_S:
+            # ── Logging-volume fix: do NOT log every detector frame ──
+            # Only log when the score crosses the threshold (a real wake
+            # candidate) or when verbose tracing is explicitly enabled.
+            if score >= threshold:
                 logger.info("Wake score=%.3f model=%s threshold=%.2f "
                             "vad=%.2f latency=%.1fms sha256=%s",
                             score, wake_model_manager.model_name or "?",

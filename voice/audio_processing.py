@@ -49,6 +49,7 @@ All processing is implemented with scipy for production robustness.
 
 
 import logging
+import os
 import sys
 import time
 import traceback
@@ -58,6 +59,13 @@ import numpy as np
 from scipy import signal as scipy_signal
 
 logger = logging.getLogger(__name__)
+
+# ── Logging-volume control ──────────────────────────────────────
+# The audio callback runs every ~30ms and historically produced multiple
+# [TRACE]/[STAGE]/[SATURATION] lines per callback, flooding the terminal.
+# All per-frame audio tracing is now OFF by default. Set LEO_AUDIO_TRACE=1
+# to re-enable verbose per-stage tracing for debugging.
+AUDIO_TRACE_ENABLED = os.environ.get("LEO_AUDIO_TRACE", "0") == "1"
 
 
 class GainError(RuntimeError):
@@ -219,7 +227,7 @@ class _StageTracer:
                     "[SATURATION] stage='%s' peak=%d rms=%.1f clip=%.2f%% "
                     "(count=%d) — hard clip at this stage",
                     stage, peak, rms, clip_pct, c)
-        elif new_max:
+        elif new_max and AUDIO_TRACE_ENABLED:
             n = self._newmax_counts.get(stage, 0) + 1
             self._newmax_counts[stage] = n
             if n <= 5 or n % 200 == 0:
@@ -245,7 +253,13 @@ class _StageTracer:
         """Time-budgeted full stage diagnostic (the STEP-5 trace):
         stage, dtype, shape, min, max, RMS, peak, gain applied, clip %.
         Emitted at most once per SUMMARY_INTERVAL_S per stage — never
-        per-callback, so it is safe on the 30 ms real-time path."""
+        per-callback, so it is safe on the 30 ms real-time path.
+
+        GATED: only emitted when LEO_AUDIO_TRACE=1 (default OFF) to avoid
+        flooding the terminal during idle listening.
+        """
+        if not AUDIO_TRACE_ENABLED:
+            return
         now = time.monotonic()
         last = self._last_summary.get(stage, 0.0)
         if now - last < self.SUMMARY_INTERVAL_S:
@@ -311,7 +325,7 @@ class _StageTracer:
             else:
                 n = self._newmax_counts.get(stage, 0) + 1
                 self._newmax_counts[stage] = n
-                if n <= 5 or n % 200 == 0:
+                if (n <= 5 or n % 200 == 0) and AUDIO_TRACE_ENABLED:
                     logger.info(
                         "[RAW] source='%s' peak=%.4f clip=%.2f%% — source "
                         "overdrive observed (AGC repairs downstream)",
@@ -320,7 +334,7 @@ class _StageTracer:
 
             n = self._newmax_counts.get(stage, 0) + 1
             self._newmax_counts[stage] = n
-            if n <= 5 or n % 200 == 0:
+            if (n <= 5 or n % 200 == 0) and AUDIO_TRACE_ENABLED:
                 logger.info(
                     "[TRACE] stage=%s dtype=%s min=%.4f max=%.4f "
                     "rms=%.1f peak=%d (new max)",

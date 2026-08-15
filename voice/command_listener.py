@@ -39,7 +39,7 @@ from typing import AsyncIterator, List, Optional, Tuple
 import numpy as np
 
 from voice.audio_manager import audio_manager, SAMPLE_RATE, FRAME_SAMPLES
-from voice.audio_processing import float32_to_int16
+from voice.audio_processing import float32_to_int16, AUDIO_TRACE_ENABLED
 from voice.vad import unified_vad
 
 logger = logging.getLogger(__name__)
@@ -624,6 +624,16 @@ class CommandListener:
         last_received_log = 0.0
         _received_total = 0
 
+        # ── TASK: periodic metrics aggregation (1s cadence) ──
+        # Per-frame [CMD-AUDIO]/[CMD-VAD] logs flood the terminal. Instead
+        # aggregate counts and emit ONE [CMD-METRICS] summary per second.
+        _metrics_frames = 0
+        _metrics_audio_ms = 0.0
+        _metrics_rms_sum = 0.0
+        _metrics_vad_sum = 0.0
+        _metrics_speech_frames = 0
+        _last_metrics_log = 0.0
+
         logger.info("[CMD] Listening started (endpoint=%dms, min_context=%dms, "
                     "partial_interval=%dms, pre_roll=%dms)",
                     cfg.endpoint_silence_ms, cfg.min_context_ms,
@@ -708,9 +718,10 @@ class CommandListener:
                 await asyncio.sleep(0.01)
                 continue
 
-            # ── CMD-AUDIO: log every received audio chunk with frame identity ──
-            # This proves whether the AudioManager callback is STILL producing
-            # fresh frames after LISTEN. frame_id/timestamp must increase.
+            # ── CMD-AUDIO: per-frame logging is GATED (default OFF) ──
+            # The frame identity is still measured and aggregated into the
+            # periodic [CMD-METRICS] summary below. Verbose per-frame lines
+            # are only emitted when LEO_AUDIO_TRACE=1.
             _now_audio = time.time()
             _cur_frame_id = getattr(audio_manager, "frame_id", 0)
             _cur_last_frame_ts = getattr(audio_manager, "last_frame_timestamp", 0.0)
@@ -724,22 +735,35 @@ class CommandListener:
                     "frame_id=%d (session_start=%d) age_ms=%.1f",
                     _now_audio - _session_start_ts, _cur_frame_id,
                     _session_start_frame_id, _age_ms)
-            logger.info(
-                "[CMD-AUDIO] frame_id=%d timestamp=%.3f age_ms=%.1f "
-                "samples=%d rms=%.1f fresh=%s",
-                _cur_frame_id, _cur_last_frame_ts, _age_ms,
-                len(new_audio), _rms, _fresh)
+            if AUDIO_TRACE_ENABLED:
+                logger.info(
+                    "[CMD-AUDIO] frame_id=%d timestamp=%.3f age_ms=%.1f "
+                    "samples=%d rms=%.1f fresh=%s",
+                    _cur_frame_id, _cur_last_frame_ts, _age_ms,
+                    len(new_audio), _rms, _fresh)
 
-            # Trace received samples + fresh-frame age (rate-limited).
+            # ── Aggregate metrics for the 1s [CMD-METRICS] summary ──
             _received_total += len(new_audio)
+            _metrics_audio_ms += len(new_audio) / SAMPLE_RATE * 1000.0
+            _metrics_rms_sum += _rms
+            _metrics_frames += 1
             now_mono = time.monotonic()
-            if now_mono - last_received_log >= 1.0:
-                last_received_log = now_mono
-                logger.info("[CMD] received_samples=%d (total since session=%d)",
-                            len(new_audio), _received_total)
-                logger.info("[CMD-DEBUG] audio_frame_received samples=%d "
-                            "frame_age_ms=%.1f write_head=%d read_cursor=%d",
-                            len(new_audio), _age_ms, last_total, last_total)
+            if now_mono - _last_metrics_log >= 1.0:
+                _last_metrics_log = now_mono
+                avg_rms = _metrics_rms_sum / max(1, _metrics_frames)
+                avg_vad = _metrics_vad_sum / max(1, _metrics_frames)
+                logger.info(
+                    "[CMD-METRICS] frames=%d audio_ms=%.0f avg_rms=%.1f "
+                    "vad_avg=%.3f speech_frames=%d buffer_ms=%.0f",
+                    _metrics_frames, _metrics_audio_ms, avg_rms, avg_vad,
+                    _metrics_speech_frames,
+                    len(audio_buffer) * FRAME_SAMPLES / SAMPLE_RATE * 1000.0)
+                # Reset for the next window.
+                _metrics_frames = 0
+                _metrics_audio_ms = 0.0
+                _metrics_rms_sum = 0.0
+                _metrics_vad_sum = 0.0
+                _metrics_speech_frames = 0
 
             pending = np.concatenate([pending, new_audio.astype(np.float32, copy=False)])
 
@@ -772,8 +796,14 @@ class CommandListener:
                     is_speech = prob > cfg.vad_speech_threshold
                     silero_prob = prob
 
+                # ── Aggregate VAD metrics into the 1s summary ──
+                _metrics_vad_sum += prob
+                if is_speech:
+                    _metrics_speech_frames += 1
+
+                # ── Per-frame [CMD-VAD] log is GATED (default OFF) ──
                 now_mono = time.monotonic()
-                if now_mono - last_vad_log >= cfg.vad_log_interval_s:
+                if AUDIO_TRACE_ENABLED and now_mono - last_vad_log >= cfg.vad_log_interval_s:
                     last_vad_log = now_mono
                     logger.info(
                         "[CMD-VAD] raw_rms=%.1f preprocessed_rms=%.1f "
@@ -930,6 +960,7 @@ class CommandListener:
 
             pending = pending[n_frames * FRAME_SAMPLES:]
 
+        logger.info("[CMD] session_end")
 
     async def _finalize(
         self,
@@ -1000,6 +1031,8 @@ class CommandListener:
             text, confidence, dur_ms, language_prob=None)
 
         if not accepted:
+            logger.info("[CMD] transcript_rejected reason=%s text=%r confidence=%.3f duration=%.0fms",
+                        failure_reason, text, confidence, dur_ms)
             logger.info("[CMD-LISTEN] Utterance REJECTED (reason=%s): '%s' "
                         "(conf=%.3f, %.0fms)",
                         failure_reason, text, confidence, dur_ms)
@@ -1012,6 +1045,8 @@ class CommandListener:
                 endpoint_reason=endpoint_reason,
                 failure_reason=failure_reason)
 
+        logger.info("[CMD] transcript_accepted text=%r confidence=%.3f duration=%.0fms",
+                    text, confidence, dur_ms)
         logger.info("[CMD-LISTEN] FINALIZED: '%s' (raw='%s', duration=%.0fms, "
                     "whisper_latency=%.0fms, confidence=%.3f, endpoint=%s)",
                     text, raw_text, dur_ms, whisper_latency, confidence, endpoint_reason)

@@ -66,6 +66,7 @@ from voice.audio_processing import (
     SAMPLE_RATE as _PROC_SAMPLE_RATE,
     HIGH_PASS_CUTOFF,
     HIGH_PASS_ORDER,
+    AUDIO_TRACE_ENABLED,
     audio_preprocessor,
     float32_to_int16,
     peak_monitor,
@@ -1018,7 +1019,11 @@ class AudioManager:
         self._peak_history.append(mono_peak)
 
         # ── STEP 8: the callback MUST report the real device + real levels ──
-        if self._callback_count == 1 or self._callback_count % 50 == 0:
+        # GATED: the callback fires every ~30ms; verbose per-frame device/RMS
+        # lines flood the terminal during idle listening. Only emit when
+        # LEO_AUDIO_TRACE=1 (default OFF). Warnings/errors are unaffected.
+        if AUDIO_TRACE_ENABLED and (
+                self._callback_count == 1 or self._callback_count % 50 == 0):
             ch_report = " ".join(
                 f"ch{c}={r * 32768:.0f}" for c, r in enumerate(chan_rms))
             interval_ms = 0.0

@@ -1,22 +1,218 @@
-.venv/
+# ============================================================
+# Python
+# ============================================================
+
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
+*.py[cod]
+*$py.class
+*.so
+
+# Python packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+pip-wheel-metadata/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+.env/
+.env.*
+
+# ============================================================
+# Environment / Secrets
+# ============================================================
+
 .env
 .env.*
-auth/serviceAccountKey.json
-*.md
-!README.md
-auth/serviceAccountKey.json
+!.env.example
 
-debug/real_voice_test/*
-debug/*.txt
-debug/*.wav
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# Google / Firebase credentials
+serviceAccountKey.json
+**/serviceAccountKey.json
+firebase-adminsdk-*.json
+
+# ============================================================
+# IDE
+# ============================================================
+
+.idea/
+.vscode/
+*.iml
+
+# PyCharm
+.idea/**/workspace.xml
+.idea/**/tasks.xml
+.idea/**/usage.statistics.xml
+.idea/**/dictionaries/
+
+# ============================================================
+# OS
+# ============================================================
+
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# ============================================================
+# Logs
+# ============================================================
+
+*.log
+logs/
+*.out
+
+# ============================================================
+# Python caches / generated data
+# ============================================================
+
+.cache/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# ============================================================
+# Databases / local state
+# ============================================================
+
+*.db
+*.sqlite
+*.sqlite3
+*.duckdb
+*.db-wal
+*.db-shm
+*.db-journal
+
+# Project-specific local database
+data/leo.duckdb
+
+# ============================================================
+# Pickle / serialized local models
+# ============================================================
+
+*.pkl
+*.pickle
+*.joblib
+
+# ============================================================
+# Audio / recordings
+# ============================================================
+
+*.wav
+*.mp3
+*.ogg
+*.flac
+*.m4a
+*.aac
+
+# ============================================================
+# Images / screenshots / generated media
+# ============================================================
+
+# Generated/debug screenshots
+debug/vision/screenshots/
 debug/*.jpg
-models/wake/negatives/*.wav
-models/wake/positives/*.wav
-debug/*
-data/asr_models/*.onnx
-data/asr_models/zipformer-streaming-en-int8/*.onnx
-data/asr_models/*
+debug/*.jpeg
+debug/*.png
+
+# Generated authentication captures
+debug/auth_*.jpg
+debug/auth_*.jpeg
+debug/auth_*.png
+debug/auth_*.txt
+
+# ============================================================
+# Face recognition / authentication local data
+# ============================================================
+
+# Personal face images
+auth/images/
+
+# Generated face encodings
+auth/Known_encodings.p
+
+# ============================================================
+# Telegram / local session credentials
+# ============================================================
+
+*.session
+**/*.session
+
+# ============================================================
+# ML / AI generated artifacts
+# ============================================================
+
+# Local model artifacts
+*.onnx
+*.onnx.data
+*.safetensors
+*.pt
+*.pth
+*.bin
+
+# Project ML models
+models/
+data/asr_models/
+
+# ============================================================
+# Datasets / generated training artifacts
+# ============================================================
+
+# Uncomment if datasets are generated locally
+# datasets/
+
+# ============================================================
+# Profiling / benchmarking
+# ============================================================
+
+*.prof
+*.profile
+*.profraw
+profile.out
+
+# ============================================================
+# Temporary files
+# ============================================================
+
+*.tmp
+*.temp
+*.swp
+*.swo
+*.bak
+*~
+.DS_Store
+
+# ============================================================
+# Project-generated reports / runtime artifacts
+# ============================================================
+
+# Uncomment these if they should remain local
+ AUDIT_REPORT.md
+ RUNTIME_AUDIT.md
+ RUNTIME_STABILITY_REPORT.md
+ SYSTEM_HEALTH.md
+ task_progress.md
+
+# Generated JSON reports
+debug/*_report.json
+debug/*_report.txt
+debug/*_trace.json
+
+# ============================================================
+# Local machine / development files
+# ============================================================
+
+tree.txt
