@@ -44,6 +44,7 @@ Usage:
 
 import asyncio
 import logging
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -92,6 +93,10 @@ class CommandListenerConfig:
     partial_new_audio_ms: int = 800      # min NEW audio between partials
     partial_max_freq_s: float = 1.0      # max partial frequency (1/sec)
     partial_rolling_context_s: float = 2.5  # rolling context window for partials
+    # TASK 6: partial transcription is DEBUG/HINT ONLY. Disabled by default
+    # unless LEO_AUDIO_PARTIALS=1 is set. Partials must never affect VAD,
+    # endpoint, final transcript, or command execution.
+    partials_enabled: bool = os.environ.get("LEO_AUDIO_PARTIALS", "0") == "1"
     pre_roll_ms: int = 400            # Pre-roll to prevent first-word clipping
 
     # Transcript stabilization (kept for diagnostics only — NOT a gate).
@@ -104,7 +109,12 @@ class CommandListenerConfig:
     confidence_threshold: float = -0.3
 
     # TASK 2: robust VAD — combined Silero + energy + duration evidence.
-    use_robust_vad: bool = True
+    # NOTE: The combined score is DIAGNOSTIC ONLY. The state machine uses
+    # the raw Silero probability (clamped [0,1]) so energy cannot keep the
+    # score above end_threshold during silence (root cause of the
+    # "SPEECH_ACTIVE forever" bug: background RMS ~2000 kept energy_score=1.0
+    # and the combined score >= 0.4, above end_threshold=0.35).
+    use_robust_vad: bool = False
 
     # TASK 6: failure responses — never silently return to wake mode.
     failure_response_ms: int = 0
@@ -516,6 +526,10 @@ class CommandListener:
         self._partial_inflight = False
         self._partial_task: Optional[asyncio.Task] = None
 
+        # TASK 9: monotonic command-session ID. Every LISTEN session gets a
+        # fresh ID so logs can prove no state leaks across sessions.
+        self._session_id = 0
+
     def initialize(self) -> bool:
         whisper_ok = self._whisper.load()
         vad_ok = unified_vad.load()
@@ -618,6 +632,9 @@ class CommandListener:
         self.reset_cancel()
         loop = asyncio.get_event_loop()
         cfg = command_config
+        self._session_id += 1
+        session_id = self._session_id
+        logger.info("[CMD-SESSION] id=%d begin", session_id)
         logger.info("[CMD-DEBUG] listener_enter ready=%s", self._ready)
 
         # ── COMMAND_SESSION_START boundary (TASK 7) ─────────────
@@ -671,14 +688,25 @@ class CommandListener:
         last_vad_log = 0.0
 
         # ── TASK 1: periodic metrics aggregation (1s cadence) ──
-        # vad_avg is ALWAYS sum(vad_probs)/count, and every prob is clamped
-        # to [0,1] by unified_vad.speech_prob(). It can NEVER exceed 1.0.
-        _metrics_frames = 0
+        # ROOT-CAUSE FIX: vad_avg was computed as sum(vad_probs)/count where
+        # `count` was the number of read_since() CHUNKS while `sum` was the
+        # number of VAD FRAMES. A single chunk can contain many frames, so
+        # the denominator was far too small and vad_avg exceeded 1.0
+        # (e.g. 1.0144, 7.6251). We now track VAD frames and chunk frames
+        # SEPARATELY so the average is mathematically correct.
+        _metrics_chunks = 0
+        _metrics_vad_frames = 0
         _metrics_audio_ms = 0.0
         _metrics_rms_sum = 0.0
         _metrics_vad_sum = 0.0
         _metrics_speech_frames = 0
         _last_metrics_log = 0.0
+
+        # ── TASK 3: recent frame-level VAD sequence for endpointing ──
+        # A bounded deque of (prob, is_speech) per VAD frame. Endpointing
+        # uses RECENT frames, never a long cumulative average.
+        recent_vad: List[float] = []
+        RECENT_VAD_MAX = 64  # ~2s of 32ms frames
 
         logger.info("[CMD] Listening started (endpoint=%dms, min_context=%dms, "
                     "pre_roll=%dms, start_thr=%.2f, end_thr=%.2f)",
@@ -782,25 +810,30 @@ class CommandListener:
             # ── Aggregate metrics for the 1s [CMD-METRICS] summary ──
             _metrics_audio_ms += len(new_audio) / SAMPLE_RATE * 1000.0
             _metrics_rms_sum += _rms
-            _metrics_frames += 1
-            now_mono = time.monotonic()
-            if now_mono - _last_metrics_log >= 1.0:
-                _last_metrics_log = now_mono
-                avg_rms = _metrics_rms_sum / max(1, _metrics_frames)
-                # TASK 1: vad_avg is ALWAYS sum/count, each prob clamped [0,1].
-                avg_vad = _metrics_vad_sum / max(1, _metrics_frames)
+            _metrics_chunks += 1
+            if time.monotonic() - _last_metrics_log >= 1.0:
+                _last_metrics_log = time.monotonic()
+                avg_rms = _metrics_rms_sum / max(1, _metrics_chunks)
+                # ROOT-CAUSE FIX: vad_avg must be sum(vad_probs)/n_vad_frames,
+                # NOT sum/len(chunks). Each chunk can contain many frames, so
+                # the old denominator was too small and produced values > 1.0.
+                avg_vad = _metrics_vad_sum / max(1, _metrics_vad_frames)
                 if avg_vad > 1.0 or avg_vad < 0.0:
-                    logger.error("[CMD] BUG: vad_avg out of range %.4f", avg_vad)
+                    logger.error(
+                        "[CMD] BUG: vad_avg out of range %.4f "
+                        "(vad_sum=%.4f vad_frames=%d chunks=%d)",
+                        avg_vad, _metrics_vad_sum, _metrics_vad_frames, _metrics_chunks)
                     avg_vad = min(max(avg_vad, 0.0), 1.0)
                 logger.info(
                     "[CMD-METRICS] frames=%d audio_ms=%.0f avg_rms=%.1f "
                     "vad_avg=%.3f speech_frames=%d buffer_ms=%.0f state=%s",
-                    _metrics_frames, _metrics_audio_ms, avg_rms, avg_vad,
+                    _metrics_vad_frames, _metrics_audio_ms, avg_rms, avg_vad,
                     _metrics_speech_frames,
                     len(state["audio_buffer"]) * FRAME_SAMPLES / SAMPLE_RATE * 1000.0,
                     state["state"])
                 # Reset for the next window.
-                _metrics_frames = 0
+                _metrics_chunks = 0
+                _metrics_vad_frames = 0
                 _metrics_audio_ms = 0.0
                 _metrics_rms_sum = 0.0
                 _metrics_vad_sum = 0.0
@@ -835,6 +868,7 @@ class CommandListener:
 
                 # ── Aggregate VAD metrics into the 1s summary ──
                 _metrics_vad_sum += prob
+                _metrics_vad_frames += 1
                 if prob >= cfg.speech_start_threshold:
                     _metrics_speech_frames += 1
 
@@ -963,7 +997,9 @@ class CommandListener:
                 # ── TASK 4/5: Partial transcription (HINTS ONLY, background) ──
                 # Partials NEVER block VAD/endpoint detection. They run as a
                 # background task with a single-inflight guard and rate limits.
-                if (state["state"] in (STATE_SPEECH, STATE_SILENCE)
+                # TASK 6: DISABLED by default (LEO_AUDIO_PARTIALS=1 to enable).
+                if (cfg.partials_enabled
+                        and state["state"] in (STATE_SPEECH, STATE_SILENCE)
                         and state["speech_samples"] >= partial_min_context_samples):
                     new_since_partial = state["speech_samples"] - state["last_partial_samples"]
                     now = time.monotonic()
