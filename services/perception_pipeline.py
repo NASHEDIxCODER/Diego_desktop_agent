@@ -1,3 +1,4 @@
+
 """
 Unified Perception Pipeline — Leo's single source of desktop truth.
 
@@ -245,6 +246,7 @@ class PerceptionPipeline:
     """
 
     def __init__(self):
+        self._initialized: bool = False
         self._last_ctx: Optional[PerceptionContext] = None
         self._last_screen_hash: str = ""
         self._last_window_id: str = ""
@@ -346,6 +348,7 @@ class PerceptionPipeline:
         except Exception as e:
             logger.warning("[PERCEPTION] Vision service init failed: %s", e)
 
+        self._initialized = True
         logger.info("[PERCEPTION] Pipeline initialized — a11y=%s capture=%s vision=%s",
                      "✓" if a11y_ok else "✗",
                      "✓" if capture_ok else "✗",
@@ -394,12 +397,21 @@ class PerceptionPipeline:
         ctx.timestamp = time.time()
         self._perception_count += 1
 
+        # ── Lazy initialization: make sure screen capture backend is up.
+        # Without this, a missed initialize() call leaves the backend "none"
+        # and every capture silently fails.
+        if self.screen_capture._backend == "none":
+            try:
+                await self.screen_capture._start()
+            except Exception as e:
+                logger.warning("[PERCEPTION] Lazy screen-capture init failed: %s", e)
+
         # ═══════════════════════════════════════════════════════
         # Stage 1: Screen Capture
         # ═══════════════════════════════════════════════════════
         t_cap = time.perf_counter_ns()
         try:
-            cap = await self.screen_capture.capture_active_window()
+            cap = await self.screen_capture.capture_fullscreen()
             if cap and cap.is_valid:
                 ctx.screen_width = cap.width
                 ctx.screen_height = cap.height
@@ -528,7 +540,12 @@ class PerceptionPipeline:
             should_ocr = True
             ocr_skip_reason = ""
 
-            if ctx.a11y_available:
+            # CRITICAL FIX: only skip OCR when a11y actually contains
+            # meaningful UI content. A bare window shell (1 node, 0
+            # clickable) tells us almost nothing — e.g. a browser page
+            # exposed via x11_window has no page text. In that case OCR
+            # must run so Leo can actually "see" the screen contents.
+            if ctx.a11y_available and ctx.a11y_node_count > 1:
                 should_ocr = False
                 ocr_skip_reason = f"Accessibility data sufficient ({ctx.a11y_node_count} nodes from {ctx.a11y_backend})"
             elif not ctx.screen_changed and self._last_ctx is not None and self._last_ctx.ocr_text:
@@ -542,6 +559,7 @@ class PerceptionPipeline:
                 try:
                     ocr_ctx = await self.vision.analyze(
                         force=True,
+                        source="fullscreen",
                         include_tree=False,
                         include_layout=False,
                         include_reasoning=False,

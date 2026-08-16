@@ -257,6 +257,7 @@ class StreamingLLM:
         self,
         user_text: str,
         cancel_event: Optional[asyncio.Event] = None,
+        screen_context: Optional[str] = None,
     ) -> AsyncIterator[str]:
         """
         Stream a response as complete sentences.
@@ -264,6 +265,9 @@ class StreamingLLM:
         Args:
             user_text: What the user said.
             cancel_event: If set, generation stops immediately (interruption).
+            screen_context: Optional description of what's currently on screen.
+                Injected into the prompt so Leo can answer "what is going on"
+                or act on "click here" requests.
 
         Yields:
             Complete sentences as soon as they're available.
@@ -294,6 +298,8 @@ class StreamingLLM:
         context = conv_memory.build_context()
 
         prompt_parts = [LEO_SYSTEM_PROMPT]
+        if screen_context:
+            prompt_parts.append(f"\nScreen context:\n{screen_context}")
         if context:
             prompt_parts.append(f"\nContext:\n{context}")
         prompt_parts.append(f"\nUser: {user_text}\nLeo:")

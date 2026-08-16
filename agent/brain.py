@@ -251,6 +251,12 @@ class AgentBrain:
         try:
             from services.perception_pipeline import perception_pipeline
             self._perception = perception_pipeline
+            # CRITICAL FIX: initialize the perception pipeline so the
+            # screen capture backend is actually started. Without this,
+            # the screen_capture._backend stays "none" and every
+            # perceive() call logs "Stage 1 — Screen capture failed".
+            if not getattr(perception_pipeline, '_initialized', False):
+                await perception_pipeline.initialize()
         except Exception as e:
             logger.warning("[Brain] PerceptionPipeline not available: %s", e)
             self._perception = None
@@ -791,11 +797,20 @@ class AgentBrain:
                 return personality.task_confirmation()
             return f"I ran into an issue with {result.actions_failed} of the steps."
 
-        # Otherwise, use the LLM to generate a response
+        # Otherwise, use the LLM to generate a response.
+        # CRITICAL FIX: inject the perception context (what Leo sees on
+        # screen) so "what is going on" / "click here" actually work.
+        # Without this, the LLM has no idea what's on the screen.
         try:
             from agent.streaming_llm import streaming_llm
+            screen_ctx = ""
+            if perception_ctx is not None:
+                try:
+                    screen_ctx = perception_ctx.compact_summary
+                except Exception:
+                    screen_ctx = ""
             sentences = []
-            async for sentence in streaming_llm.generate(text):
+            async for sentence in streaming_llm.generate(text, screen_context=screen_ctx):
                 sentences.append(sentence)
             return " ".join(sentences) if sentences else "I'm not sure how to help with that."
         except Exception as e:

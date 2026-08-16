@@ -259,6 +259,7 @@ class EnhancedOCREngine:
                 )
                 if result.returncode == 0:
                     self._active = "tesseract"
+                    self._configure_tesseract_data()
                     logger.info("[OCR] Backend: Tesseract")
                     return True
             except Exception:
@@ -266,6 +267,48 @@ class EnhancedOCREngine:
 
         logger.warning("[OCR] No backend available")
         return False
+
+    @staticmethod
+    def _configure_tesseract_data() -> None:
+        """
+        Locate the tesseract 'eng.traineddata' and set TESSDATA_PREFIX.
+
+        On some systems the traineddata is not in the default
+        /usr/share/tessdata location (e.g. bundled with another app).
+        Without this, pytesseract fails with "Error opening data file".
+        """
+        import os
+        import glob
+
+        # If TESSDATA_PREFIX is already set and valid, leave it.
+        existing = os.environ.get("TESSDATA_PREFIX", "")
+        if existing and os.path.exists(os.path.join(existing, "eng.traineddata")):
+            return
+
+        # Common locations to search
+        candidates = [
+            "/usr/share/tessdata",
+            "/usr/share/tesseract-ocr/5/tessdata",
+            "/usr/share/tesseract-ocr/4.00/tessdata",
+            "/usr/local/share/tessdata",
+        ]
+
+        # Also search for any eng.traineddata on the system (bounded).
+        try:
+            for path in glob.glob("/opt/**/tessdata/eng.traineddata", recursive=True):
+                candidates.append(os.path.dirname(path))
+            for path in glob.glob("/usr/**/tessdata/eng.traineddata", recursive=True):
+                candidates.append(os.path.dirname(path))
+        except Exception:
+            pass
+
+        for d in candidates:
+            if os.path.exists(os.path.join(d, "eng.traineddata")):
+                os.environ["TESSDATA_PREFIX"] = d
+                logger.info("[OCR] TESSDATA_PREFIX set to %s", d)
+                return
+
+        logger.warning("[OCR] eng.traineddata not found — OCR will fail")
 
     @property
     def ready(self) -> bool:
