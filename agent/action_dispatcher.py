@@ -284,7 +284,7 @@ class ActionDispatcher:
             text = params.get("text", "")
             if ex:
                 ex.keyboard_type(text)
-                return None
+                return f"Typed {text}"
             return None
 
         # ── Music actions are handled in async execute() above ──
@@ -545,6 +545,7 @@ class ActionDispatcher:
             "calculator": "gnome-calculator", "settings": "gnome-control-center",
             "slack": "slack", "discord": "discord", "telegram": "telegram-desktop",
             "notion": "notion-app", "obsidian": "obsidian",
+            "music_player": "spotify", "music": "spotify", "music player": "spotify",
         }
         binary = app_map.get(app_lower, app_lower)
 

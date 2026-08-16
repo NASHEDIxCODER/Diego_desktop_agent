@@ -27,28 +27,48 @@ PLANNER_SYSTEM_PROMPT = """You are Leo, a desktop AI agent that controls the use
 
 Given a user request and the current context, create a step-by-step plan.
 
-Available actions:
+Available actions (use EXACTLY these names):
+- desktop_open(app) — Open an application by name
+- close_app(app) — Close an application by name
 - browser_navigate(url) — Navigate to a URL
-- browser_click(selector) — Click a CSS selector
-- browser_click_text(text) — Click visible text
-- browser_type(text, selector?) — Type text, optionally into a selector
-- browser_screenshot() — Take a screenshot
-- browser_get_url() — Get current URL
-- browser_get_text(selector) — Get element text
-- browser_list_tabs() — List all tabs
-- browser_new_tab(url) — Open new tab
-- browser_switch_tab(index) — Switch to tab
-- browser_close_tab() — Close current tab
-- mouse_move(x, y) — Move mouse
-- mouse_click(x?, y?) — Click
-- mouse_double_click(x?, y?) — Double click
-- keyboard_type(text) — Type text
-- keyboard_press(key) — Press a key
-- keyboard_hotkey(*keys) — Press key combination
-- desktop_open(app) — Open application
-- desktop_screenshot() — Take desktop screenshot
-- clipboard_copy() — Copy selection
-- clipboard_paste(text) — Paste text
+- browser_search(query) — Search the web (Google)
+- read_screen() — Describe what's on screen (OCR + vision)
+- click_text(text) — Click visible text / button
+- scroll(direction) — Scroll up or down ("up" or "down")
+- key_press(key) — Press a key (e.g. "enter", "escape", "tab")
+- type_text(text) — Type text
+- play_media(query) — Play music/video
+- music_pause() — Pause music
+- music_resume() — Resume music
+- music_next() — Next track
+- music_previous() — Previous track
+- music_stop() — Stop music
+- music_shuffle() — Shuffle music
+- music_repeat() — Toggle repeat
+- music_status() — Get music status
+- music_volume(percent) — Set music volume
+- music_mute() — Mute music
+- open_folder(path) — Open a folder in the file manager
+- volume_up() — Increase volume
+- volume_down() — Decrease volume
+- volume_set(percent) — Set volume
+- volume_mute() — Toggle mute
+- brightness_up() — Increase brightness
+- brightness_down() — Decrease brightness
+- brightness_set(percent) — Set brightness
+- lock_screen() — Lock the screen
+- shutdown() — Shut down the computer
+- restart() — Restart the computer
+- get_time() — Get current time
+- get_date() — Get current date
+- minimize_window() — Minimize current window
+- maximize_window() — Maximize current window
+- switch_workspace() — Switch to next workspace
+- switch_workspace_prev() — Switch to previous workspace
+- switch_window() — Switch to next window
+- switch_window_prev() — Switch to previous window
+- switch_tab() — Switch to next tab
+- switch_tab_prev() — Switch to previous tab
 
 Output ONLY a JSON array of steps. Each step has:
 {"action": "action_name", "params": {"key": "value"}, "description": "what this does"}
@@ -56,8 +76,8 @@ Output ONLY a JSON array of steps. Each step has:
 Example:
 [
   {"action": "browser_navigate", "params": {"url": "https://linkedin.com"}, "description": "Open LinkedIn"},
-  {"action": "browser_click_text", "params": {"text": "Messaging"}, "description": "Open messages"},
-  {"action": "browser_type", "params": {"text": "Hello"}, "description": "Type message"}
+  {"action": "click_text", "params": {"text": "Messaging"}, "description": "Open messages"},
+  {"action": "type_text", "params": {"text": "Hello"}, "description": "Type message"}
 ]
 """
 
@@ -255,21 +275,18 @@ class AgentPlanner:
         if any(phrase in request_lower for phrase in ["search for ", "search ", "find "]):
             query = request_lower.replace("search for ", "").replace("search ", "").replace("find ", "")
             return [
-                {"action": "browser_navigate", "params": {"url": "https://google.com"}, "description": "Open Google"},
-                {"action": "browser_type", "params": {"text": query}, "description": f"Type '{query}'"},
-                {"action": "keyboard_press", "params": {"key": "enter"}, "description": "Press Enter"},
+                {"action": "browser_search", "params": {"query": query}, "description": f"Search for '{query}'"},
             ]
 
         # Screenshot
         if any(phrase in request_lower for phrase in ["screenshot", "take a picture", "what do you see"]):
             return [
-                {"action": "desktop_screenshot", "params": {}, "description": "Take screenshot"},
-                {"action": "browser_screenshot", "params": {}, "description": "Take browser screenshot"},
+                {"action": "read_screen", "params": {}, "description": "Read the screen"},
             ]
 
-        # YouTube
-        if any(word in request_lower for word in ["youtube", "play ", "video"]):
-            return [{"action": "browser_navigate", "params": {"url": "https://youtube.com"}, "description": "Open YouTube"}]
+        # YouTube / media
+        if any(word in request_lower for word in ["youtube", "play ", "video", "song", "music"]):
+            return [{"action": "play_media", "params": {"query": request}, "description": f"Play {request}"}]
 
         return None
 
