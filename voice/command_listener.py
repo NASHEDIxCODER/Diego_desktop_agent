@@ -353,7 +353,20 @@ def _validate_transcript(
     #    transcript is very short (a clear hallucination). Normal speech
     #    with confidence=-0.366 (e.g. "Now tell me can you see my screen?")
     #    is ACCEPTED.
-    if confidence < -1.5 and word_count <= 2:
+    #
+    # CRITICAL FIX (2026-08-23): Whisper hallucinations like "Blame the sun,
+    # Blieber" (conf=-1.024) and "Played in the song logo" (conf=-0.837) were
+    # passing through because the threshold was too lenient. These are classic
+    # hallucinations produced when Whisper is fed silence/noise. We now reject
+    # any transcript with confidence < -0.5 AND speech duration < 1.5s (a
+    # real command has enough audio to be confident). Also reject any
+    # transcript with confidence < -0.8 regardless of length — a real
+    # utterance never scores that low.
+    if confidence < -0.8:
+        return False, FAILURE_LOW_CONFIDENCE
+    if confidence < -0.5 and speech_dur_ms < 1500:
+        return False, FAILURE_LOW_CONFIDENCE
+    if confidence < -0.5 and word_count <= 3:
         return False, FAILURE_LOW_CONFIDENCE
 
     # Accepted.

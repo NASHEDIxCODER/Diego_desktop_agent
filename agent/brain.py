@@ -412,16 +412,23 @@ class AgentBrain:
 
             # Execute single action
             if decision.action:
-                ok = await self._dispatch_and_verify(decision.action)
+                ok, action_result = await self._dispatch_and_verify(decision.action)
                 result.actions_executed = 1
                 result.actions_succeeded = 1 if ok else 0
                 result.actions_failed = 0 if ok else 1
                 result.verified = ok
+                # CRITICAL FIX (2026-08-23): For read_screen, the dispatcher
+                # returns the actual screen content ("On screen: ..."). Use
+                # that as the response so the user hears what's on screen
+                # instead of a generic confirmation.
+                if ok and decision.action.get("action") == "read_screen" and action_result:
+                    result.response = action_result
+                    result.speak_immediately = False
 
             # Execute multi-step workflow
             if decision.actions:
                 for action in decision.actions:
-                    ok = await self._dispatch_and_verify(action)
+                    ok, action_result = await self._dispatch_and_verify(action)
                     result.actions_executed += 1
                     if ok:
                         result.actions_succeeded += 1
@@ -437,14 +444,20 @@ class AgentBrain:
                     # All succeeded — use a natural confirmation.
                     # CRITICAL FIX: Use personality for variety instead of
                     # always "Done." — Diego should sound alive, not robotic.
-                    detail = self._action_detail(decision)
-                    confirmation = personality.task_confirmation(detail) if detail else personality.acknowledgment()
-                    if result.speak_immediately:
-                        # Keep the immediate response as the primary,
-                        # set the confirmation as the followup.
-                        result.followup_response = confirmation
+                    # CRITICAL FIX (2026-08-23): If read_screen already set
+                    # the response to the actual screen content, do NOT
+                    # overwrite it with a generic confirmation.
+                    if result.response and decision.action and decision.action.get("action") == "read_screen":
+                        pass  # Keep the read_screen content as the response
                     else:
-                        result.response = confirmation
+                        detail = self._action_detail(decision)
+                        confirmation = personality.task_confirmation(detail) if detail else personality.acknowledgment()
+                        if result.speak_immediately:
+                            # Keep the immediate response as the primary,
+                            # set the confirmation as the followup.
+                            result.followup_response = confirmation
+                        else:
+                            result.response = confirmation
                 else:
                     # At least one action failed — be honest about the failure.
                     # The decision's response ("Opening.") must NOT be spoken
@@ -470,7 +483,7 @@ class AgentBrain:
                 for step in plan:
                     action = self._step_to_action(step)
                     if action:
-                        ok = await self._dispatch_and_verify(action)
+                        ok, _ = await self._dispatch_and_verify(action)
                         result.actions_executed += 1
                         if ok:
                             result.actions_succeeded += 1
@@ -548,7 +561,7 @@ class AgentBrain:
             logger.warning("[Brain] Planning failed: %s", e)
             return None
 
-    async def _dispatch_and_verify(self, action: Dict[str, Any]) -> bool:
+    async def _dispatch_and_verify(self, action: Dict[str, Any]) -> Tuple[bool, str]:
         """
         Steps 4-6: Dispatch → Verify → Learn.
 
@@ -568,10 +581,16 @@ class AgentBrain:
           not ready), the action was reported as failed even though
           a retry with adjusted params would have succeeded. Now we
           retry up to MAX_ACTION_RETRIES with parameter adjustment.
+
+        CRITICAL FIX (2026-08-23): Returns (bool, result_str) so the
+        dispatcher's actual result text (e.g. read_screen's "On screen: ...")
+        is preserved. Previously only a bool was returned, so the screen
+        content was discarded and the user heard a generic confirmation
+        instead of what was actually on screen.
         """
         if not self._dispatcher:
             logger.warning("[Brain] No dispatcher — cannot execute action")
-            return False
+            return False, ""
 
         action_name = action.get("action", "")
         params = action.get("params", {}) or {}
@@ -604,7 +623,7 @@ class AgentBrain:
                     continue
                 self._actions_failed += 1
                 await self._learn(action_name, params, success=False, error=str(e))
-                return False
+                return False, ""
 
             # ── Step 5: Verify ──────────────────────────────────
             verified = await self._verify(action_name, params, result)
@@ -613,7 +632,7 @@ class AgentBrain:
             if verified:
                 # ── Step 6: Learn ───────────────────────────────
                 await self._learn(action_name, params, success=True)
-                return True
+                return True, result or ""
 
             # Verification failed — retry with adjusted params
             logger.warning("[Brain] Action %s failed verification (attempt %d)",
@@ -625,9 +644,9 @@ class AgentBrain:
 
             self._actions_failed += 1
             await self._learn(action_name, params, success=False, error="Verification failed")
-            return False
+            return False, result or ""
 
-        return False
+        return False, ""
 
     @staticmethod
     def _adjust_params_for_retry(action_name: str,

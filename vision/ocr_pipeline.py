@@ -25,6 +25,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import numpy as np
@@ -292,6 +293,16 @@ class EnhancedOCREngine:
             "/usr/share/tesseract-ocr/4.00/tessdata",
             "/usr/local/share/tessdata",
         ]
+
+        # CRITICAL FIX (2026-08-23): The system tessdata dir may be missing
+        # eng.traineddata (only afr/osd installed). We bundle a copy in the
+        # project's data/tessdata directory so OCR works out of the box.
+        try:
+            project_tessdata = Path(__file__).resolve().parent.parent / "data" / "tessdata"
+            if project_tessdata.exists():
+                candidates.insert(0, str(project_tessdata))
+        except Exception:
+            pass
 
         # Also search for any eng.traineddata on the system (bounded).
         try:
