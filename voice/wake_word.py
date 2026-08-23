@@ -9,8 +9,8 @@ Matching: RapidFuzz fuzzy ratio + metaphone phonetic equality, blended into
 a per-word confidence against the DISTINCTIVE wake words. Whole-word
 containment of a known variant accepts immediately.
 
-Accept:  "hello leo"  "hey leo"  "hello lio"  "hello leyo"  "hello lido"
-         "hi leo"  "ok leo"  "hello leo!"  "hello, leo"  (phonetic near-misses)
+Accept:  "hello diego"  "hey diego"  "hello dego"  "hello diego"  "hello digo"
+         "hi diego"  "ok diego"  "hello diego!"  "hello, diego"  (phonetic near-misses)
 Reject:  "hello"  "hello everyone"  "thank you"  "good morning"
          "hello video"  "yellow meow"  "<no speech>"
 
@@ -49,16 +49,16 @@ except ImportError:
 # Accepted wake variants (whole-word containment). The distinctive words
 # are derived from these: every word that is not a generic greeting.
 DEFAULT_WAKE_VARIANTS = [
-    "hello leo",
-    "hey leo",
-    "hi leo",
-    "ok leo",
-    "okay leo",
-    "hello lio",
-    "hello leyo",
-    "hello lido",
-    "leo",
-    "lio",
+    "hello diego",
+    "hey diego",
+    "hi diego",
+    "ok diego",
+    "okay diego",
+    "hello dego",
+    "hello digo",
+    "hello diego",
+    "diego",
+    "dego",
 ]
 
 # Minimum combined confidence for a distinctive-word match. Deliberately
@@ -153,11 +153,11 @@ def verify_wake_transcript(text: Optional[str], wake_score: float = 0.0,
     # When the acoustic model is confident (≥ 0.95) but Whisper produces
     # a very low-confidence transcript (< -1.5), Whisper is hallucinating
     # on silence-heavy audio. Trust the acoustic model.
-    if wake_score >= 0.95 and whisper_confidence < -0.4:
+    if wake_score >= 0.98 and whisper_confidence < -0.7:
         logger.info(
             "[WAKE-VERIFY] ACCEPTED (uncertainty bypass): "
-            "wake_score=%.3f ≥ 0.95 whisper_confidence=%.3f < -0.4 "
-            "— Whisper uncertain on silence-heavy clip, trusting acoustic model",
+            "wake_score=%.3f ≥ 0.98 whisper_confidence=%.3f < -0.7 "
+            "— Whisper highly uncertain, trusting acoustic model",
             wake_score, whisper_confidence)
         return True
 

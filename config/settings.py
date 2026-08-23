@@ -38,8 +38,8 @@ class Settings(BaseSettings):
     # ── Speech / TTS ───────────────────────────────────────────────
     WHISPER_MODEL: str = "base"
     COQUI_MODEL: str = "tts_models/en/ljspeech/tacotron2-DDC"
-    WAKE_WORD: str = "leo"
-    WAKE_PHRASE: str = "hello leo"
+    WAKE_WORD: str = "diego"
+    WAKE_PHRASE: str = "hello diego"
     # Path to a local ONNX wake model. If set, this model is loaded.
     # If unset/empty, the bundled openWakeWord model is used.
     WAKE_MODEL: Optional[str] = None

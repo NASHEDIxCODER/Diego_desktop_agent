@@ -50,8 +50,8 @@ class VoiceSettings:
     voice_id: str = "default"      # Legacy voice ID
 
     # Wake word
-    wake_word: str = "leo"
-    wake_phrase: str = "hello leo"
+    wake_word: str = "diego"
+    wake_phrase: str = "hello diego"
     wake_model: Optional[str] = None  # Path to local ONNX model
     wake_sensitivity: float = 0.5  # 0.0 to 1.0
 

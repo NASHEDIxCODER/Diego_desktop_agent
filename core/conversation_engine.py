@@ -484,6 +484,18 @@ class ConversationEngine:
                     logger.info("[LISTEN] Filler '%s' — turn stays open", text)
                     continue
 
+                # ── Self-introduction ──
+                if self._is_identity_question(lower):
+                    self._set_state(EngineState.THINK)
+                    intro = (
+                        "I'm Diego, your desktop assistant. "
+                        "I can control your computer, open apps, manage files, "
+                        "play music, search the web, and help with coding. "
+                        "Just say 'hello Diego' to wake me up, then tell me what you need."
+                    )
+                    await self._think_and_speak(intro, events, canned=True)
+                    continue
+
                 if lower in GOODBYE_PHRASES or any(g in lower for g in GOODBYE_PHRASES if len(g) > 5):
                     self._set_state(EngineState.THINK)
                     await self._think_and_speak(personality.farewell(), events, canned=True)
@@ -796,6 +808,17 @@ class ConversationEngine:
         logger.info("[LISTEN] Speaking failure response: '%s' (reason=%s)",
                     text, reason)
         return await self._speak_guarded(text)
+
+    @staticmethod
+    def _is_identity_question(text: str) -> bool:
+        """Detect questions about Diego's identity."""
+        identity_patterns = [
+            "who are you", "what are you", "what is your name",
+            "who is diego", "what is diego", "tell me about yourself",
+            "introduce yourself", "what do you do", "what can you do",
+            "who am i talking to", "what's your name", "whats your name",
+        ]
+        return any(p in text for p in identity_patterns)
 
     def get_diagnostics(self) -> dict:
         return {
