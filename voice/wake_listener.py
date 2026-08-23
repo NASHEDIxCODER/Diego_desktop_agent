@@ -48,7 +48,7 @@ VAD_HANGOVER_S = 0.6                   # gate stays open this long after VAD dro
 REFRACTORY_S = 1.0                     # triggers ignored right after prime()
 REJECT_COOLDOWN_S = 2.0                # pause triggers after a rejected verification
 VERIFY_MIN_INTERVAL_S = 1.5            # never verify more often than this
-VERIFY_WINDOW_S = 2.5                  # Whisper verification looks back this far
+VERIFY_WINDOW_S = 1.5                  # Whisper verification looks back this far
 SCORE_LOG_INTERVAL_S = 0.5             # "Wake score=…" cadence while idle
 VAD_LOG_INTERVAL_S = 1.0               # "VAD probability=…" cadence while gate open
 MODEL_RETRY_S = 5.0                    # missing-model retry cadence (never exits)
@@ -343,8 +343,9 @@ class WakeListener:
             except Exception:
                 pass
 
-            # Transcribe with Whisper
-            text, confidence = command_listener._whisper.transcribe(pcm, 16000)
+            # Transcribe with Whisper — use the dedicated verify transcriber
+            # tuned for short wake-word windows (VAD filter + lower no_speech_threshold)
+            text, confidence = command_listener._whisper.transcribe_verify(pcm, 16000)
 
             elapsed_ms = (time.perf_counter() - t_verify) * 1000.0
             logger.info(
@@ -355,7 +356,7 @@ class WakeListener:
                 verify_sha[:16], wake_sha[:32] if wake_sha else "none",
                 wav_path.name if wav_path else "none")
 
-            ok = verify_wake_transcript(text, wake_score)
+            ok = verify_wake_transcript(text, wake_score, confidence)
             self.last_transcript = text
             return bool(ok), text, correlation, verify_sha, wake_sha
         except Exception as e:

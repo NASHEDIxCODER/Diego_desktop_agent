@@ -575,9 +575,29 @@ class ActionDispatcher:
             return f"Couldn't open {app}"
 
     def _close_app(self, app: str) -> str:
-        """Close a desktop application by name (with smart mapping)."""
+        """Close a desktop application by name (with smart mapping).
+
+        CRITICAL FIX: The previous implementation used `pkill -f <proc>`,
+        which matches the FULL command line of every process. This caused
+        two failure modes:
+          1. Self-kill: the `pkill` subprocess (and any wrapper shell whose
+             cmdline contained the pattern) matched itself and was killed,
+             returning a misleading non-zero exit code.
+          2. Wrong-target kill: `pkill -f` matched a wrapper/parent process
+             whose cmdline contained the pattern, killing it while the real
+             target survived.
+
+        The fix uses, in order of preference:
+          1. Graceful window close via wmctrl/xdotool (proper desktop way).
+          2. `pkill -x` (exact process NAME match — never matches cmdline
+             wrappers or the invoking process).
+          3. `pgrep -x` + direct SIGTERM via os.kill (most robust).
+        A self-kill guard excludes Leo's own process tree from any kill.
+        """
         import shutil
         import subprocess
+        import os
+        import signal
 
         app_lower = app.lower().strip()
         # Map friendly names to process names for pkill
@@ -595,20 +615,154 @@ class ActionDispatcher:
         }
         proc = proc_map.get(app_lower, app_lower)
 
-        # Try pkill first (sends SIGTERM — graceful)
-        if shutil.which("pkill"):
+        # ── Self-kill guard: never kill Leo's own process tree ──
+        def _self_pids() -> set:
+            """Return the set of PIDs in Leo's own process tree (ancestors)."""
+            pids = {os.getpid()}
             try:
-                result = subprocess.run(
-                    ["pkill", "-f", proc],
+                ppid = os.getppid()
+                # Walk up a few levels to catch the terminal/shell ancestors
+                for _ in range(8):
+                    if ppid <= 1:
+                        break
+                    pids.add(ppid)
+                    try:
+                        with open(f"/proc/{ppid}/stat") as f:
+                            # Field 4 of /proc/PID/stat is the parent PID
+                            ppid = int(f.read().split()[3])
+                    except Exception:
+                        break
+            except Exception:
+                pass
+            return pids
+
+        protected = _self_pids()
+
+        # ── 1. Graceful window close (proper desktop method) ──
+        # For terminal/window apps, closing the X11 window is cleaner than
+        # SIGTERM. wmctrl -c sends a WM_DELETE_WINDOW close request.
+        if shutil.which("wmctrl"):
+            try:
+                # Find window IDs matching the app's window title/class
+                out = subprocess.run(
+                    ["wmctrl", "-l"], capture_output=True, text=True, timeout=3,
+                )
+                if out.returncode == 0:
+                    for line in out.stdout.splitlines():
+                        parts = line.split(None, 3)
+                        if len(parts) >= 4 and proc.lower() in parts[3].lower():
+                            wid = parts[0]
+                            subprocess.run(
+                                ["wmctrl", "-ic", wid],
+                                capture_output=True, text=True, timeout=3,
+                            )
+                            logger.info("[ACTIONS] Closed app window via wmctrl: %s (%s)",
+                                        app, wid)
+                            return f"Closed {app}"
+            except Exception as e:
+                logger.debug("[ACTIONS] wmctrl close failed for %s: %s", app, e)
+
+        # ── 2. Signal the process and WAIT for actual termination ──
+        # CRITICAL FIX: pkill -x signals the process and returns immediately,
+        # but the process may take 1-2s to actually die (e.g. cleaning up a
+        # child process). The Brain's verification then checks pgrep -x
+        # immediately and finds the process still alive → false failure.
+        # So we must poll until the process is GONE before reporting success.
+        def _state_of(pid: int) -> Optional[str]:
+            """Return the process state char from /proc/<pid>/stat.
+
+            Returns None if the process no longer exists.
+            A zombie ('Z') means the process is already dead but its
+            exit status hasn't been reaped by its parent yet.
+            """
+            try:
+                with open(f"/proc/{pid}/stat") as f:
+                    return f.read().split()[2]
+            except (FileNotFoundError, ProcessLookupError, IndexError):
+                return None
+
+        def _is_live(pid: int) -> bool:
+            """True if the process exists AND is not a zombie."""
+            state = _state_of(pid)
+            return state is not None and state != "Z"
+
+        def _signal_and_wait(proc_name: str) -> bool:
+            """Signal all processes with exact name `proc_name` and wait
+            until they terminate. Returns True if they are all gone.
+
+            Zombie processes (state 'Z') are treated as already dead —
+            signalling them again is pointless and they may linger if
+            their parent hasn't reaped them.
+            """
+            # Find target PIDs (exact name match, skip Leo's own tree)
+            targets = []
+            try:
+                r = subprocess.run(
+                    ["pgrep", "-x", proc_name],
                     capture_output=True, text=True, timeout=3,
                 )
-                if result.returncode == 0:
-                    logger.info("[ACTIONS] Closed app: %s (%s)", app, proc)
-                    return f"Closed {app}"
+                if r.returncode == 0:
+                    for pid_str in r.stdout.split():
+                        pid_str = pid_str.strip()
+                        if not pid_str.isdigit():
+                            continue
+                        pid = int(pid_str)
+                        if pid in protected:
+                            logger.debug("[ACTIONS] Skipping protected PID %d", pid)
+                            continue
+                        # Skip zombies — already dead, no need to signal
+                        if not _is_live(pid):
+                            logger.debug("[ACTIONS] Skipping zombie PID %d", pid)
+                            continue
+                        targets.append(pid)
             except Exception as e:
-                logger.warning("[ACTIONS] pkill failed for %s: %s", app, e)
+                logger.warning("[ACTIONS] pgrep -x failed for %s: %s", proc_name, e)
+                return False
 
-        # Fallback: try killall
+            if not targets:
+                # No matching live processes — already closed (or never existed)
+                return True
+
+            # Send SIGTERM (graceful) to all targets
+            for pid in targets:
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    continue
+                except PermissionError as e:
+                    logger.warning("[ACTIONS] No permission to kill %d: %s", pid, e)
+
+            # Poll for termination (up to ~2s), then escalate to SIGKILL.
+            # Treat zombies as dead — they are no longer running.
+            deadline = time.time() + 2.0
+            still_alive = []
+            while time.time() < deadline:
+                still_alive = [pid for pid in targets if _is_live(pid)]
+                if not still_alive:
+                    return True
+                time.sleep(0.1)
+
+            # Escalate to SIGKILL for stubborn survivors
+            for pid in still_alive:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    continue
+                except PermissionError as e:
+                    logger.warning("[ACTIONS] No permission to SIGKILL %d: %s", pid, e)
+
+            # Final check
+            time.sleep(0.2)
+            for pid in still_alive:
+                if _is_live(pid):
+                    return False  # Still alive even after SIGKILL
+            return True
+
+        if _signal_and_wait(proc):
+            logger.info("[ACTIONS] Closed app: %s (%s)", app, proc)
+            return f"Closed {app}"
+
+        # ── 4. killall (exact name match) as last resort ──
         if shutil.which("killall"):
             try:
                 result = subprocess.run(

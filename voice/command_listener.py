@@ -491,6 +491,43 @@ class _WhisperTranscriber:
             logger.debug("[CMD-LISTEN] transcribe_fast error: %s", e)
             return "", 0.0
 
+    def transcribe_verify(self, pcm_int16: bytes, sample_rate: int = SAMPLE_RATE) -> Tuple[str, float]:
+        """Wake-verification transcription — tuned for short (1.5s) audio clips.
+
+        Uses a lower no_speech_threshold (0.6) so Whisper transcribes the
+        wake word even in silence-heavy windows. VAD filter is DISABLED
+        because the 1.5s window is already short and Whisper's internal
+        VAD would strip the brief wake word itself.
+        """
+        if not self._ready or not pcm_int16:
+            return "", 0.0
+        try:
+            audio = np.frombuffer(pcm_int16, dtype=np.int16).astype(np.float32) / 32768.0
+            if len(audio) < sample_rate * 0.15:
+                return "", 0.0
+            segments, _ = self._model.transcribe(
+                audio,
+                beam_size=5,
+                language="en",
+                temperature=0.0,
+                best_of=5,
+                condition_on_previous_text=False,
+                compression_ratio_threshold=None,
+                no_speech_threshold=0.6,
+                vad_filter=False,
+                without_timestamps=True,
+            )
+            segs = list(segments)
+            if not segs:
+                return "", 0.0
+            text = " ".join(s.text.strip() for s in segs).strip()
+            logprobs = [float(getattr(s, "avg_logprob", 0.0) or 0.0) for s in segs]
+            avg_logprob = float(np.mean(logprobs)) if logprobs else 0.0
+            return text, avg_logprob
+        except Exception as e:
+            logger.debug("[CMD-LISTEN] transcribe_verify error: %s", e)
+            return "", 0.0
+
 
 # ── TASK 2: explicit speech state machine states ───────────────
 STATE_WAITING = "WAITING_FOR_SPEECH"

@@ -723,6 +723,59 @@ class AgentBrain:
                     if chk.returncode == 0:
                         logger.info("[Brain] Verify OK: browser process running")
                         return True
+
+                elif action_name == "close_app":
+                    # CRITICAL FIX: verify the app process is GONE (not running).
+                    # Previously close_app fell through to vision verification
+                    # with the "open_app" type, which checked for a window
+                    # APPEARING — the exact opposite of what close should do.
+                    app = str(params.get("app", "")).lower()
+                    proc_map = {
+                        "vs code": "code", "vscode": "code", "code": "code",
+                        "browser": "firefox", "firefox": "firefox",
+                        "chrome": "chrome", "google-chrome": "chrome",
+                        "spotify": "spotify", "terminal": "xterm",
+                        "gnome-terminal": "gnome-terminal", "xterm": "xterm",
+                        "konsole": "konsole", "alacritty": "alacritty",
+                        "kitty": "kitty", "wezterm": "wezterm", "tilix": "tilix",
+                        "files": "nautilus", "nautilus": "nautilus",
+                        "calculator": "gnome-calculator",
+                        "settings": "gnome-control-center", "slack": "slack",
+                        "discord": "discord", "telegram": "telegram-desktop",
+                        "notion": "notion-app", "pycharm": "pycharm",
+                    }
+                    proc = proc_map.get(app, app)
+                    # Use -x (exact name) NOT -f (full cmdline) to avoid
+                    # matching wrapper shells / the invoking process.
+                    chk = subprocess.run(
+                        ["pgrep", "-x", proc],
+                        capture_output=True, text=True, timeout=3,
+                    )
+                    if chk.returncode != 0:
+                        logger.info("[Brain] Verify OK: process '%s' is gone (closed)", proc)
+                        return True
+                    # pgrep matched — but check for ZOMBIES. A zombie (state
+                    # 'Z') is already dead; its exit status just hasn't been
+                    # reaped by its parent yet. Treat zombies as "closed".
+                    live_pids = []
+                    for pid_str in chk.stdout.split():
+                        pid_str = pid_str.strip()
+                        if not pid_str.isdigit():
+                            continue
+                        pid = int(pid_str)
+                        try:
+                            with open(f"/proc/{pid}/stat") as f:
+                                state = f.read().split()[2]
+                            if state != "Z":
+                                live_pids.append(pid)
+                        except (FileNotFoundError, ProcessLookupError, IndexError):
+                            continue
+                    if not live_pids:
+                        logger.info("[Brain] Verify OK: process '%s' is gone (closed, only zombies remain)", proc)
+                        return True
+                    # Live process still running — close failed
+                    logger.warning("[Brain] Verify FAIL: process '%s' still running after close (pids=%s)", proc, live_pids)
+                    return False
         except Exception as e:
             logger.debug("[Brain] OS-level verify failed: %s", e)
 
@@ -824,7 +877,10 @@ class AgentBrain:
         """Map dispatcher action names to verifier action types."""
         mapping = {
             "desktop_open": "open_app",
-            "close_app": "open_app",
+            # CRITICAL FIX: close_app must NOT map to "open_app" — that
+            # checks for a window APPEARING, the exact opposite of what
+            # closing should do. close_app is verified at the OS level
+            # (process gone) in _verify(), so it needs no vision mapping.
             "browser_navigate": "navigate",
             "browser_search": "navigate",
             "click_text": "click",

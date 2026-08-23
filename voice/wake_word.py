@@ -123,7 +123,8 @@ def _wake_word_confidence(word: str, distinctive: str) -> Tuple[float, str]:
     return fuzzy, "fuzzy"
 
 
-def verify_wake_transcript(text: Optional[str], wake_score: float = 0.0) -> bool:
+def verify_wake_transcript(text: Optional[str], wake_score: float = 0.0,
+                           whisper_confidence: float = 0.0) -> bool:
     """
     THE wake transcript verifier (RapidFuzz + phonetic matching).
 
@@ -131,9 +132,11 @@ def verify_wake_transcript(text: Optional[str], wake_score: float = 0.0) -> bool
       (a) contains a full wake variant as whole words (containment), OR
       (b) contains a word whose combined phonetic+fuzzy CONFIDENCE ≥ 0.80
           against one of the DISTINCTIVE wake words, OR
-      (c) the openWakeWord score is ≥ 0.995 (model is virtually certain —
-          Whisper mishearings like 'hello' for 'leo' must not block a
-          confirmed wake detection).
+      (c) the openWakeWord score is ≥ 0.995 AND the transcript contains
+          wake-word evidence (phonetic near-match), OR
+      (d) the openWakeWord score is ≥ 0.95 AND Whisper confidence < -1.5
+          (Whisper is clearly hallucinating on silence-heavy audio —
+          trust the acoustic model).
 
     Exact transcript equality is NEVER required — Whisper's phonetically
     plausible mishearings of the wake word pass, while unrelated speech
@@ -145,6 +148,18 @@ def verify_wake_transcript(text: Optional[str], wake_score: float = 0.0) -> bool
     """
     if not text:
         return False
+
+    # ── Uncertainty bypass: Whisper is clearly hallucinating ──
+    # When the acoustic model is confident (≥ 0.95) but Whisper produces
+    # a very low-confidence transcript (< -1.5), Whisper is hallucinating
+    # on silence-heavy audio. Trust the acoustic model.
+    if wake_score >= 0.95 and whisper_confidence < -0.4:
+        logger.info(
+            "[WAKE-VERIFY] ACCEPTED (uncertainty bypass): "
+            "wake_score=%.3f ≥ 0.95 whisper_confidence=%.3f < -0.4 "
+            "— Whisper uncertain on silence-heavy clip, trusting acoustic model",
+            wake_score, whisper_confidence)
+        return True
 
     # ── High-confidence model path (CONSISTENCY REQUIRED) ──
     # A wake_score >= 0.995 is strong evidence the model fired, but it
