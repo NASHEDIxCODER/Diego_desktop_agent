@@ -698,22 +698,35 @@ class AgentBrain:
                         "notion-app": "notion",
                     }
                     proc = proc_map.get(app, app)
-                    chk = subprocess.run(
-                        ["pgrep", "-f", proc],
-                        capture_output=True, text=True, timeout=3,
-                    )
-                    if chk.returncode == 0:
-                        logger.info("[Brain] Verify OK: process '%s' running", proc)
-                        return True
-                    # Process not found — try alternate binaries
-                    for alt in (proc.replace("-", ""), f"{proc}-esr", f"{proc}-stable"):
-                        chk2 = subprocess.run(
-                            ["pgrep", "-f", alt],
+                    # ── SETTLE-WAIT (CRITICAL FIX) ──
+                    # Desktop apps take 1-3 s to spawn after dispatch.
+                    # Checking pgrep immediately after dispatch finds
+                    # nothing, falsely failing the launch. Poll for up
+                    # to ~3s before declaring failure.
+                    settle_deadline = time.time() + 3.0
+                    while time.time() < settle_deadline:
+                        chk = subprocess.run(
+                            ["pgrep", "-f", proc],
                             capture_output=True, text=True, timeout=3,
                         )
-                        if chk2.returncode == 0:
-                            logger.info("[Brain] Verify OK: process '%s' running", alt)
+                        if chk.returncode == 0:
+                            logger.info("[Brain] Verify OK: process '%s' running "
+                                        "(after %.1fs settle)", proc,
+                                        time.time() - (settle_deadline - 3.0))
                             return True
+                        # Also try alternate binaries
+                        for alt in (proc.replace("-", ""), f"{proc}-esr", f"{proc}-stable"):
+                            chk2 = subprocess.run(
+                                ["pgrep", "-f", alt],
+                                capture_output=True, text=True, timeout=3,
+                            )
+                            if chk2.returncode == 0:
+                                logger.info("[Brain] Verify OK: process '%s' running",
+                                            alt)
+                                return True
+                        time.sleep(0.4)
+                    logger.warning("[Brain] Verify FAIL: process '%s' did not "
+                                   "appear within 3s settle-wait", proc)
 
                 elif action_name in ("browser_navigate", "browser_search"):
                     chk = subprocess.run(
@@ -789,6 +802,21 @@ class AgentBrain:
                         params,
                         expected_outcome="",
                     )
+                    # CRITICAL FIX (Task-failure root cause):
+                    # When the vision subsystem ITSELF errors (screen
+                    # capture unavailable, vision_service down, no ASR
+                    # snapshot), the action did NOT necessarily fail.
+                    # Previously an ERROR status was treated as a FAIL
+                    # → the user was told "couldn't do it" even though
+                    # the app launched fine. Vision ERROR now falls
+                    # through to "trust dispatch result".
+                    from vision.action_verifier import VerificationStatus
+                    if vresult.status == VerificationStatus.ERROR:
+                        logger.warning("[Brain] Verify ERROR (vision subsystem) — "
+                                       "trusting dispatch result for %s: %s",
+                                       action_name, vresult.explanation[:100])
+                        return result is not None and "Couldn't" not in str(result)
+
                     if vresult.success:
                         logger.info("[Brain] Verify OK: %s (%s)", action_name, vresult.status.value)
                         return True
@@ -801,7 +829,7 @@ class AgentBrain:
                     # through to "trust dispatch result" which made
                     # verification failures invisible — the user was
                     # told "Done." even when nothing happened.
-                    # Exception: for desktop_open / browser actions, the
+                    # Exception: for desktop_app / browser actions, the
                     # OS-level process check above is authoritative and
                     # already returned True if the process is running.
                     # If we reach here, the OS check did NOT pass, so

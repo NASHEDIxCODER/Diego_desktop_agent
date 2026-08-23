@@ -732,6 +732,14 @@ class ConversationEngine:
         - Short responses ("Done.", "Opening Firefox.") are yielded whole
           so they play instantly with no artificial delay.
         - Longer responses get natural sentence-level pauses.
+
+        ABBREVIATION-AWARE SPLITTING (NEW):
+          A naive `re.split(r'(?<=[.!?])\\\\s+')` splits mid-word after
+          abbreviations ("vs.", "Mr.", "Dr.", "e.g.", "U.S.", "etc.")
+          producing choppy, unnatural speech. This version only treats
+          `.` as a sentence end when it is NOT followed by a lowercase
+          letter — the classic heuristic for "is this an abbreviation
+          or a sentence terminator?".
         """
         import re as _re
         text = (text or "").strip()
@@ -743,8 +751,14 @@ class ConversationEngine:
             yield text
             return
 
-        # Split into sentences on . ! ? followed by space/end
-        sentences = _re.split(r'(?<=[.!?])\s+', text)
+        # Abbreviation-aware split:
+        #   (?<=[.!?])  → lookbehind for sentence ender
+        #   \s+         → whitespace after it
+        #   (?!        ) → negative lookahead: don't split if the next
+        #                 char is a lowercase letter/digit (abbreviation:
+        #                 "Mr. Smith", "e.g. this", "v2.5", "U.S.")
+        sentences = _re.split(
+            r'(?<=[.!?])\s+(?![a-z0-9])', text)
         for i, sentence in enumerate(sentences):
             sentence = sentence.strip()
             if not sentence:

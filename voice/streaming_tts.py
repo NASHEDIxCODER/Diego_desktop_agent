@@ -61,7 +61,7 @@ class _InterruptiblePlayer:
         self._sample_rate = sample_rate
         self._sd = None
         self._stream_lock = threading.Lock()       # guards _stream create/destroy ONLY
-        self._stream = None                        # persistent OutputStream (id fixed at log)
+        self._stream = None                        # persistent OutputStream
         self._stream_created: bool = False         # True once created, False until close()
         self._playing = False
         self._abort = threading.Event()             # interrupt current utterance
@@ -72,8 +72,6 @@ class _InterruptiblePlayer:
         # ── Race-free interruption protocol ──────────────────
         # NEVER call _stream.stop() from the caller thread.
         # The worker thread is the SOLE owner of stop().
-        # interrupt() sets a flag; the worker executes stop()
-        # after it has safely returned from write().
         self._stop_requested = threading.Event()    # caller → worker: "please stop"
         self._stop_executed = threading.Event()     # worker → caller: "stop complete"
         self._write_active = threading.Event()      # worker is inside write()
@@ -128,17 +126,7 @@ class _InterruptiblePlayer:
                     self._thread.name)
 
     def _run(self) -> None:
-        """Persistent playback loop. Exits only on close()/shutdown.
-
-        NEVER touches self._stream_lock — only reads self._stream.
-        The stream is never destroyed while this thread is alive,
-        so a bare read is safe (no use-after-free possible).
-
-        STOP PROTOCOL: only this thread ever calls _stream.stop().
-        When the caller wants to interrupt, it sets _stop_requested.
-        This thread checks the flag before write() (to skip the write)
-        and after write() returns (to execute the stop), guaranteeing
-        that stop() NEVER races with write() inside PortAudio/ALSA."""
+        """Persistent playback loop. Exits only on close()/shutdown."""
         tid = threading.get_ident()
         logger.info("[PLAYER] Playback loop ENTERED thread=%s/%s",
                     threading.current_thread().name, tid)
@@ -158,7 +146,6 @@ class _InterruptiblePlayer:
 
             if self._abort.is_set():
                 # Drop chunks for an interrupted utterance.
-                # Do NOT touch the stream — it stays alive.
                 self._playing = False
                 logger.debug("[PLAYER] Chunk dropped (abort set, queue_size=%d)",
                              self._chunk_queue.qsize())
@@ -170,7 +157,6 @@ class _InterruptiblePlayer:
                 continue
 
             if not self._ensure_stream():
-                # Can't play; drop the chunk but keep the worker alive
                 continue
 
             try:
@@ -180,9 +166,6 @@ class _InterruptiblePlayer:
                              "chunk_samples=%d  stream_id=%s",
                              threading.current_thread().name, tid,
                              len(data), id(self._stream))
-                # Signal that we are inside write().
-                # interrupt() will wait for this to clear before
-                # considering the stop protocol complete.
                 self._write_active.set()
                 self._stream.write(data)
             except Exception as e:
@@ -208,32 +191,20 @@ class _InterruptiblePlayer:
                              id(self._stream) if self._stream else "none")
 
             # ── Check stop-requested AFTER write() returned ──
-            # This is the SAFE point: write() has definitely returned,
-            # so calling stop() cannot race with PortAudio internals.
             self._service_stop_request()
         self._playing = False
         logger.info("[PLAYER] Playback loop EXITED thread=%s/%s",
                     threading.current_thread().name, tid)
 
     def _service_stop_request(self) -> None:
-        """If the caller requested a stream stop, execute it HERE (worker thread).
-
-        This is the ONLY place _stream.stop() is ever called during
-        normal operation.  Guarantees single-thread ownership of
-        PortAudio's stream-stop path."""
+        """Execute a pending stop request from the worker thread."""
         if self._stop_requested.is_set():
             self._execute_stop()
 
     def _execute_stop(self) -> None:
-        """Execute stream.stop() from the worker thread and signal completion.
-
-        After stopping, RESTARTS the stream so the next utterance can
-        write immediately. Without this, the stream stays in a STOPPED
-        state and the next write() fails with PaErrorCode -9983
-        (paStreamIsStopped)."""
+        """Execute stream.stop() from the worker thread and signal completion."""
         tid = threading.get_ident()
-        logger.info("[PLAYER] STOP EXECUTED thread=%s/%s  "
-                    "stream_id=%s",
+        logger.info("[PLAYER] STOP EXECUTED thread=%s/%s  stream_id=%s",
                     threading.current_thread().name, tid,
                     id(self._stream) if self._stream else "none")
         with self._stream_lock:
@@ -255,8 +226,6 @@ class _InterruptiblePlayer:
                                 id(self._stream))
                 except Exception as e:
                     logger.warning("[PLAYER] Stream restart failed: %s", e)
-                    # Stream is broken — mark for lazy recreation on next
-                    # write by closing it. _ensure_stream() will recreate.
                     try:
                         self._stream.close()
                     except Exception:
@@ -288,18 +257,15 @@ class _InterruptiblePlayer:
           The caller thread NEVER calls _stream.stop() directly.
           Instead it sets _stop_requested and waits for the worker
           thread to execute stop() after it has safely returned from
-          write().  This eliminates the PortAudio/ALSA race where
-          Pa_StopStream (stop) and Pa_WriteStream (write) execute
-          concurrently on different threads inside the ALSA backend,
-          which corrupts internal ALSA state and causes:
-            PaAlsaStreamComponent_EndProcessing  →  assertion / abort.
+          write().  This eliminates the PortAudio/ALSA race between
+          Pa_StopStream (stop) and Pa_WriteStream (write).
 
           Protocol:
             1. Set _abort     → worker skips queued chunks
             2. Drain queue    → remove pending work
             3. Set _stop_requested → delegate stop() to the worker
-            4. Wait for _write_active to clear   → write() has returned
-            5. Wait for _stop_executed           → stop() has been called
+            4. Wait for _write_active to clear → write() has returned
+            5. Wait for _stop_executed → stop() has been called
             6. Re-arm for next utterance
         """
         caller_tid = threading.get_ident()
@@ -325,17 +291,12 @@ class _InterruptiblePlayer:
             logger.info("[PLAYER] Interrupt drained %d pending chunks", drained)
 
         # Step 3: Request stop — but do NOT execute it here.
-        # The worker thread will execute _stream.stop() from its own
-        # context, after write() has safely returned.
         logger.info("[PLAYER] STOP REQUESTED  thread=%s/%s  → delegating to worker",
                     caller_thread, caller_tid)
         self._stop_executed.clear()
         self._stop_requested.set()
 
         # Step 4: Wait for any in-flight write() to return.
-        # _write_active is set by the worker just before write() and
-        # cleared in the finally block after write() returns.
-        # Event.wait() is a blocking OS primitive — NOT busy-waiting.
         if self._write_active.is_set():
             logger.info("[PLAYER] Waiting for in-flight write() to return...  "
                         "thread=%s/%s", caller_thread, caller_tid)
@@ -344,9 +305,6 @@ class _InterruptiblePlayer:
                         caller_thread, caller_tid)
 
         # Step 5: Wait for the worker to actually call _stream.stop().
-        # The worker checks _stop_requested at the top of every loop
-        # iteration and after every write() — so it will pick up the
-        # request promptly.
         if not self._stop_executed.wait(timeout=2.0):
             logger.warning("[PLAYER] stop() not acknowledged by worker "
                            "within timeout — stream may still be running")
@@ -360,7 +318,6 @@ class _InterruptiblePlayer:
         self._abort.clear()
         logger.info("[PLAYER] Interrupt complete — re-armed for next utterance  "
                     "thread=%s/%s", caller_thread, caller_tid)
-
 
     def stop(self) -> None:
         """Alias for interrupt() — stops current playback immediately."""
@@ -378,13 +335,6 @@ class _InterruptiblePlayer:
         Kill the worker thread and DESTROY the stream.
 
         THIS IS THE ONLY PLACE THE OUTPUTSTREAM IS CLOSED.
-
-        Guarantees:
-          1. Tells the worker to exit (shutdown flag)
-          2. Waits for the worker thread to join — at this point
-             _stream.write() is guaranteed to have returned
-          3. THEN closes and destroys the stream from the calling
-             thread (always the main/asyncio thread at shutdown)
         """
         caller_thread = threading.current_thread().name
         logger.info("[PLAYER] Close requested from thread=%s "
@@ -410,8 +360,6 @@ class _InterruptiblePlayer:
             logger.info("[PLAYER] Close drained %d remaining chunks", drained)
 
         # Step 3: Wait for the worker thread to exit.
-        # The worker loop checks _shutdown on every iteration.
-        # After join() returns, _stream.write() is guaranteed done.
         if self._thread and self._thread.is_alive():
             worker_name = self._thread.name
             logger.info("[PLAYER] Waiting for worker thread '%s' to exit...",
@@ -429,7 +377,6 @@ class _InterruptiblePlayer:
                         "or already dead)")
 
         # Step 4: NOW it's safe to destroy the stream.
-        # The worker thread is dead — no one else can touch _stream.
         with self._stream_lock:
             if self._stream is not None:
                 stream_id = id(self._stream)
@@ -457,6 +404,9 @@ class StreamingTTS:
     and plays them through an interruptible sounddevice stream.
     """
 
+    # Priority order for synthesis engines (highest quality first).
+    ENGINE_ORDER = ("kokoro", "xtts", "piper", "pyttsx3")
+
     def __init__(self):
         self._player = _InterruptiblePlayer()
         self._engine = None  # active synthesis engine (with synthesize())
@@ -466,25 +416,52 @@ class StreamingTTS:
         self._speaking = threading.Event()
         self._sample_rate = PLAY_SAMPLE_RATE
 
+        # Lazy engine fallback: heavy models (XTTS, Piper) are NEVER loaded
+        # up-front. They are only initialized on the first synthesis failure
+        # of the current engine, so we degrade gracefully instead of going
+        # silent when the primary engine errors mid-sentence.
+        self._fallback_makers: dict = {}       # name → 0-arg callable
+        self._loaded_fallbacks: dict = {}      # name → built engine object
+        self._engine_name_in_use: str = ""
+
     # ── Engine selection ──────────────────────────────────
 
     def initialize(self) -> bool:
-        """Pick the best available synthesis engine."""
+        """Pick the best available synthesis engine + register lazy fallbacks."""
         logger.info("[STREAM-TTS] Initializing streaming TTS...")
         self._engine = self._pick_engine()
         if self._engine is None:
             logger.error("[STREAM-TTS] No synthesis engine available")
             self._ready = False
             return False
+
+        # Register every engine priority that we did NOT choose as the
+        # primary as a lazy fallback maker.
+        for name in self.ENGINE_ORDER:
+            if name not in self._fallback_makers:
+                self._fallback_makers[name] = self._engine_factory(name)
+
         self._player.start_worker()
         self._ready = True
-        logger.info("[STREAM-TTS] Ready (engine=%s)", self._engine_name)
+        logger.info("[STREAM-TTS] Ready (primary=%s, fallbacks=%s)",
+                    self._engine_name,
+                    sorted(self._fallback_makers.keys()))
         return True
+
+    def _engine_factory(self, name: str):
+        """Return a 0-arg callable that builds the named engine lazily."""
+        def factory():
+            try:
+                return self._make_engine(name)
+            except Exception as e:
+                logger.debug("[STREAM-TTS] lazy fallback %s failed to build: %s",
+                             name, e)
+                return None
+        return factory
 
     def _pick_engine(self):
         """Return an object with .synthesize(text)->Optional[np.float32] and .sample_rate."""
-        # Priority: Kokoro → XTTS → Piper → pyttsx3
-        for name in ("kokoro", "xtts", "piper", "pyttsx3"):
+        for name in self.ENGINE_ORDER:
             eng = self._make_engine(name)
             if eng is not None:
                 return eng
@@ -518,13 +495,12 @@ class StreamingTTS:
         """
         Consume an async stream of sentences; synthesize & play each.
 
-        Synthesis of sentence N+1 overlaps playback of sentence N.
+        Synthesis of sentence N+1 follows playback of sentence N.
         If `interrupt_event` fires, playback and synthesis stop instantly.
 
         Returns:
             True if at least one audio chunk was queued for playback,
-            False if nothing was spoken (TTS unavailable, all synthesis
-            failed, or interrupted before any audio).
+            False if nothing was spoken.
         """
         if not self._ready:
             # Lazy init
@@ -552,7 +528,7 @@ class StreamingTTS:
                 if pcm is not None and len(pcm):
                     self._player.enqueue(pcm)
                     played_any = True
-                    # Give the player a moment to start so is_playing is accurate
+                    # Yield control so the player starts consuming.
                     await asyncio.sleep(0)
 
             # Signal end of utterance
@@ -571,23 +547,111 @@ class StreamingTTS:
         return False
 
     def _synthesize(self, text: str) -> Optional[bytes]:
-        """Synthesize text to int16 PCM bytes at the player sample rate."""
-        if self._stop_event.is_set() or self._engine is None:
+        """
+        Synthesize text to int16 PCM bytes at the player sample rate.
+
+        ENGINE FALLBACK (CRITICAL FIX):
+          If the current engine raises or returns empty audio, try the next
+          lazy fallback engine instead of returning None (which would make
+          Diego go SILENT for that sentence). The fallback list follows
+          ENGINE_ORDER minus whichever engines already failed.
+
+        VOLUME (CRITICAL FIX):
+          `voice_settings.tts_volume` is applied BEFORE int16 conversion so
+          loud sentences don't clip/distort.
+        """
+        if self._stop_event.is_set():
+            return None
+
+        engine = self._engine
+        if engine is None:
+            # Try any fallback we might have
+            engine = self._next_fallback_engine()
+            if engine is None:
+                return None
+
+        # Candidates: current engine + all lazy fallbacks (in priority order).
+        tried: set = set()
+        candidates = [engine]
+        candidates += list(self._loaded_fallbacks.values())
+        for name, maker in self._fallback_makers.items():
+            if len(candidates) > 1:
+                # Try to lazily load the next fallback on demand.
+                fallback = self._get_fallback(name)
+                if fallback is not None:
+                    candidates.append(fallback)
+
+        for eng in candidates:
+            if id(eng) in tried:
+                continue
+            tried.add(id(eng))
+            if eng is None:
+                continue
+            try:
+                audio = eng.synthesize(text)
+                if audio is None or len(audio) == 0:
+                    logger.debug("[STREAM-TTS] %s returned empty audio "
+                                 "for '%s' — trying next engine",
+                                 type(eng).__name__, text[:40])
+                    continue
+                audio = np.asarray(audio, dtype=np.float32)
+
+                # Resample to the player sample rate if the engine differs.
+                src_rate = getattr(eng, "sample_rate", self._sample_rate)
+                if src_rate != self._sample_rate:
+                    audio = self._resample(audio, src_rate, self._sample_rate)
+
+                # ── Apply configured volume (default 0.7) ──
+                # Prevents clipping/distortion on loud synthesis (e.g. Kokoro)
+                # and reduces speaker echo that can be re-transcribed as a
+                # user command.
+                vol = getattr(voice_settings, "tts_volume", 1.0) or 1.0
+                if vol < 1.0:
+                    audio = audio * float(vol)
+
+                audio = np.clip(audio, -1.0, 1.0)
+                best = (audio * 32767.0).astype(np.int16).tobytes()
+                # Promote used engine to primary so subsequent sentences
+                # don't retry the failed engine every time.
+                if eng is not self._engine:
+                    logger.info("[STREAM-TTS] Promoting fallback engine %s "
+                                "to primary (previous failed)",
+                                type(eng).__name__)
+                    self._engine = eng
+                return best
+            except Exception as e:
+                logger.warning("[STREAM-TTS] %s synthesize error for '%s': %s — "
+                               "trying next engine",
+                               type(eng).__name__, text[:40], e)
+                continue
+
+        logger.warning("[STREAM-TTS] All engines failed for '%s'", text[:40])
+        return None
+
+    def _get_fallback(self, name: str):
+        """Build (or reuse) a fallback engine by name."""
+        if name in self._loaded_fallbacks:
+            return self._loaded_fallbacks[name]
+        maker = self._fallback_makers.get(name)
+        if maker is None:
             return None
         try:
-            audio = self._engine.synthesize(text)  # float32 [-1,1] @ engine rate
-            if audio is None or len(audio) == 0:
-                return None
-            audio = np.asarray(audio, dtype=np.float32)
-            # Resample if engine rate differs
-            src_rate = getattr(self._engine, "sample_rate", self._sample_rate)
-            if src_rate != self._sample_rate:
-                audio = self._resample(audio, src_rate, self._sample_rate)
-            audio = np.clip(audio, -1.0, 1.0)
-            return (audio * 32767.0).astype(np.int16).tobytes()
+            engine = maker()
+            if engine is not None:
+                self._loaded_fallbacks[name] = engine
+                # Don't promote yet — promotion happens on first success.
+            return engine
         except Exception as e:
-            logger.warning("[STREAM-TTS] synthesize error: %s", e)
+            logger.debug("[STREAM-TTS] fallback %s build error: %s", name, e)
             return None
+
+    def _next_fallback_engine(self):
+        """Return the first available fallback engine (when _engine is None)."""
+        for name in self.ENGINE_ORDER:
+            eng = self._get_fallback(name)
+            if eng is not None:
+                return eng
+        return None
 
     @staticmethod
     def _resample(audio: np.ndarray, src: int, dst: int) -> np.ndarray:
@@ -636,12 +700,7 @@ class StreamingTTS:
 # Each returns float32 audio in [-1, 1] and exposes .sample_rate.
 
 class _KokoroSynth:
-    """Kokoro-82M synthesis adapter (primary, CPU-friendly).
-
-    Runs on CPU by default: the GPU is usually occupied by the local LLM
-    (Ollama), and Kokoro-82M is fast enough on CPU for sentence streaming.
-    Set TTS_DEVICE=cuda to override when the GPU is free.
-    """
+    """Kokoro-82M synthesis adapter (primary, CPU-friendly)."""
     sample_rate = 24000
 
     def __init__(self):
@@ -656,7 +715,6 @@ class _KokoroSynth:
         import torch
         cfg = getattr(voice_settings, "tts_device", "cpu")
         if cfg == "cuda" and torch.cuda.is_available():
-            # Only use CUDA if there's actually free VRAM (>= ~1 GiB)
             try:
                 free, _total = torch.cuda.mem_get_info()
                 if free > 1 << 30:
@@ -678,17 +736,35 @@ class _KokoroSynth:
 
 
 class _XTTSSynth:
-    """Coqui XTTS v2 synthesis adapter (GPU preferred)."""
+    """
+    Coqui XTTS v2 synthesis adapter (GPU preferred).
+
+    CRITICAL FIX: XTTS v2 REQUIRES a reference speaker WAV for
+    voice cloning (`speaker_wav`). Passing None crashes synthesis
+    at runtime, silently killing speech. If no reference WAV is
+    configured, this engine is marked unavailable so the TTS
+    orchestrator falls through to the next engine immediately.
+    """
     sample_rate = 24000
 
     def __init__(self):
         from TTS.api import TTS  # noqa
         import torch
+        # XTTS v2 requires a speaker reference — bail at init time if
+        # none configured, so we never build a broken engine.
+        ref_wav = getattr(voice_settings, "tts_speaker_wav", "") or ""
+        if not ref_wav:
+            import os
+            if not os.path.exists(ref_wav):
+                raise RuntimeError(
+                    "XTTS v2 requires tts_speaker_wav (reference speaker WAV). "
+                    "Set TTS_SPEAKER_WAV or use Kokoro/Piper/pyttsx3 instead.")
         device = "cuda" if torch.cuda.is_available() else "cpu"
         self._tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2").to(device)
+        self._speaker_wav = ref_wav
 
     def synthesize(self, text: str) -> Optional[np.ndarray]:
-        wav = self._tts.tts(text=text, speaker_wav=None, language="en")
+        wav = self._tts.tts(text=text, speaker_wav=self._speaker_wav, language="en")
         return np.asarray(wav, dtype=np.float32)
 
 
@@ -715,21 +791,40 @@ class _PiperSynth:
 
 
 class _Pyttsx3Synth:
-    """pyttsx3 emergency fallback — renders to a temp WAV then loads it."""
+    """
+    pyttsx3 emergency fallback — renders to a temp WAV then loads it.
+
+    CRITICAL FIX: The engine is created ONCE (lazily) and REUSED for
+    every sentence. Previously a new `pyttsx3.init()` was called per
+    sentence, which is expensive, error-prone (fails silently on the
+    ALSA driver) and caused intermittent speech loss mid-response.
+    """
     sample_rate = 22050
 
     def __init__(self):
         import pyttsx3  # noqa
         self._pyttsx3 = pyttsx3
+        self._engine = None
+
+    def _init_engine(self):
+        if self._engine is None:
+            self._engine = self._pyttsx3.init()
+            # Slightly slower rate per config — pyttsx3 defaults are fast.
+            rate = getattr(voice_settings, "tts_rate", 145) or 145
+            try:
+                self._engine.setProperty("rate", rate)
+            except Exception:
+                pass
+        return self._engine
 
     def synthesize(self, text: str) -> Optional[np.ndarray]:
         import tempfile, wave
-        engine = self._pyttsx3.init()
+        engine = self._init_engine()
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             path = f.name
-        engine.save_to_file(text, path)
-        engine.runAndWait()
         try:
+            engine.save_to_file(text, path)
+            engine.runAndWait()
             with wave.open(path, "rb") as w:
                 self.sample_rate = w.getframerate()
                 frames = w.readframes(w.getnframes())
@@ -740,16 +835,13 @@ class _Pyttsx3Synth:
                 arr = np.frombuffer(frames, dtype=np.uint8).astype(np.float32)
                 arr = (arr - 128.0) / 128.0
             return arr
-        except Exception:
+        except Exception as e:
+            logger.debug("[STREAM-TTS] pyttsx3 synth error: %s", e)
             return None
         finally:
             try:
                 import os
                 os.unlink(path)
-            except Exception:
-                pass
-            try:
-                engine.stop()
             except Exception:
                 pass
 
