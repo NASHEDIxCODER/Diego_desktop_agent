@@ -168,7 +168,7 @@ def test_wake_accepted_valid_variants():
     assert wake_word.verify_wake_transcript("hey Diego", 0.8)
     assert wake_word.verify_wake_transcript("hi Diego", 0.8)
     assert wake_word.verify_wake_transcript("ok Diego", 0.8)
-    assert wake_word.verify_wake_transcript("hello lio", 0.8)
+    assert wake_word.verify_wake_transcript("hello digo", 0.8)
     assert wake_word.verify_wake_transcript("Hello, Diego!", 0.8)
     assert wake_word.verify_wake_transcript("hello Diego", 0.998)
 
