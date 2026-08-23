@@ -1,5 +1,5 @@
 """
-ConversationEngine — Leo's clean voice-state machine.
+ConversationEngine — Diego's clean voice-state machine.
 
 STATE MACHINE (7 states, no bypass):
 
@@ -84,7 +84,7 @@ GOODBYE_PHRASES = {
     "go to sleep", "good night", "goodnight", "cancel",
 }
 AUTH_SESSION_S = 600.0  # 10 minutes
-CHIME_PATH = Path(__file__).resolve().parent.parent / "leo.wav"
+CHIME_PATH = Path(__file__).resolve().parent.parent / "Diego.wav"
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -211,7 +211,7 @@ class ConversationEngine:
 
         # ── Boot: start audio + load models ──
         self._set_state(EngineState.IDLE)
-        logger.info("[ENGINE] Leo conversation engine starting")
+        logger.info("[ENGINE] Diego conversation engine starting")
 
         if threading.current_thread() is threading.main_thread():
             gui.start()
@@ -445,7 +445,7 @@ class ConversationEngine:
                     continue
 
                 # ── TASK 6: explicit failure responses ──
-                # Leo must NEVER silently return to wake mode after a
+                # Diego must NEVER silently return to wake mode after a
                 # detected speech attempt. A "failure" event carries an
                 # explicit reason and must be spoken.
                 if ev.kind == "failure":
@@ -693,7 +693,7 @@ class ConversationEngine:
         try:
             played = await streaming_tts.speak_sentences(sentences(), interrupt)
         finally:
-            # Let the TTS echo decay before resuming, so Leo never
+            # Let the TTS echo decay before resuming, so Diego never
             # transcribes its own voice as a user command. 0.5s covers
             # laptop-speaker reverberation in a normal room.
             await asyncio.sleep(0.5)
@@ -764,12 +764,12 @@ class ConversationEngine:
         return await streaming_tts.speak_sentences(_gen(), None)
 
     async def _speak_guarded(self, text: str) -> bool:
-        """Speak while muting STT so Leo NEVER transcribes its own voice.
+        """Speak while muting STT so Diego NEVER transcribes its own voice.
 
         Pause the command listener, speak, let the speaker echo decay, then
         drain the ring buffer and resume. Every TTS path that runs outside
         the normal _think_and_speak flow (greeting, failure responses) MUST
-        use this so the microphone never picks up Leo's own output through
+        use this so the microphone never picks up Diego's own output through
         the laptop speakers (no headphones required).
         """
         command_listener.pause_listening()
@@ -784,7 +784,7 @@ class ConversationEngine:
         return spoke
 
     # ── TASK 6: explicit failure responses ─────────────────
-    # Leo must NEVER silently return to wake mode after a detected speech
+    # Diego must NEVER silently return to wake mode after a detected speech
     # attempt. Each failure reason maps to a short spoken response.
 
     FAILURE_RESPONSES = {

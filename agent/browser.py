@@ -25,8 +25,8 @@ logger = logging.getLogger(__name__)
 # Default Chrome remote debugging port
 DEFAULT_CDP_PORT = 9222
 
-# Path for persistent Leo browser profile
-LEO_PROFILE_DIR = Path.home() / ".leo" / "browser_profile"
+# Path for persistent Diego browser profile
+DIEGO_PROFILE_DIR = Path.home() / ".Diego" / "browser_profile"
 
 
 @dataclass
@@ -44,7 +44,7 @@ class BrowserController:
 
     Strategy:
     1. Try to attach to running Chrome via CDP (chrome://inspect)
-    2. If that fails, launch Chrome with a persistent Leo profile
+    2. If that fails, launch Chrome with a persistent Diego profile
     3. Never create temporary/anonymous profiles
 
     All operations are thread-safe and reuse the same connection.
@@ -65,14 +65,14 @@ class BrowserController:
 
         Strategy:
         1. Try CDP attach to existing Chrome session (preserves all sessions/cookies)
-        2. If CDP fails (Chrome 136+ security), launch with persistent Leo profile
+        2. If CDP fails (Chrome 136+ security), launch with persistent Diego profile
         3. Never create temporary/anonymous profiles
 
         Chrome 136+ Note:
         Newer Chrome versions restrict CDP connections to the default profile
         for security reasons. When attach fails, we automatically fall back to
-        a dedicated Leo persistent profile at ~/.leo/browser_profile.
-        This preserves sessions within Leo's profile but won't have the user's
+        a dedicated Diego persistent profile at ~/.Diego/browser_profile.
+        This preserves sessions within Diego's profile but won't have the user's
         existing logged-in sessions from their default Chrome profile.
 
         Returns True if browser is available.
@@ -92,16 +92,16 @@ class BrowserController:
                 logger.info("Browser attached via CDP (launched Chrome)")
                 return True
 
-        # Step 3: Fallback to persistent Leo profile
+        # Step 3: Fallback to persistent Diego profile
         # This is the recommended path for Chrome 136+ which blocks
         # attaching to the default profile via CDP
         logger.info(
             "CDP attach failed (Chrome 136+ may block default profile access). "
-            "Falling back to persistent Leo profile at %s",
-            LEO_PROFILE_DIR,
+            "Falling back to persistent Diego profile at %s",
+            DIEGO_PROFILE_DIR,
         )
         if self._try_persistent_launch():
-            logger.info("Browser launched with persistent Leo profile")
+            logger.info("Browser launched with persistent Diego profile")
             return True
 
         logger.warning("No browser available — agent mode limited to desktop actions")
@@ -226,18 +226,18 @@ class BrowserController:
             return False
 
     def _try_persistent_launch(self) -> bool:
-        """Launch Chrome with a persistent Leo profile."""
+        """Launch Chrome with a persistent Diego profile."""
         try:
             from playwright.sync_api import sync_playwright
 
             self._playwright = sync_playwright().start()
 
             # Ensure profile directory exists
-            LEO_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+            DIEGO_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
 
             # Launch with persistent context
             self._context = self._playwright.chromium.launch_persistent_context(
-                user_data_dir=str(LEO_PROFILE_DIR),
+                user_data_dir=str(DIEGO_PROFILE_DIR),
                 headless=False,
                 args=[
                     "--no-sandbox",
@@ -248,7 +248,7 @@ class BrowserController:
             self._page = self._context.pages[0] if self._context.pages else self._context.new_page()
             self._browser = self._context  # Persistent context IS the browser
 
-            logger.info("Persistent browser launched: %s", LEO_PROFILE_DIR)
+            logger.info("Persistent browser launched: %s", DIEGO_PROFILE_DIR)
             return True
 
         except Exception as e:
@@ -452,7 +452,7 @@ class BrowserController:
         if not self._ensure_page():
             return None
         if path is None:
-            path = f"/tmp/leo_screenshot_{int(time.time())}.png"
+            path = f"/tmp/Diego_screenshot_{int(time.time())}.png"
         try:
             self._page.screenshot(path=path, full_page=False)
             agent_memory.set_last_screenshot(path)

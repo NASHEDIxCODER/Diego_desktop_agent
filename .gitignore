@@ -1,5 +1,5 @@
 # ============================================================
-# LEO Desktop Assistant - Git Ignore
+# DIEGO Desktop Assistant - Git Ignore
 # ============================================================
 
 # ------------------------------------------------------------
@@ -90,7 +90,7 @@ auth/*.pickle
 *.db-shm
 
 data/*.duckdb
-data/leo.duckdb
+data/Diego.duckdb
 
 # Local caches / embeddings
 data/embedding_cache.pkl
@@ -112,8 +112,8 @@ debug/*.wav
 debug/verification_*.wav
 
 # Local voice recordings
-leo.wav
-leo_voice_backup.wav
+Diego.wav
+Diego_voice_backup.wav
 
 # ------------------------------------------------------------
 # Screenshots / captured UI / camera data

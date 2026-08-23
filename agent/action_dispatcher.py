@@ -2,7 +2,7 @@
 ActionDispatcher — Maps LLM ACTION dicts to real desktop operations.
 
 Bridges the conversational engine to the existing planner / executor /
-browser / vision subsystems. Lets Leo DO things automatically without
+browser / vision subsystems. Lets Diego DO things automatically without
 asking for confirmation.
 
 Every action follows: execute → verify → retry → fallback → report.
@@ -592,7 +592,7 @@ class ActionDispatcher:
           2. `pkill -x` (exact process NAME match — never matches cmdline
              wrappers or the invoking process).
           3. `pgrep -x` + direct SIGTERM via os.kill (most robust).
-        A self-kill guard excludes Leo's own process tree from any kill.
+        A self-kill guard excludes Diego's own process tree from any kill.
         """
         import shutil
         import subprocess
@@ -615,9 +615,9 @@ class ActionDispatcher:
         }
         proc = proc_map.get(app_lower, app_lower)
 
-        # ── Self-kill guard: never kill Leo's own process tree ──
+        # ── Self-kill guard: never kill Diego's own process tree ──
         def _self_pids() -> set:
-            """Return the set of PIDs in Leo's own process tree (ancestors)."""
+            """Return the set of PIDs in Diego's own process tree (ancestors)."""
             pids = {os.getpid()}
             try:
                 ppid = os.getppid()
@@ -694,7 +694,7 @@ class ActionDispatcher:
             signalling them again is pointless and they may linger if
             their parent hasn't reaped them.
             """
-            # Find target PIDs (exact name match, skip Leo's own tree)
+            # Find target PIDs (exact name match, skip Diego's own tree)
             targets = []
             try:
                 r = subprocess.run(

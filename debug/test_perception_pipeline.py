@@ -330,7 +330,7 @@ async def test_action_verification(results: TestResults) -> None:
 
 
 async def test_screen_reasoning(results: TestResults) -> None:
-    """Test 7: Screen reasoning — can Leo answer questions about the desktop?"""
+    """Test 7: Screen reasoning — can Diego answer questions about the desktop?"""
     try:
         from services.perception_pipeline import perception_pipeline
         from services.screen_reasoning import screen_reasoner
@@ -580,7 +580,7 @@ def generate_final_report(results: TestResults) -> Dict[str, Any]:
             recoveries = 0  # Will be populated in real usage
 
     return {
-        "report_title": "Leo Desktop Assistant — Perception Pipeline Phase 2 Report",
+        "report_title": "Diego Desktop Assistant — Perception Pipeline Phase 2 Report",
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime()),
         "test_summary": results.summary(),
 
@@ -658,7 +658,7 @@ def generate_final_report(results: TestResults) -> Dict[str, Any]:
 
 async def main():
     logger.info("=" * 60)
-    logger.info("Leo Perception Pipeline — Manual Test Harness")
+    logger.info("Diego Perception Pipeline — Manual Test Harness")
     logger.info("=" * 60)
 
     results = TestResults()

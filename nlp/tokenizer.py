@@ -1,5 +1,5 @@
 """
-Text tokenizer for Leo NLP pipeline.
+Text tokenizer for Diego NLP pipeline.
 
 Splits text into tokens using spaCy or a simple fallback.
 """

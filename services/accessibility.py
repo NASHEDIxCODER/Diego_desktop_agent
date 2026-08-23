@@ -1,7 +1,7 @@
 """
 AccessibilityTree — Structured accessibility data from AT-SPI, GTK, Qt, and browsers.
 
-Leo's accessibility-first strategy:
+Diego's accessibility-first strategy:
   1. AT-SPI (Linux accessibility bus) — richest structured data
   2. GTK accessibility — GTK app widgets
   3. Qt accessibility — Qt app widgets

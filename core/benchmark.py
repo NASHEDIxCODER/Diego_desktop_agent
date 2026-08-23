@@ -1,5 +1,5 @@
 """
-Benchmark — Runtime validation and performance tracking for Leo.
+Benchmark — Runtime validation and performance tracking for Diego.
 
 Tracks:
   - LLM usage before vs after routing
@@ -53,7 +53,7 @@ class TurnRecord:
 
 class Benchmark:
     """
-    Runtime performance tracker for Leo.
+    Runtime performance tracker for Diego.
 
     Collects per-turn metrics and provides aggregate reports
     showing LLM usage reduction, latency improvements, and bottlenecks.
@@ -356,7 +356,7 @@ class Benchmark:
         """Print a human-readable benchmark report."""
         r = self.report()
         print("\n" + "=" * 60)
-        print("  LEO BENCHMARK REPORT")
+        print("  DIEGO BENCHMARK REPORT")
         print("=" * 60)
         print(f"  Session:     {r['session']['id']}")
         print(f"  Uptime:      {r['session']['uptime_s']}s")

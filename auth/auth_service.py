@@ -6,7 +6,7 @@ Redesigned authentication:
     confidence, user name, lighting indicator, distance indicator,
     head alignment.
   * If no face: shows "No face detected" and keeps waiting — never exits,
-    never times out, never closes Leo.
+    never times out, never closes Diego.
   * Voice prompts: "I can't see you yet", "Move a little closer",
     "Face detected", "Authentication successful".
   * Once authenticated: hides popup, continues normally.

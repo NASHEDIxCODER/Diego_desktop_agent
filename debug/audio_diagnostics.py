@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Audio Diagnostics for Leo Desktop Assistant.
+Audio Diagnostics for Diego Desktop Assistant.
 
 Measures real microphone characteristics:
 - Device enumeration (all microphones)
@@ -141,7 +141,7 @@ def enumerate_microphones():
 def main():
     print()
     print("=" * 70)
-    print("  LEO AUDIO DIAGNOSTICS")
+    print("  DIEGO AUDIO DIAGNOSTICS")
     print("=" * 70)
     print()
 
@@ -247,7 +247,7 @@ def main():
             print()
             if best.get('snr_db', 0) < 10:
                 print("  ⚠  WARNING: Low SNR — the microphone environment is very noisy.")
-                print("     Leo will apply noise suppression before wake detection.")
+                print("     Diego will apply noise suppression before wake detection.")
             if best.get('snr_db', 0) < 3:
                 print("  ⚠  CRITICAL: Extremely low SNR — speech may not be detectable.")
                 print("     Try using a different microphone or reducing background noise.")

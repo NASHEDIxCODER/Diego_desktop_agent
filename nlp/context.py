@@ -1,5 +1,5 @@
 """
-Context manager for Leo NLP pipeline.
+Context manager for Diego NLP pipeline.
 
 Maintains conversation context across turns, enabling
 context-aware commands like "send a message" followed by

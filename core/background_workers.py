@@ -1,5 +1,5 @@
 """
-Background Workers System — Worker infrastructure for Leo.
+Background Workers System — Worker infrastructure for Diego.
 
 Workers are long-running background tasks that communicate through the
 EventBus. They never block the main event loop and survive exceptions.

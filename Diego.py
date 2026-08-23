@@ -1,24 +1,24 @@
 """
-Leo — Conversational Desktop Agent (production entry point).
+Diego — Conversational Desktop Agent (production entry point).
 
-This is the NEW Leo: a real conversational companion like Siri /
+This is the NEW Diego: a real conversational companion like Siri /
 ChatGPT Voice / Gemini Live — NOT a command executor.
 
-  python leo.py              # Start conversational Leo
-  python leo.py --no-auth    # Skip face auth (dev only)
-  python leo.py --status     # Show subsystem status
+  python Diego.py              # Start conversational Diego
+  python Diego.py --no-auth    # Skip face auth (dev only)
+  python Diego.py --status     # Show subsystem status
 
 Pipeline:
-  Wake ("leo" / "hey leo" / "hello leo")
+  Wake ("Diego" / "hey Diego" / "hello Diego")
     → Transcript verification
     → Face auth (mandatory — camera opens ONLY here, waits forever)
     → Streaming VAD
     → Streaming Whisper (partials)
     → Streaming LLM (sentence-by-sentence)
     → Streaming TTS (interruptible)
-    → Full duplex: interrupt Leo any time by speaking
+    → Full duplex: interrupt Diego any time by speaking
     → 60 s of silence / "goodbye" / "stop listening" / "cancel"
-    → Back to wake listening (Leo NEVER exits on its own)
+    → Back to wake listening (Diego NEVER exits on its own)
 
 Everything is async and cancellable. Graceful shutdown on Ctrl+C.
 """
@@ -65,7 +65,7 @@ from config.settings import settings  # noqa: E402
 from telemetry.logger import setup_logging  # noqa: E402
 
 setup_logging()
-logger = logging.getLogger("leo")
+logger = logging.getLogger("Diego")
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -80,7 +80,7 @@ async def authenticate_on_wake() -> Optional[str]:
     word is detected (and only when the previous session has expired).
 
     Returns the verified user's name, or None if denied/cancelled.
-    NEVER raises, NEVER terminates Leo.
+    NEVER raises, NEVER terminates Diego.
     """
     loop = asyncio.get_event_loop()
     try:
@@ -103,11 +103,11 @@ async def authenticate_on_wake() -> Optional[str]:
 # Conversational runtime
 # ═══════════════════════════════════════════════════════════════
 
-async def run_leo(no_auth: bool = False) -> None:
+async def run_Diego(no_auth: bool = False) -> None:
     """
     BOOT → LOAD MODELS → INIT AUDIO → WAIT_WAKE.
 
-    Leo ALWAYS boots successfully and stays alive forever. Face auth is
+    Diego ALWAYS boots successfully and stays alive forever. Face auth is
     deferred until the wake word. There is NO startup authentication.
 
     The conversation engine owns the real boot sequence (audio → wake
@@ -151,9 +151,9 @@ async def run_leo(no_auth: bool = False) -> None:
     from services.music_agent import music_agent
     try:
         await music_agent.initialize()
-        logger.info("[LEO] MusicAgent initialized")
+        logger.info("[DIEGO] MusicAgent initialized")
     except Exception as e:
-        logger.debug("[LEO] MusicAgent init skipped: %s", e)
+        logger.debug("[DIEGO] MusicAgent init skipped: %s", e)
 
     # Augment the learning engine callable with the composer for richer context
     from learning.learning_engine import learning_engine
@@ -193,7 +193,7 @@ async def run_leo(no_auth: bool = False) -> None:
 
 async def shutdown() -> None:
     """Stop all subsystems cleanly."""
-    logger.info("[LEO] Shutting down...")
+    logger.info("[DIEGO] Shutting down...")
 
     # ── Save session recording before tearing down ──
     try:
@@ -202,7 +202,7 @@ async def shutdown() -> None:
             saved_path = session_recorder.save()
             if saved_path:
                 summary = session_recorder.get_summary()
-                logger.info("[LEO] Session summary: %d turns, avg wake=%.0fms, avg turn=%.0fms",
+                logger.info("[DIEGO] Session summary: %d turns, avg wake=%.0fms, avg turn=%.0fms",
                             summary.get("total_turns", 0),
                             summary.get("avg_wake_latency_ms", 0),
                             summary.get("avg_total_latency_ms", 0))
@@ -240,7 +240,7 @@ async def shutdown() -> None:
     except Exception:
         pass
 
-    logger.info("[LEO] Shutdown complete.")
+    logger.info("[DIEGO] Shutdown complete.")
 
 
 async def _main_async(no_auth: bool, record_session: bool = False) -> None:
@@ -257,11 +257,11 @@ async def _main_async(no_auth: bool, record_session: bool = False) -> None:
             pass
 
     # ── Enable session recording if requested ──
-    if record_session or os.environ.get("LEO_RECORD_SESSION", "").strip() in ("1", "true", "yes"):
+    if record_session or os.environ.get("DIEGO_RECORD_SESSION", "").strip() in ("1", "true", "yes"):
         from core.manual_session_recorder import session_recorder
         session_recorder.enable()
 
-    run_task = asyncio.create_task(run_leo(no_auth=no_auth))
+    run_task = asyncio.create_task(run_Diego(no_auth=no_auth))
     stop_task = asyncio.create_task(stop.wait())
 
     done, pending = await asyncio.wait(
@@ -271,7 +271,7 @@ async def _main_async(no_auth: bool, record_session: bool = False) -> None:
         t.cancel()
     try:
         # Shutdown must have a hard upper timeout (Phase 12) so a hung
-        # worker cannot prevent Leo from exiting.
+        # worker cannot prevent Diego from exiting.
         await asyncio.wait_for(shutdown(), timeout=15.0)
     except asyncio.TimeoutError:
         logger.error("[SHUTDOWN] Hard timeout exceeded 15s — exiting anyway")
@@ -281,7 +281,7 @@ async def _main_async(no_auth: bool, record_session: bool = False) -> None:
 
 def cmd_status() -> None:
     """Print a quick subsystem status report."""
-    print("Leo subsystem status")
+    print("Diego subsystem status")
     print("=" * 50)
     # Ollama
     try:
@@ -322,7 +322,7 @@ def cmd_status() -> None:
 
 async def cmd_debug_vision() -> None:
     """
-    `leo debug vision` — Open the live debug overlay.
+    `Diego debug vision` — Open the live debug overlay.
 
     Runs the forensic vision pipeline continuously and renders
     the debug overlay showing:
@@ -353,7 +353,7 @@ async def cmd_debug_vision() -> None:
     # Enable overlay
     debug_overlay.toggle()
     print("\n" + "=" * 60)
-    print("  LEO DEBUG VISION — Live Overlay Active")
+    print("  DIEGO DEBUG VISION — Live Overlay Active")
     print("  Press Ctrl+C to stop")
     print("=" * 60)
     print()
@@ -409,7 +409,7 @@ async def cmd_debug_vision() -> None:
 
 async def cmd_inspect_screen() -> None:
     """
-    `leo inspect screen` — Comprehensive screen inspection report.
+    `Diego inspect screen` — Comprehensive screen inspection report.
 
     Outputs:
       - Application name and type
@@ -456,9 +456,9 @@ async def cmd_inspect_screen() -> None:
 
 
 def run(no_auth: bool = False, record_session: bool = False) -> None:
-    """Canonical blocking entry point — boots Leo and runs until Ctrl+C.
+    """Canonical blocking entry point — boots Diego and runs until Ctrl+C.
 
-    Used by BOTH `python leo.py` and `python main.py` so there is exactly
+    Used by BOTH `python Diego.py` and `python main.py` so there is exactly
     ONE runtime entry path.
     """
     try:
@@ -468,15 +468,15 @@ def run(no_auth: bool = False, record_session: bool = False) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Leo — Conversational Desktop Agent")
+    parser = argparse.ArgumentParser(description="Diego — Conversational Desktop Agent")
     sub = parser.add_subparsers(dest="command", help="Subcommands")
 
-    # `leo debug vision` — live debug overlay
+    # `Diego debug vision` — live debug overlay
     sub.add_parser("debug", help="Debug tools").add_argument(
         "target", nargs="?", choices=["vision"], default="vision",
         help="Debug target (default: vision)")
 
-    # `leo inspect screen` — comprehensive screen report
+    # `Diego inspect screen` — comprehensive screen report
     sub.add_parser("inspect", help="Inspect tools").add_argument(
         "target", nargs="?", choices=["screen"], default="screen",
         help="Inspect target (default: screen)")

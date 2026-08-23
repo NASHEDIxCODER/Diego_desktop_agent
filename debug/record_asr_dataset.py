@@ -1,7 +1,7 @@
 """
 Record real microphone utterances for the ASR benchmark.
 
-Records each command from debug/asr_dataset.py through Leo's verified
+Records each command from debug/asr_dataset.py through Diego's verified
 microphone (AudioManager) and saves 16 kHz mono WAV files to
 data/asr_test_audio/ with a manifest capturing expected transcript,
 language, and command category.
@@ -18,7 +18,7 @@ Recording flow per command:
   3. Record until silence (energy endpoint) or a max duration.
   4. Save WAV + manifest entry.
 
-The audio is captured via Leo's unified AudioManager so it is the SAME
+The audio is captured via Diego's unified AudioManager so it is the SAME
 16 kHz mono normalized signal the production pipeline sees.
 """
 
@@ -45,7 +45,7 @@ SAMPLE_RATE = 16000
 
 
 def record_one(audio_manager, max_s: float = MAX_RECORD_S):
-    """Record one utterance using Leo's AudioManager ring buffer.
+    """Record one utterance using Diego's AudioManager ring buffer.
 
     Returns float32 [-1,1] mono audio, or None on failure.
     """

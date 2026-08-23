@@ -202,8 +202,8 @@ misaki[en]>=0.7.4         # Kokoro English G2P
 piper-tts>=1.6.0          # fallback streaming TTS engine
 sounddevice>=0.4.6        # full-duplex audio I/O (interruptible playback)
 
-# ── Wake word stack (REQUIRED — Leo is deaf without these) ──
-openwakeword>=0.4.0       # offline wake-word detection ("hello leo")
+# ── Wake word stack (REQUIRED — Diego is deaf without these) ──
+openwakeword>=0.4.0       # offline wake-word detection ("hello Diego")
 onnxruntime>=1.17.0       # ONNX inference backend for openWakeWord models
 rapidfuzz>=3.0.0          # fuzzy wake-transcript verification (phonetic+fuzzy+confidence)
 jellyfish>=1.0.0          # metaphone phonetic matching for wake verification

@@ -40,7 +40,7 @@ def main() -> int:
     from voice.wake_model_manager import wake_model_manager
 
     print("\n  ════════════════════════════════════════════════════════")
-    print("  WAKE TEST MODE — say 'Hello Leo'. Ctrl+C to stop.")
+    print("  WAKE TEST MODE — say 'Hello Diego'. Ctrl+C to stop.")
     print("  ════════════════════════════════════════════════════════\n")
 
     if not audio_manager.start():

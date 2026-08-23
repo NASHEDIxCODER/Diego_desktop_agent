@@ -183,9 +183,9 @@ def test_wake_verification():
     
     # Must pass
     must_pass = [
-        "hello leo", "hello lio", "hello leyo", "hey leo",
-        "hello leo!", "hello leo?", "Hello Leo", "hello lido",
-        "leo", "hey leo.", "hi leo", "ok leo", "okay leo",
+        "hello Diego", "hello lio", "hello leyo", "hey Diego",
+        "hello Diego!", "hello Diego?", "Hello Diego", "hello lido",
+        "Diego", "hey Diego.", "hi Diego", "ok Diego", "okay Diego",
     ]
     for text in must_pass:
         ok = verify_wake_transcript(text)
@@ -223,7 +223,7 @@ def test_filler_detection():
     for f in fillers:
         check(f"Filler: {f!r}", is_filler(f), f"is_filler={is_filler(f)}")
     
-    non_fillers = ["open firefox", "what time is it", "hello leo",
+    non_fillers = ["open firefox", "what time is it", "hello Diego",
                    "play music", "stop", "yes", "no", "cancel"]
     for nf in non_fillers:
         check(f"Not filler: {nf!r}", not is_filler(nf), f"is_filler={is_filler(nf)}")
@@ -482,7 +482,7 @@ def test_memory_leaks(loops: int = 10):
     
     for i in range(loops):
         # Wake verification
-        verify_wake_transcript("hello leo")
+        verify_wake_transcript("hello Diego")
         verify_wake_transcript("random noise")
         
         # Post-processing

@@ -1,5 +1,5 @@
 """
-End-to-End Pipeline Test for Leo Desktop Assistant.
+End-to-End Pipeline Test for Diego Desktop Assistant.
 
 Automatically executes the full runtime path:
   Wake detection → Face authentication → Greeting → Command recognition
@@ -89,7 +89,7 @@ async def run_e2e():
     # ── 3. Wake Detection (simulated) ──────────────────
     from voice.wake_word import verify_wake_transcript
     t0 = time.time()
-    wake_text = "hello leo"
+    wake_text = "hello Diego"
     wake_detected = verify_wake_transcript(wake_text)
     record_stage("wake_detection", "PASS" if wake_detected else "FAIL",
                  time.time() - t0, f"phrase='{wake_text}'")

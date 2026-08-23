@@ -1,1 +1,1 @@
-# Leo Desktop Assistant - Core Package
+# Diego Desktop Assistant - Core Package

@@ -1,5 +1,5 @@
 """
-Response Guarantee Tests — Leo must NEVER be silent.
+Response Guarantee Tests — Diego must NEVER be silent.
 
 Validates that every completed user utterance receives a spoken
 response, no matter what fails in the pipeline.
@@ -320,7 +320,7 @@ async def test_200_turns_no_silent():
 
 async def main():
     print("=" * 70)
-    print("  RESPONSE GUARANTEE TESTS — LEO NEVER SILENT")
+    print("  RESPONSE GUARANTEE TESTS — DIEGO NEVER SILENT")
     print("=" * 70)
 
     await test_normal_response()

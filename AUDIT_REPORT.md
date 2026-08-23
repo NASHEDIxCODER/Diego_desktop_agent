@@ -1,4 +1,4 @@
-# Leo Desktop Assistant — Comprehensive Audit Report v2
+# Diego Desktop Assistant — Comprehensive Audit Report v2
 
 ## 1. Startup Observations (Live Run: 2026-07-28)
 

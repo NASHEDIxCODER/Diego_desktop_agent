@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PHASE 1 — Full System Audit for Leo Desktop Assistant v3.0
+PHASE 1 — Full System Audit for Diego Desktop Assistant v3.0
 
 Audits every subsystem and produces:
 - Status (READY/DEGRADED/FAILED)
@@ -359,7 +359,7 @@ async def audit_vision() -> SubsystemAudit:
         try:
             import subprocess
             result = subprocess.run(
-                ["import", "-window", "root", "/tmp/leo_audit_screen.png"],
+                ["import", "-window", "root", "/tmp/Diego_audit_screen.png"],
                 capture_output=True, timeout=10
             )
             if result.returncode == 0:
@@ -569,7 +569,7 @@ async def run_audit() -> Dict[str, SubsystemAudit]:
     results = {}
 
     print("=" * 70)
-    print("  LEO DESKTOP ASSISTANT — FULL SYSTEM AUDIT")
+    print("  DIEGO DESKTOP ASSISTANT — FULL SYSTEM AUDIT")
     print("=" * 70)
     print()
 

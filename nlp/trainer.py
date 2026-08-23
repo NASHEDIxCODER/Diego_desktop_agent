@@ -1,5 +1,5 @@
 """
-Intent trainer for Leo NLP pipeline.
+Intent trainer for Diego NLP pipeline.
 
 Run manually:
     python main.py --train
@@ -605,7 +605,7 @@ trainer = Trainer()
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("Leo NLP Trainer")
+    print("Diego NLP Trainer")
     print("=" * 60)
     print()
     print("This trainer loads pre-computed static datasets from:")

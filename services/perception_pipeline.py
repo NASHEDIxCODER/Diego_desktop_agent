@@ -1,6 +1,6 @@
 
 """
-Unified Perception Pipeline — Leo's single source of desktop truth.
+Unified Perception Pipeline — Diego's single source of desktop truth.
 
 Every request follows this exact flow:
 
@@ -65,7 +65,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class PerceptionContext:
     """
-    Complete perception result — everything Leo knows about the desktop
+    Complete perception result — everything Diego knows about the desktop
     at a single point in time.
     """
     # ── Identity ────────────────────────────────────────────
@@ -544,7 +544,7 @@ class PerceptionPipeline:
             # meaningful UI content. A bare window shell (1 node, 0
             # clickable) tells us almost nothing — e.g. a browser page
             # exposed via x11_window has no page text. In that case OCR
-            # must run so Leo can actually "see" the screen contents.
+            # must run so Diego can actually "see" the screen contents.
             if ctx.a11y_available and ctx.a11y_node_count > 1:
                 should_ocr = False
                 ocr_skip_reason = f"Accessibility data sufficient ({ctx.a11y_node_count} nodes from {ctx.a11y_backend})"

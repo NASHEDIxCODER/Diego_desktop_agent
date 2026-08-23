@@ -1,5 +1,5 @@
 """
-CacheManager — Multi-domain caching for Leo.
+CacheManager — Multi-domain caching for Diego.
 
 Reduces unnecessary LLM calls, vision processing, and search queries
 by caching results across multiple domains with TTL-based expiration.

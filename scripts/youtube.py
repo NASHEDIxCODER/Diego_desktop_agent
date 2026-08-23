@@ -1,5 +1,5 @@
 """
-YouTube WebDriver controller for Leo Desktop Assistant.
+YouTube WebDriver controller for Diego Desktop Assistant.
 
 Fully lazy-initialized with singleton browser reuse.
 All operations have configurable timeouts.

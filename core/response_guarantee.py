@@ -1,5 +1,5 @@
 """
-ResponseGuarantee — Leo's "never silent" layer.
+ResponseGuarantee — Diego's "never silent" layer.
 
 Guarantees that every completed user utterance receives a spoken
 response. No exceptions.

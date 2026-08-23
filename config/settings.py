@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     TELEGRAM_CHAT_ID: Optional[str] = None
     TELEGRAM_API_ID: Optional[int] = None
     TELEGRAM_API_HASH: Optional[str] = None
-    TELEGRAM_SESSION: str = "leo_telegram"
+    TELEGRAM_SESSION: str = "Diego_telegram"
 
     # ── Google / Firebase ──────────────────────────────────────────
     GOOGLE_CLIENT_ID: Optional[str] = None
@@ -52,7 +52,7 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
 
     # ── Database ───────────────────────────────────────────────────
-    DUCKDB_PATH: str = "data/leo.duckdb"
+    DUCKDB_PATH: str = "data/Diego.duckdb"
     DUCKDB_RETRY_MAX_ATTEMPTS: int = 3
     DUCKDB_RETRY_BASE_DELAY: float = 0.5
 
@@ -70,7 +70,7 @@ class Settings(BaseSettings):
     DATA_DIR: Path = BASE_DIR / "data"
     MODELS_DIR: Path = BASE_DIR / "models"
     MODELS_WAKE_DIR: Path = BASE_DIR / "models" / "wake"
-    VOICE_FILE: Path = BASE_DIR / "leo.wav"
+    VOICE_FILE: Path = BASE_DIR / "Diego.wav"
     IMAGES_DIR: Path = BASE_DIR / "auth" / "images"
     KNOWN_ENCODINGS_PATH: Path = BASE_DIR / "auth" / "Known_encodings.p"
     CLASSIFIER_PATH: Path = BASE_DIR / "models" / "intent_classifier.pkl"

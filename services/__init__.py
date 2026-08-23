@@ -1,5 +1,5 @@
 """
-Leo Desktop Assistant — Services Layer
+Diego Desktop Assistant — Services Layer
 
 New production-grade subsystems:
 

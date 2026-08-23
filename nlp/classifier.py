@@ -1,5 +1,5 @@
 """
-Intent classifier for Leo NLP pipeline.
+Intent classifier for Diego NLP pipeline.
 
 Matches user input against known intents using:
 1. Semantic similarity (sentence-transformers embeddings)
@@ -26,8 +26,8 @@ logger = logging.getLogger(__name__)
 # Built-in intents with example phrases
 BUILTIN_INTENTS = {
     "greeting": [
-        "hello", "hi leo", "hey leo", "good morning", "good afternoon",
-        "good evening", "what's up", "yo leo", "hey there", "howdy",
+        "hello", "hi Diego", "hey Diego", "good morning", "good afternoon",
+        "good evening", "what's up", "yo Diego", "hey there", "howdy",
         "greetings", "nice to see you", "hello there", "hiya", "hey buddy",
     ],
     "exit": [

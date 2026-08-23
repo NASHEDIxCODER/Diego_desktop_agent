@@ -1,7 +1,7 @@
 """
 ASRProvider — Clean abstraction over speech recognition backends.
 
-Leo's command/conversation ASR is being evaluated against multiple
+Diego's command/conversation ASR is being evaluated against multiple
 backends (faster-whisper, NVIDIA Nemotron/Parakeet). This module defines
 the single interface every backend must implement so the benchmark and the
 command pipeline can treat them interchangeably.

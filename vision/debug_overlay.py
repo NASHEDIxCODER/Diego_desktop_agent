@@ -72,7 +72,7 @@ class DebugOverlay:
       - Click success/failure annotation
     """
 
-    WINDOW_NAME = "Leo Vision Debug Overlay"
+    WINDOW_NAME = "Diego Vision Debug Overlay"
     OVERLAY_ALPHA = 0.4  # transparency of overlay
 
     # Element type → BGR color
@@ -361,7 +361,7 @@ class DebugOverlay:
 
             # ── Info panel (top-left) ──────────────────────
             y_offset = 18
-            cv2.putText(canvas, f"Leo Vision Debug | Frame #{self._frame_count}",
+            cv2.putText(canvas, f"Diego Vision Debug | Frame #{self._frame_count}",
                         (8, y_offset), cv2.FONT_HERSHEY_SIMPLEX,
                         0.5, (255, 255, 255), 1)
             y_offset += 20
@@ -437,7 +437,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Leo Vision Debug Overlay — standalone test")
+        description="Diego Vision Debug Overlay — standalone test")
     parser.add_argument("--toggle", action="store_true",
                         help="Toggle overlay on/off")
     args = parser.parse_args()

@@ -1,5 +1,5 @@
 """
-Runtime Pipeline Tests for Leo Desktop Assistant.
+Runtime Pipeline Tests for Diego Desktop Assistant.
 
 Tests every stage of the runtime pipeline:
   BOOT → READY → WAIT_WAKE → WAKE_DETECTED → FACE_AUTH → GREETING
@@ -577,11 +577,11 @@ async def test_wake_word_detection():
         from voice.wake_word import verify_wake_transcript
 
         test_phrases = [
-            ("hello leo", True),
-            ("hey leo", True),
+            ("hello Diego", True),
+            ("hey Diego", True),
             ("hello world", False),
             ("goodbye", False),
-            ("leo", True),
+            ("Diego", True),
             ("lio", True),
         ]
 

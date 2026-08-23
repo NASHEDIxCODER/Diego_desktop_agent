@@ -1,7 +1,7 @@
 """
-ASR Benchmark — Nemotron vs Whisper on real Leo commands.
+ASR Benchmark — Nemotron vs Whisper on real Diego commands.
 
-Synthesizes the real Leo command set (English, natural speech, Hindi/Hinglish)
+Synthesizes the real Diego command set (English, natural speech, Hindi/Hinglish)
 to 16 kHz mono WAV via espeak-ng, then runs each audio clip through every
 available ASRProvider and records per-transcript metrics:
 
@@ -10,7 +10,7 @@ available ASRProvider and records per-transcript metrics:
   real-time factor, CPU, GPU VRAM, GPU utilization, RAM, dropped chunks,
   hallucinations.
 
-This benchmark does NOT modify Leo's voice architecture. It only measures
+This benchmark does NOT modify Diego's voice architecture. It only measures
 the providers behind the new ASRProvider interface.
 
 Usage:
@@ -54,7 +54,7 @@ from voice.asr_provider import (
 from voice.providers.whisper_provider import WhisperProvider
 from voice.providers.nemotron_provider import NemotronProvider
 
-# ── Real Leo command set ────────────────────────────────────────
+# ── Real Diego command set ────────────────────────────────────────
 # (spoken, expected, language)
 BENCHMARK_COMMANDS: List[Tuple[str, str, str]] = [
     # ── English commands ──
@@ -71,8 +71,8 @@ BENCHMARK_COMMANDS: List[Tuple[str, str, str]] = [
     ("open ghostline", "open ghostline", "en"),
     ("close firefox", "close firefox", "en"),
     # ── Natural speech ──
-    ("hey leo open youtube", "open youtube", "en"),
-    ("leo can you open firefox", "open firefox", "en"),
+    ("hey Diego open youtube", "open youtube", "en"),
+    ("Diego can you open firefox", "open firefox", "en"),
     ("open youtube and search for music", "open youtube and search for music", "en"),
     ("actually open vscode instead", "open vscode", "en"),
     ("no, cancel that", "cancel", "en"),
@@ -281,7 +281,7 @@ async def run_benchmark(quick: bool, no_tts: bool, out_dir: Path) -> BenchmarkRe
 def format_report(report: BenchmarkReport) -> str:
     lines = []
     lines.append("=" * 72)
-    lines.append("  LEO ASR BENCHMARK — NEMOTRON VS WHISPER")
+    lines.append("  DIEGO ASR BENCHMARK — NEMOTRON VS WHISPER")
     lines.append("=" * 72)
     lines.append(f"  Hardware: {report.hardware.get('gpu','?')} "
                  f"({report.hardware.get('vram_total_mb','?')} MB VRAM)")
@@ -317,11 +317,11 @@ REPORT_PATH = Path(__file__).resolve().parent.parent / "data" / "asr_benchmark.j
 
 
 async def main() -> None:
-    parser = argparse.ArgumentParser(description="Leo ASR benchmark (Nemotron vs Whisper)")
+    parser = argparse.ArgumentParser(description="Diego ASR benchmark (Nemotron vs Whisper)")
     parser.add_argument("--quick", action="store_true", help="8-command smoke test")
     parser.add_argument("--no-tts", action="store_true", help="Skip synthesis (use cached WAVs)")
     parser.add_argument("--report", action="store_true", help="Print last report only")
-    parser.add_argument("--out-dir", type=Path, default=Path("/tmp/leo_asr_benchmark"))
+    parser.add_argument("--out-dir", type=Path, default=Path("/tmp/Diego_asr_benchmark"))
     args = parser.parse_args()
 
     if args.report:

@@ -1,5 +1,5 @@
 """
-MusicAgent — Unified music control for Leo.
+MusicAgent — Unified music control for Diego.
 
 Supports multiple backends:
     - YouTube Music (via browser automation)
@@ -375,7 +375,7 @@ class MusicAgent:
             self._mpv_process = subprocess.Popen(
                 ["mpv", "--no-video",
                  "--ytdl-format=bestaudio",
-                 "--input-ipc-server=/tmp/leo_mpv_socket",
+                 "--input-ipc-server=/tmp/Diego_mpv_socket",
                  f"ytdl://ytsearch:{query}"],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -513,7 +513,7 @@ class MusicAgent:
         try:
             self._mpv_process = subprocess.Popen(
                 ["mpv", "--no-video",
-                 "--input-ipc-server=/tmp/leo_mpv_socket",
+                 "--input-ipc-server=/tmp/Diego_mpv_socket",
                  str(file)],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,

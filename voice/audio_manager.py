@@ -18,7 +18,7 @@ The microphone is NEVER assumed. Before any stream is opened the manager:
           ONLY verified devices — a silent device is never saved.
   STEP 6  If every device is silent, prints "No working microphone
           detected." with every tested device and its RMS, and start()
-          returns False — Leo NEVER continues on a silent mic.
+          returns False — Diego NEVER continues on a silent mic.
 
 After selection the InputStream callback prints real signal levels:
 
@@ -1021,7 +1021,7 @@ class AudioManager:
         # ── STEP 8: the callback MUST report the real device + real levels ──
         # GATED: the callback fires every ~30ms; verbose per-frame device/RMS
         # lines flood the terminal during idle listening. Only emit when
-        # LEO_AUDIO_TRACE=1 (default OFF). Warnings/errors are unaffected.
+        # DIEGO_AUDIO_TRACE=1 (default OFF). Warnings/errors are unaffected.
         if AUDIO_TRACE_ENABLED and (
                 self._callback_count == 1 or self._callback_count % 50 == 0):
             ch_report = " ".join(
@@ -1755,7 +1755,7 @@ class AudioManager:
         VALIDATION: calibration is INVALID if the microphone is producing
         digital silence (RMS ≈ 0). A verified device must never calibrate
         to silence; if it does, this returns False so the caller can treat
-        voice as unavailable. Leo must NEVER run on a silent mic.
+        voice as unavailable. Diego must NEVER run on a silent mic.
 
         Args:
             duration: Calibration duration in seconds.

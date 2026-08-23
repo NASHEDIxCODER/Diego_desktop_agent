@@ -1,5 +1,5 @@
 """
-Concrete sherpa-onnx ASR providers for Leo's benchmark.
+Concrete sherpa-onnx ASR providers for Diego's benchmark.
 
 Each provider wraps a specific pre-exported sherpa-onnx model behind the
 ASRProvider interface. All models consume the SAME normalized float32
@@ -105,7 +105,7 @@ class ZipformerStreamProvider(StreamingSherpaOnnxProvider):
             sample_rate=16000,
             feature_dim=80,
             decoding_method="greedy_search",
-            enable_endpoint_detection=False,  # Leo's unified VAD owns endpointing
+            enable_endpoint_detection=False,  # Diego's unified VAD owns endpointing
             model_type="zipformer",
             provider=self._provider,
         )

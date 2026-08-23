@@ -290,7 +290,7 @@ def _search(params: Dict[str, Any]) -> ToolResult:
 
 def _notify(params: Dict[str, Any]) -> ToolResult:
     """Send a desktop notification."""
-    title = params.get("title", "Leo")
+    title = params.get("title", "Diego")
     message = params.get("message", "")
     try:
         if shutil.which("notify-send"):
@@ -487,7 +487,7 @@ class ToolRegistry:
         return self.get(name) is not None
 
     def install_builtin_tools(self) -> None:
-        """Install Leo's standard desktop tool set (idempotent)."""
+        """Install Diego's standard desktop tool set (idempotent)."""
         if self._initialized:
             return
         self._initialized = True

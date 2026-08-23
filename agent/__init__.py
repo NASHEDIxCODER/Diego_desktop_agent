@@ -1,7 +1,7 @@
 """
-Agent Mode — Desktop AI Agent for Leo.
+Agent Mode — Desktop AI Agent for Diego.
 
-Transforms Leo from a command-based assistant into a production-grade
+Transforms Diego from a command-based assistant into a production-grade
 desktop AI agent capable of:
 - Seeing the screen
 - Understanding UI

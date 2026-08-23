@@ -1,7 +1,7 @@
 """
 SkillMemory — Remembers which actions work and which fail.
 
-Every action Leo takes is recorded with its outcome. Over time this
+Every action Diego takes is recorded with its outcome. Over time this
 builds an experience database that the planner can query to:
 
   - Choose a successful action over a failed one
@@ -11,7 +11,7 @@ builds an experience database that the planner can query to:
 
 Each entry stores:
   - goal: what the user asked for
-  - action: what Leo did (app, command, URL, etc.)
+  - action: what Diego did (app, command, URL, etc.)
   - success: True/False
   - latency_ms: how long it took
   - error: what went wrong (if failure)
@@ -52,7 +52,7 @@ class SkillEntry:
 
 class SkillMemory:
     """
-    Experience database for Leo's actions.
+    Experience database for Diego's actions.
 
     Records every action outcome. Queries provide:
       - Success rate per action pattern
@@ -79,7 +79,7 @@ class SkillMemory:
 
         Args:
             goal: what the user asked for
-            action: what Leo did (e.g. "desktop_open:code")
+            action: what Diego did (e.g. "desktop_open:code")
             success: did it work
             latency_ms: how long it took
             error: error message if failed

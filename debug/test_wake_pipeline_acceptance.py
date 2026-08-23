@@ -297,9 +297,9 @@ def test_stage_tracer():
 def test_wake_verification_matrix():
     print("\n  ── 7. Wake verification: PASS/FAIL matrix (STEP 7) ──")
     passes = [
-        "hello leo", "hello lio", "hello leyo", "hey leo",
-        "hello leo!", "hello leo?", "Hello Leo", "hello lido",
-        "leo", "hey leo.",
+        "hello Diego", "hello lio", "hello leyo", "hey Diego",
+        "hello Diego!", "hello Diego?", "Hello Diego", "hello lido",
+        "Diego", "hey Diego.",
     ]
     fails = [
         "hello please", "hello everyone", "it's so big", "I'm scared",

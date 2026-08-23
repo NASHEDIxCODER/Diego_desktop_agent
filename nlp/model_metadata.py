@@ -1,5 +1,5 @@
 """
-Model metadata management for Leo NLP.
+Model metadata management for Diego NLP.
 
 Tracks:
 - model_version
@@ -99,7 +99,7 @@ def get_model_status() -> Dict[str, Any]:
     if meta is None:
         return {
             "ready": False,
-            "message": "No trained model found. Run: leo train",
+            "message": "No trained model found. Run: Diego train",
         }
     return {
         "ready": True,

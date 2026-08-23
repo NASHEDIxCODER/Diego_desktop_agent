@@ -5,7 +5,7 @@ Offline acceptance test of the PRODUCTION wake pipeline — no microphone.
 Drives the real WakeListener + WakeModelManager (openWakeWord + custom
 verifier) + faster-whisper verification through a simulated ring buffer:
 
-  1. "hello leo" (clean synthetic speech) → trigger → Whisper → ACCEPTED
+  1. "hello Diego" (clean synthetic speech) → trigger → Whisper → ACCEPTED
   2. user's real wake recording (legacy, clipped at capture) → trigger fires
   3. silence → never triggers
   4. espeak "thank you very much" → if it triggers, Whisper REJECTS
@@ -138,9 +138,9 @@ def main() -> int:
 
     results = []
 
-    print("\n[1] 'hello leo' (clean synthetic speech — full path incl. Whisper) …")
+    print("\n[1] 'hello Diego' (clean synthetic speech — full path incl. Whisper) …")
     def feed_wake():
-        sim.feed_wav(espeak_wav("hello leo"))
+        sim.feed_wav(espeak_wav("hello Diego"))
         sim.feed_silence(1.0)   # room tone after the phrase (settles trigger)
     r, d = run(feed_wake)
     print(f"    → {r}  score={d[0]:.3f} transcript={d[1]!r}" if d

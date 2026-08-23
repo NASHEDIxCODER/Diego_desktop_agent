@@ -1,5 +1,5 @@
 """
-Face Authentication for Leo Desktop Assistant.
+Face Authentication for Diego Desktop Assistant.
 
 Fully local authentication. Firebase is ONLY for optional sync.
 Authentication works with no internet, no Firebase credentials.
@@ -625,7 +625,7 @@ def recognize_faces() -> Optional[str]:
             if _overlay_allowed():
                 display = _draw_debug_overlay(frame, faces, quality, current_fps)
 
-                cv.imshow("Leo Face Auth", display)
+                cv.imshow("Diego Face Auth", display)
                 key = cv.waitKey(1) & 0xFF
                 if key == ord('d'):
                     _debug_overlay_enabled = not _debug_overlay_enabled

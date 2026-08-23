@@ -1,1 +1,1 @@
-# Leo Desktop Assistant - Tests Package
+# Diego Desktop Assistant - Tests Package

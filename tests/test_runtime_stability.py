@@ -164,13 +164,13 @@ def _make_listener(whisper) -> CL.CommandListener:
 # ── 1-3: Wake verification ───────────────────────────────────────
 
 def test_wake_accepted_valid_variants():
-    assert wake_word.verify_wake_transcript("hello leo", 0.9)
-    assert wake_word.verify_wake_transcript("hey leo", 0.8)
-    assert wake_word.verify_wake_transcript("hi leo", 0.8)
-    assert wake_word.verify_wake_transcript("ok leo", 0.8)
+    assert wake_word.verify_wake_transcript("hello Diego", 0.9)
+    assert wake_word.verify_wake_transcript("hey Diego", 0.8)
+    assert wake_word.verify_wake_transcript("hi Diego", 0.8)
+    assert wake_word.verify_wake_transcript("ok Diego", 0.8)
     assert wake_word.verify_wake_transcript("hello lio", 0.8)
-    assert wake_word.verify_wake_transcript("Hello, Leo!", 0.8)
-    assert wake_word.verify_wake_transcript("hello leo", 0.998)
+    assert wake_word.verify_wake_transcript("Hello, Diego!", 0.8)
+    assert wake_word.verify_wake_transcript("hello Diego", 0.998)
 
 
 def test_wake_rejected_unrelated_transcript():

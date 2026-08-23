@@ -5,22 +5,22 @@
   <img src="https://img.shields.io/badge/status-active-success.svg" alt="Active">
 </p>
 
-<h1 align="center">🦁 Leo Desktop Assistant</h1>
+<h1 align="center">🦁 Diego Desktop Assistant</h1>
 
 <p align="center">
   <em>A fully autonomous, conversational AI companion for Linux — wake-word activated, face-authenticated, full-duplex streaming voice, persistent memory, screen vision, and automatic desktop control.</em>
 </p>
 
 <p align="center">
-  <strong>Talk naturally. Interrupt any time. Leo listens, thinks, speaks, and acts — all at once.</strong>
+  <strong>Talk naturally. Interrupt any time. Diego listens, thinks, speaks, and acts — all at once.</strong>
 </p>
 
 ---
 
 ## 📖 Table of Contents
 
-- [What is Leo?](#-what-is-leo)
-- [Why Leo Exists](#-why-leo-exists)
+- [What is Diego?](#-what-is-Diego)
+- [Why Diego Exists](#-why-Diego-exists)
 - [Core Architecture](#-core-architecture)
 - [Streaming Pipeline](#-streaming-pipeline)
 - [Features](#-features)
@@ -36,26 +36,26 @@
 
 ---
 
-## 🧠 What is Leo?
+## 🧠 What is Diego?
 
-Leo is a **production-grade conversational desktop agent** for Linux. Unlike traditional voice assistants that merely execute commands, Leo is a **companion** — it maintains context across conversations, remembers facts about you, sees your screen, controls your desktop, and speaks with a natural, varied personality.
+Diego is a **production-grade conversational desktop agent** for Linux. Unlike traditional voice assistants that merely execute commands, Diego is a **companion** — it maintains context across conversations, remembers facts about you, sees your screen, controls your desktop, and speaks with a natural, varied personality.
 
-Leo runs entirely on your machine. The core pipeline (wake word → speech recognition → intent understanding → action execution → speech synthesis) is **local-first**. Cloud LLMs (Gemini, OpenAI, Ollama) are used only as optional fallbacks for complex reasoning.
+Diego runs entirely on your machine. The core pipeline (wake word → speech recognition → intent understanding → action execution → speech synthesis) is **local-first**. Cloud LLMs (Gemini, OpenAI, Ollama) are used only as optional fallbacks for complex reasoning.
 
 ### The Philosophy
 
 | Principle | What it means |
 |-----------|---------------|
-| **Conversation First** | Leo is a companion, not a command executor. Greetings, thanks, and small talk never hit the planner or LLM. |
-| **Full Duplex** | You can interrupt Leo mid-sentence. Just start talking — TTS aborts instantly and Leo listens. |
+| **Conversation First** | Diego is a companion, not a command executor. Greetings, thanks, and small talk never hit the planner or LLM. |
+| **Full Duplex** | You can interrupt Diego mid-sentence. Just start talking — TTS aborts instantly and Diego listens. |
 | **Local First** | Everything critical runs offline. Wake word, STT, TTS, intent classification, face auth — all local. |
-| **Autonomous** | Leo acts on its own. "Open VS Code", "search GitHub", "play Spotify" — no confirmation prompts. |
-| **Always Alive** | Leo boots once and stays alive forever. It sleeps after a goodbye or ~60s of silence, then waits for the wake word again. |
-| **Memory** | Rolling conversation context + long-term fact storage + automatic summarization. "Remember my project is Leo" … later "what was my project called?" → answered instantly. |
+| **Autonomous** | Diego acts on its own. "Open VS Code", "search GitHub", "play Spotify" — no confirmation prompts. |
+| **Always Alive** | Diego boots once and stays alive forever. It sleeps after a goodbye or ~60s of silence, then waits for the wake word again. |
+| **Memory** | Rolling conversation context + long-term fact storage + automatic summarization. "Remember my project is Diego" … later "what was my project called?" → answered instantly. |
 
 ---
 
-## 🎯 Why Leo Exists
+## 🎯 Why Diego Exists
 
 Existing voice assistants (Siri, Alexa, Google Assistant) are:
 
@@ -65,7 +65,7 @@ Existing voice assistants (Siri, Alexa, Google Assistant) are:
 - **Closed** — can't control your desktop or see your screen
 - **Generic** — same personality for everyone
 
-Leo was built to be:
+Diego was built to be:
 
 - **Private** — everything critical runs locally
 - **Stateful** — remembers your projects, preferences, and conversations
@@ -77,11 +77,11 @@ Leo was built to be:
 
 ## 🏗 Core Architecture
 
-Leo uses a **layered, event-driven architecture** with clear separation of concerns. Every spoken command flows through a single pipeline:
+Diego uses a **layered, event-driven architecture** with clear separation of concerns. Every spoken command flows through a single pipeline:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                        LEO ARCHITECTURE                         │
+│                        DIEGO ARCHITECTURE                         │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
 │  ┌──────────┐   ┌──────────┐   ┌──────────┐   ┌──────────┐    │
@@ -125,7 +125,7 @@ Leo uses a **layered, event-driven architecture** with clear separation of conce
 
 | Subsystem | Module(s) | Role |
 |-----------|-----------|------|
-| **Wake Word** | `voice/wake_word.py`, `voice/wake_listener.py` | Always-listening wake word detection ("leo", "hey leo", "hello leo") using openWakeWord + ONNX |
+| **Wake Word** | `voice/wake_word.py`, `voice/wake_listener.py` | Always-listening wake word detection ("Diego", "hey Diego", "hello Diego") using openWakeWord + ONNX |
 | **Face Auth** | `auth/robust_auth.py`, `auth/live_auth.py` | Multi-frame voting, confidence averaging, head-pose detection, anti-spoofing. Camera opens ONLY after wake word. |
 | **Streaming STT** | `voice/streaming_stt.py` | Silero VAD + faster-whisper with endpointing and interruption detection |
 | **Streaming TTS** | `voice/streaming_tts.py` | Interruptible sentence-streamed TTS with provider chain: Kokoro → XTTS → Piper → pyttsx3 |
@@ -159,7 +159,7 @@ Everything streams concurrently — no blocking between stages:
 │                      FULL-DUPLEX STREAMING PIPELINE                  │
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                     │
-│  Wake ("leo" / "hey leo" / "hello leo")                             │
+│  Wake ("Diego" / "hey Diego" / "hello Diego")                             │
 │    │                                                                │
 │    ├──▶ Transcript verification (fuzzy + phonetic)                  │
 │    │                                                                │
@@ -173,7 +173,7 @@ Everything streams concurrently — no blocking between stages:
 │    ├──▶ Streaming Whisper (faster-whisper)          │  FULL DUPLEX  │
 │    │                                                │               │
 │    ├──▶ Streaming LLM (Ollama, token stream)        │  speak while  │
-│    │                                                │  Leo talks    │
+│    │                                                │  Diego talks    │
 │    ├──▶ Sentence-by-sentence generation             │  → instant    │
 │    │                                                │  TTS abort    │
 │    ├──▶ Streaming TTS (Kokoro → XTTS → Piper) ─────┘               │
@@ -190,10 +190,10 @@ Everything streams concurrently — no blocking between stages:
 
 ### What Full Duplex Feels Like
 
-- **Interrupt Leo mid-sentence** — just start talking. TTS aborts instantly and Leo listens.
+- **Interrupt Diego mid-sentence** — just start talking. TTS aborts instantly and Diego listens.
 - **Natural pauses** — pausing < 600ms doesn't cut you off.
 - **Filler words** — "umm", "wait", "hold on", "actually" keep your turn open.
-- **Stay awake** — after the wake word, Leo stays in conversation. No need to repeat "hey leo" every time.
+- **Stay awake** — after the wake word, Diego stays in conversation. No need to repeat "hey Diego" every time.
 - **Alive personality** — varied greetings ("Hey.", "Welcome back.", "Good morning."), never "How may I assist you?".
 
 ---
@@ -204,7 +204,7 @@ Everything streams concurrently — no blocking between stages:
 
 | Feature | Implementation |
 |---------|---------------|
-| Wake Word | openWakeWord + ONNX runtime — "leo", "hey leo", "hello leo" |
+| Wake Word | openWakeWord + ONNX runtime — "Diego", "hey Diego", "hello Diego" |
 | Wake Verification | Fuzzy + phonetic matching (RapidFuzz + Jellyfish metaphone) |
 | Speech-to-Text | faster-whisper (streaming partials + finals) with Silero VAD endpointing |
 | Text-to-Speech | Provider chain: Kokoro-82M → Coqui XTTS → Piper → pyttsx3 |
@@ -268,7 +268,7 @@ Everything streams concurrently — no blocking between stages:
 
 ## 🔧 Tech Stack & Rationale
 
-Every technology choice in Leo is deliberate. Here's what we use and **why**:
+Every technology choice in Diego is deliberate. Here's what we use and **why**:
 
 ### Core Runtime
 
@@ -339,9 +339,9 @@ Every technology choice in Leo is deliberate. Here's what we use and **why**:
 ## 📁 Project Structure
 
 ```
-leo_desktop_assistant/
+Diego_desktop_agent/
 │
-├── leo.py                          # 🚀 Conversational entry point (primary)
+├── Diego.py                          # 🚀 Conversational entry point (primary)
 ├── main.py                         # 🔧 Utility entry point (train, benchmark, debug)
 ├── compat.py                       # 🐍 Python 3.14 compatibility stubs
 ├── requirements.txt                # 📦 Dependencies
@@ -576,8 +576,8 @@ leo_desktop_assistant/
 ### 1. Clone & Setup
 
 ```bash
-git clone https://github.com/NASHEDIxCODER/leo_desktop_assistant.git
-cd leo_desktop_assistant
+git clone https://github.com/NASHEDIxCODER/Diego_desktop_agent.git
+cd Diego_desktop_agent
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
@@ -601,35 +601,35 @@ sudo pacman -S portaudio espeak tesseract
 
 ```bash
 cp .env.example .env
-# Edit .env with your API keys (optional — Leo works fully offline)
+# Edit .env with your API keys (optional — Diego works fully offline)
 ```
 
 ### 4. Run
 
 ```bash
-python leo.py              # Start conversational Leo (recommended)
-python leo.py --no-auth    # Skip face auth (development only)
-python leo.py --status     # Show subsystem status
+python Diego.py              # Start conversational Diego (recommended)
+python Diego.py --no-auth    # Skip face auth (development only)
+python Diego.py --status     # Show subsystem status
 ```
 
 ---
 
 ## 📋 Usage
 
-### Primary Entry Point: `leo.py`
+### Primary Entry Point: `Diego.py`
 
 ```bash
-python leo.py                 # Start conversational Leo
-python leo.py --no-auth       # Skip face authentication
-python leo.py --status        # Check subsystem health
-python leo.py debug vision    # Live vision debug overlay
-python leo.py inspect screen  # Comprehensive screen inspection report
+python Diego.py                 # Start conversational Diego
+python Diego.py --no-auth       # Skip face authentication
+python Diego.py --status        # Check subsystem health
+python Diego.py debug vision    # Live vision debug overlay
+python Diego.py inspect screen  # Comprehensive screen inspection report
 ```
 
 ### Utility Entry Point: `main.py`
 
 ```bash
-python main.py                # Same as `python leo.py`
+python main.py                # Same as `python Diego.py`
 python main.py --train        # Train NLP model with generated examples
 python main.py --status       # Show NLP model status
 python main.py --benchmark    # Run NLP benchmarks
@@ -639,17 +639,17 @@ python main.py --train-wake   # Record wake phrases + train custom verifier
 python main.py --record-session  # Record conversation turns to JSON
 ```
 
-### What Happens When You Run Leo
+### What Happens When You Run Diego
 
 1. **Boot** — Environment fixes, Python 3.14 compatibility shims, logging setup
 2. **Model Loading** — Wake word model, Whisper, Kokoro TTS, Silero VAD, sentence-transformers
 3. **Audio Init** — Microphone calibration, noise floor measurement, ring buffer setup
-4. **Wait for Wake** — Leo listens silently for "leo", "hey leo", or "hello leo"
+4. **Wait for Wake** — Diego listens silently for "Diego", "hey Diego", or "hello Diego"
 5. **Wake Detected** → Transcript verification (fuzzy + phonetic)
 6. **Face Auth** — Camera opens, verifies your face (skipped with `--no-auth`)
-7. **Conversation** — Full-duplex streaming: you talk, Leo listens, thinks, speaks
-8. **Sleep** — After 60s of silence or "goodbye", Leo goes back to wake listening
-9. **Leo NEVER exits on its own** — it stays alive until you press Ctrl+C
+7. **Conversation** — Full-duplex streaming: you talk, Diego listens, thinks, speaks
+8. **Sleep** — After 60s of silence or "goodbye", Diego goes back to wake listening
+9. **Diego NEVER exits on its own** — it stays alive until you press Ctrl+C
 
 ---
 
@@ -702,12 +702,12 @@ python main.py --record-session  # Record conversation turns to JSON
 
 | Command | Action |
 |---------|--------|
-| "Hello" / "Hey Leo" / "Good morning" | Greeting (varied response) |
+| "Hello" / "Hey Diego" / "Good morning" | Greeting (varied response) |
 | "How are you?" | Status check |
 | "What time is it?" / "What's the date?" | Time/date query |
 | "Tell me a joke" | Entertainment |
 | "What can you do?" | Capability listing |
-| "Remember my project is called Leo" | Store fact in long-term memory |
+| "Remember my project is called Diego" | Store fact in long-term memory |
 | "What was my project called?" | Recall from memory |
 | "Goodbye" / "Stop listening" / "Cancel" | End conversation, return to wake |
 
@@ -725,7 +725,7 @@ All configuration is centralized in `config/settings.py` using **Pydantic Settin
 | `TELEGRAM_API_ID` | Telegram API ID | — |
 | `TELEGRAM_API_HASH` | Telegram API hash | — |
 | `LOG_LEVEL` | Log level | `INFO` |
-| `WAKE_WORD` | Wake word phrase | `hello leo` |
+| `WAKE_WORD` | Wake word phrase | `hello Diego` |
 | `MODEL_NAME` | sentence-transformers model | `all-MiniLM-L6-v2` |
 | `SIMILARITY_THRESHOLD` | Intent match threshold | `0.75` |
 | `KNOWN_ENCODINGS_PATH` | Face encodings file | `auth/Known_encodings.p` |
@@ -778,5 +778,5 @@ MIT License — see the [LICENSE](LICENSE) file for details.
 ---
 
 <p align="center">
-  <strong>🦁 Leo Desktop Assistant</strong> — Crafted with ❤️ by <a href="https://github.com/NASHEDIxCODER">NASHEDI_X_CODER</a>
+  <strong>🦁 Diego Desktop Assistant</strong> — Crafted with ❤️ by <a href="https://github.com/NASHEDIxCODER">NASHEDI_X_CODER</a>
 </p>

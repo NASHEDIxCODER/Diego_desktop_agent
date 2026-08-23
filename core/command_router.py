@@ -472,7 +472,7 @@ _COMPILED_SIMPLE = [(re.compile(p, re.IGNORECASE), action, params)
 # ── Conversational patterns (small talk, no LLM needed) ────────────
 
 _CONVERSATION_PATTERNS = {
-    re.compile(r"^hey\s*$|^hi\s*$|^hello\s*$|^hey\s+leo\s*$|^hi\s+leo\s*$|^hello\s+leo\s*$", re.IGNORECASE):
+    re.compile(r"^hey\s*$|^hi\s*$|^hello\s*$|^hey\s+Diego\s*$|^hi\s+Diego\s*$|^hello\s+Diego\s*$", re.IGNORECASE):
         ["Hey.", "Hi there.", "Hello.", "Hey! What's up?"],
 
     re.compile(r"^how\s+are\s+you\??$", re.IGNORECASE):
@@ -491,7 +491,7 @@ _CONVERSATION_PATTERNS = {
         ["I can open apps, control music, adjust volume and brightness, search the web, read your screen, and help with your projects. Just ask."],
 
     re.compile(r"^(?:who\s+are\s+you|what\s+are\s+you|what\s+is\s+your\s+name)\??$", re.IGNORECASE):
-        ["I'm Leo, your desktop assistant."],
+        ["I'm Diego, your desktop assistant."],
 
     re.compile(r"^(?:who\s+(?:made|created|built)\s+you)\??$", re.IGNORECASE):
         ["I was created by Yeshu."],
@@ -774,11 +774,11 @@ class CommandRouter:
 
             # ── Affirmation ("yes", "yeah", "sure", "ok") ──
             if text_lower in ("yes", "yeah", "yep", "sure", "ok", "okay", "go ahead", "do it"):
-                # Check if Leo recently asked a question
+                # Check if Diego recently asked a question
                 recent = conv_memory.get_recent_turns(3)
                 for turn in reversed(recent):
                     if turn.role == "assistant" and "?" in turn.text:
-                        # Leo asked something — user is affirming
+                        # Diego asked something — user is affirming
                         # Execute the last suggested action
                         if conv_memory._last_goal:
                             return f"Continuing with {conv_memory._last_goal}."

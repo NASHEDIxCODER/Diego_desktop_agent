@@ -1,5 +1,5 @@
 """
-Entity extractor for Leo NLP pipeline.
+Entity extractor for Diego NLP pipeline.
 
 Uses spaCy NER and regex patterns to extract entities
 like names, numbers, dates, and custom slot values.

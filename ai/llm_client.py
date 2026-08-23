@@ -1,5 +1,5 @@
 """
-LLM client for Leo Desktop Assistant.
+LLM client for Diego Desktop Assistant.
 
 Uses Ollama HTTP API directly (no OpenAI SDK dependency).
 If Ollama is unavailable, replies gracefully without traceback.
@@ -22,7 +22,7 @@ from config.settings import settings
 logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = (
-    "You are Leo — a friendly AI desktop assistant. "
+    "You are Diego — a friendly AI desktop assistant. "
     "Give short answers (1–2 sentences). "
     "Speak casually like a helpful friend. "
     "Do NOT mention that you are an AI. "

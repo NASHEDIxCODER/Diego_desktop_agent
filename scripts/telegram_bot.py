@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 API_ID = 35010936
 API_HASH = "ebea5ed66cad2c023c000cc7e284ac21"
-SESSION = "leo_telegram"
+SESSION = "Diego_telegram"
 
 # Lazy client — created only on first use
 _client = None

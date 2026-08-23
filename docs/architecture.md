@@ -1,8 +1,8 @@
-# Leo Desktop Assistant — Architecture
+# Diego Desktop Assistant — Architecture
 
 ## Overview
 
-Leo is a modular, production-grade AI desktop assistant. It uses a pipeline architecture:
+Diego is a modular, production-grade AI desktop assistant. It uses a pipeline architecture:
 
 ```
 Speech → STT → Preprocessor → Intent Classifier → Entity Extractor
@@ -21,7 +21,7 @@ Everything else executes **locally**.
 ## Directory Structure
 
 ```
-leo_desktop_assistant/
+Diego_desktop_agent/
 ├── main.py                 # Entry point
 ├── config/
 │   ├── __init__.py
@@ -251,7 +251,7 @@ await trainer.train(examples_per_intent=100)
 
 # Evaluate
 test_cases = {
-    "greeting": ["hello", "hi leo", "good morning"],
+    "greeting": ["hello", "hi Diego", "good morning"],
     "exit": ["goodbye", "bye", "see you later"],
     # ... add more test cases
 }

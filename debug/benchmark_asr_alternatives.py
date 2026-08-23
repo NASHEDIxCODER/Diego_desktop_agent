@@ -1,5 +1,5 @@
 """
-Leo ASR Alternatives Benchmark — objective comparison of local ASR engines.
+Diego ASR Alternatives Benchmark — objective comparison of local ASR engines.
 
 Candidates:
   1. Qwen3-ASR 0.6B INT8 (sherpa-onnx)
@@ -236,7 +236,7 @@ def run_benchmark(quick: bool, only: Optional[List[str]],
 def format_report(report: dict) -> str:
     lines = []
     lines.append("=" * 78)
-    lines.append("  LEO ASR ALTERNATIVES BENCHMARK")
+    lines.append("  DIEGO ASR ALTERNATIVES BENCHMARK")
     lines.append("=" * 78)
     lines.append(f"  Commands: {report['total_commands']}")
     lines.append("")
@@ -283,14 +283,14 @@ def format_report(report: dict) -> str:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Leo ASR alternatives benchmark")
+    parser = argparse.ArgumentParser(description="Diego ASR alternatives benchmark")
     parser.add_argument("--quick", action="store_true", help="20-command smoke test")
     parser.add_argument("--models", type=str, default=None,
                         help="Comma-separated provider names to test")
     parser.add_argument("--audio-dir", type=Path, default=None,
                         help="Use real recordings from this directory")
     parser.add_argument("--report", action="store_true", help="Print last report only")
-    parser.add_argument("--out-dir", type=Path, default=Path("/tmp/leo_asr_alt_benchmark"))
+    parser.add_argument("--out-dir", type=Path, default=Path("/tmp/Diego_asr_alt_benchmark"))
     args = parser.parse_args()
 
     if args.report:

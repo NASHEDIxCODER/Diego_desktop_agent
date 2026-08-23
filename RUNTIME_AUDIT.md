@@ -1,4 +1,4 @@
-# RUNTIME_AUDIT.md — Leo Desktop Assistant Forensic Audit
+# RUNTIME_AUDIT.md — Diego Desktop Assistant Forensic Audit
 
 Scope: entire repository, runtime entry points, voice pipeline, state machine,
 threads, asyncio tasks, queues, locks, shared audio buffers, shutdown paths.
@@ -13,9 +13,9 @@ engine-level wake→command transition yet.
 
 | Component | Thread/Task | Inputs | Outputs | Shared resources | Blocking points | Race conditions | Failure handling | Symptoms | Proposed fix |
 |---|---|---|---|---|---|---|---|---|---|
-| `main.py` / `leo.py` `run()` | main thread → `asyncio.run(_main_async)` | argv, env | log/status | env vars, signals | module imports | none (single-threaded bootstrap) | `run()` swallows KeyboardInterrupt only | intentional env fixes; heavy imports lazy | none | keep |
-| `leo.py` `_main_async()` | 1 event loop, `run_task` + `stop_task` | signals | none | `asyncio.Event` stop | `stop.wait()` (intentional) | `asyncio.wait` FIRST_COMPLETED | cancels pending, calls `shutdown()` | clean Ctrl+C path | none | keep; add hard shutdown timeout |
-| `leo.py` `run_leo()` | `engine_task`, `background_learner` task | none | logs | singletons | model loads via executor | engine task vs learner | finally cancels engine + stops learner | loaded models once | none | keep |
+| `main.py` / `Diego.py` `run()` | main thread → `asyncio.run(_main_async)` | argv, env | log/status | env vars, signals | module imports | none (single-threaded bootstrap) | `run()` swallows KeyboardInterrupt only | intentional env fixes; heavy imports lazy | none | keep |
+| `Diego.py` `_main_async()` | 1 event loop, `run_task` + `stop_task` | signals | none | `asyncio.Event` stop | `stop.wait()` (intentional) | `asyncio.wait` FIRST_COMPLETED | cancels pending, calls `shutdown()` | clean Ctrl+C path | none | keep; add hard shutdown timeout |
+| `Diego.py` `run_Diego()` | `engine_task`, `background_learner` task | none | logs | singletons | model loads via executor | engine task vs learner | finally cancels engine + stops learner | loaded models once | none | keep |
 
 ## 2. ConversationEngine (`core/conversation_engine.py`)
 
@@ -118,7 +118,7 @@ verify path and `wake_word.py` lines 159-181). Confirm with tests.
 
 Unused by the live engine (the engine owns its own `EngineState`). This is a **parallel
 nervous system** with `timeout_watchdog` and `recover()` but is not wired into
-`run_leo`. Document as dormant/duplicate; not changing architecture per task constraints.
+`run_Diego`. Document as dormant/duplicate; not changing architecture per task constraints.
 
 ## 15. StreamingSTT (`voice/streaming_stt.py`)
 
@@ -126,7 +126,7 @@ Legacy/duplicate STT. NOT imported by `core/conversation_engine.py` (the engine 
 `voice/command_listener.py`). Contains its own `_SileroVAD` and `_WhisperTranscriber`.
 Leaving untouched (do not remove working components, do not refactor architecture).
 
-## 16. Shutdown path (`leo.py` shutdown(), `audio_manager.stop()`)
+## 16. Shutdown path (`Diego.py` shutdown(), `audio_manager.stop()`)
 
 Order today: set `_running=False` → save session → TTS close → command listener cancel →
 audio shutdown_event + stop → face auth close. Mostly correct. Missing a **hard upper

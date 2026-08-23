@@ -1,5 +1,5 @@
 """
-Pluggable TTS architecture for Leo Desktop Assistant.
+Pluggable TTS architecture for Diego Desktop Assistant.
 
 Priority order:
 1. Kokoro (lightweight, fast, natural)

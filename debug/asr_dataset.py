@@ -1,7 +1,7 @@
 """
-Leo ASR command dataset — shared ground truth for benchmark + recording.
+Diego ASR command dataset — shared ground truth for benchmark + recording.
 
-Defines 100+ real Leo utterances across:
+Defines 100+ real Diego utterances across:
   - English commands
   - Natural speech (wake-word prefixed, corrections, follow-ups)
   - Hindi / Hinglish
@@ -76,19 +76,19 @@ COMMANDS: List[Tuple[str, str, str, str]] = [
     ("how are you", "how are you", "en", "english"),
 
     # ── Natural speech (wake-word prefixed, corrections, follow-ups) ──
-    ("hey leo open youtube", "open youtube", "en", "natural"),
-    ("leo can you open firefox", "open firefox", "en", "natural"),
+    ("hey Diego open youtube", "open youtube", "en", "natural"),
+    ("Diego can you open firefox", "open firefox", "en", "natural"),
     ("actually open vscode instead", "open vscode", "en", "natural"),
     ("no cancel that", "cancel", "en", "natural"),
     ("continue", "continue", "en", "natural"),
     ("open it again", "open it again", "en", "natural"),
-    ("hey leo play some music", "play music", "en", "natural"),
-    ("leo please open chrome", "open chrome", "en", "natural"),
+    ("hey Diego play some music", "play music", "en", "natural"),
+    ("Diego please open chrome", "open chrome", "en", "natural"),
     ("can you search youtube", "search youtube", "en", "natural"),
     ("i want to open spotify", "open spotify", "en", "natural"),
     ("go ahead and open terminal", "open terminal", "en", "natural"),
     ("just open settings please", "open settings", "en", "natural"),
-    ("hey leo what time is it", "what time is it", "en", "natural"),
+    ("hey Diego what time is it", "what time is it", "en", "natural"),
     ("actually pause the music", "pause music", "en", "natural"),
     ("no stop that", "stop", "en", "natural"),
     ("never mind", "cancel", "en", "natural"),

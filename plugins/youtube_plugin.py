@@ -1,5 +1,5 @@
 """
-YouTube Plugin for Leo Desktop Assistant.
+YouTube Plugin for Diego Desktop Assistant.
 
 Fully async with configurable timeouts.
 Browser is lazy-initialized and reused across calls.
@@ -46,7 +46,7 @@ class YouTubePlugin(BasePlugin):
             name="YouTube",
             version="3.0.0",
             description="Hands-free YouTube control via voice",
-            author="Leo Team",
+            author="Diego Team",
             commands=[
                 "play music on youtube", "open youtube", "pause", "resume",
                 "next song", "previous song", "volume up/down", "mute",

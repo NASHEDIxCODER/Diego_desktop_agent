@@ -94,9 +94,9 @@ class CommandListenerConfig:
     partial_max_freq_s: float = 1.0      # max partial frequency (1/sec)
     partial_rolling_context_s: float = 2.5  # rolling context window for partials
     # TASK 6: partial transcription is DEBUG/HINT ONLY. Disabled by default
-    # unless LEO_AUDIO_PARTIALS=1 is set. Partials must never affect VAD,
+    # unless DIEGO_AUDIO_PARTIALS=1 is set. Partials must never affect VAD,
     # endpoint, final transcript, or command execution.
-    partials_enabled: bool = os.environ.get("LEO_AUDIO_PARTIALS", "0") == "1"
+    partials_enabled: bool = os.environ.get("DIEGO_AUDIO_PARTIALS", "0") == "1"
     pre_roll_ms: int = 400            # Pre-roll to prevent first-word clipping
 
     # Transcript stabilization (kept for diagnostics only — NOT a gate).
@@ -270,7 +270,7 @@ class UtteranceEvent:
 
 
 # ── TASK 6: explicit failure reasons ──────────────────────────
-# Leo must NEVER silently return to wake mode after a detected speech
+# Diego must NEVER silently return to wake mode after a detected speech
 # attempt. Each failure path yields a "failure" UtteranceEvent with one of
 # these reasons so the ConversationEngine can speak a short response.
 FAILURE_MISUNDERSTOOD = "MISUNDERSTOOD"
@@ -766,7 +766,7 @@ class CommandListener:
                 break
 
             # ── TASK 8: Drain-on-resume (TTS guard) ──────────────
-            # Skip TTS-contaminated audio produced while Leo was speaking.
+            # Skip TTS-contaminated audio produced while Diego was speaking.
             # Reset the cursor to the current write head AND reset the VAD
             # state so the residual TTS tail is never classified as speech.
             if self._drain_requested:
@@ -1034,7 +1034,7 @@ class CommandListener:
                 # ── TASK 4/5: Partial transcription (HINTS ONLY, background) ──
                 # Partials NEVER block VAD/endpoint detection. They run as a
                 # background task with a single-inflight guard and rate limits.
-                # TASK 6: DISABLED by default (LEO_AUDIO_PARTIALS=1 to enable).
+                # TASK 6: DISABLED by default (DIEGO_AUDIO_PARTIALS=1 to enable).
                 if (cfg.partials_enabled
                         and state["state"] in (STATE_SPEECH, STATE_SILENCE)
                         and state["speech_samples"] >= partial_min_context_samples):
@@ -1290,7 +1290,7 @@ class CommandListener:
     # ── Interruption detection ─────────────────────────────
 
     async def detect_interruption(self, stop_event: asyncio.Event) -> None:
-        """Detect user speech while Leo is speaking."""
+        """Detect user speech while Diego is speaking."""
         if not self._ready:
             self.initialize()
         last_total = audio_manager.total_samples

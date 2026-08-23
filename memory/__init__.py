@@ -1,1 +1,1 @@
-# Leo Desktop Assistant - Memory Package
+# Diego Desktop Assistant - Memory Package

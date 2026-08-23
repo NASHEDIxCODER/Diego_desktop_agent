@@ -23,7 +23,7 @@ from agent.executor import agent_executor
 logger = logging.getLogger(__name__)
 
 # System prompt for the planner LLM
-PLANNER_SYSTEM_PROMPT = """You are Leo, a desktop AI agent that controls the user's computer.
+PLANNER_SYSTEM_PROMPT = """You are Diego, a desktop AI agent that controls the user's computer.
 
 Given a user request and the current context, create a step-by-step plan.
 

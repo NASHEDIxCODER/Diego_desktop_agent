@@ -1,5 +1,5 @@
 """
-Plugin Manager for Leo Desktop Assistant.
+Plugin Manager for Diego Desktop Assistant.
 
 Discovers, loads, and manages plugin lifecycle.
 Plugins are loaded from the plugins/ directory and

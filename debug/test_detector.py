@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Standalone face detector test for Leo Desktop Assistant.
+Standalone face detector test for Diego Desktop Assistant.
 
 Tests the multi-backend face detector with live camera feed.
 Shows raw frame, processed frame, detected faces, backend used, and latency.
@@ -204,7 +204,7 @@ def main():
                 label = f"{face.confidence:.2f} ({face.backend})"
                 cv.putText(display, label, (face.x, face.y - 5), cv.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
 
-            cv.imshow("Leo Face Detector Test", display)
+            cv.imshow("Diego Face Detector Test", display)
             key = cv.waitKey(1) & 0xFF
             if key == ord('q'):
                 break

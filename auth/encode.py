@@ -57,12 +57,12 @@ def encode_and_upload_faces():
             from firebase_admin import credentials, firestore
 
             options = {
-                'databaseURL': "https://leo-assit-default-rtdb.firebaseio.com/",
-                'storageBucket': "gs://leo-assit.appspot.com"
+                'databaseURL': "https://Diego-assit-default-rtdb.firebaseio.com/",
+                'storageBucket': "gs://Diego-assit.appspot.com"
             }
             cred = credentials.Certificate(str(service_account_path))
-            firebase_admin.initialize_app(cred, name="leo assist", options=options)
-            db = firestore.client(firebase_admin.get_app("leo assist"))
+            firebase_admin.initialize_app(cred, name="Diego assist", options=options)
+            db = firestore.client(firebase_admin.get_app("Diego assist"))
 
             faces_ref = db.collection('faces')
             for i, encoding in enumerate(Known_encodings):

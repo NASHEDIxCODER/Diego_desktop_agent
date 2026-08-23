@@ -1,1 +1,1 @@
-# Leo Desktop Assistant - AI/LLM Package
+# Diego Desktop Assistant - AI/LLM Package

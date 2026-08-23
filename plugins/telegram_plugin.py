@@ -1,5 +1,5 @@
 """
-Telegram Plugin for Leo Desktop Assistant.
+Telegram Plugin for Diego Desktop Assistant.
 
 Wraps the existing scripts/telegram_bot.py functionality as a
 BasePlugin with event bus integration.
@@ -51,7 +51,7 @@ class TelegramPlugin(BasePlugin):
             name="Telegram",
             version="2.0.0",
             description="Send, read and reply to Telegram messages",
-            author="Leo Team",
+            author="Diego Team",
             commands=[
                 "send message to [contact]", "read messages from [contact]",
                 "reply to last message",

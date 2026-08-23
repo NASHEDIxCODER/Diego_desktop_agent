@@ -1,1 +1,1 @@
-# Leo Desktop Assistant - Desktop Automation Package (future)
+# Diego Desktop Assistant - Desktop Automation Package (future)

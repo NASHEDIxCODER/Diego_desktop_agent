@@ -50,16 +50,16 @@ data = {
         'talk to you later', 'later', 'see ya', 'take care', 'bye bye',
         'i am leaving', 'shutdown', 'power off', 'sleep', 'good bye',
         'see you soon', 'catch you later', 'have to go', 'leaving now',
-        'close leo', 'stop', 'end', 'finish', 'done', 'thats all',
+        'close Diego', 'stop', 'end', 'finish', 'done', 'thats all',
         'im done', 'turn off', 'switch off', 'go to sleep', 'farewell',
         'im leaving now', 'thats enough', 'i am done'
     ],
     'greeting.json': [
         'hello', 'hi', 'hey', 'good morning', 'good afternoon', 'good evening',
         'whats up', 'yo', 'hey there', 'howdy', 'greetings', 'nice to see you',
-        'hello there', 'hiya', 'hey buddy', 'morning', 'good day', 'hi leo',
-        'hello leo', 'yo leo', 'hey leo', 'hi there', 'welcome', 'pleased to meet you',
-        'how do you do', 'hi friend', 'hey friend', 'greetings leo', 'hello again',
+        'hello there', 'hiya', 'hey buddy', 'morning', 'good day', 'hi Diego',
+        'hello Diego', 'yo Diego', 'hey Diego', 'hi there', 'welcome', 'pleased to meet you',
+        'how do you do', 'hi friend', 'hey friend', 'greetings Diego', 'hello again',
         'good to see you', 'long time no see', 'welcome back', 'hi hi'
     ],
     'help.json': [

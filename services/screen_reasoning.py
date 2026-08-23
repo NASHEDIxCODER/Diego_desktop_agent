@@ -1,5 +1,5 @@
 """
-ScreenReasoning — High-level semantic screen understanding for Leo.
+ScreenReasoning — High-level semantic screen understanding for Diego.
 
 Enhanced v3: integrates with the new vision pipeline stages 8 (Semantic Reasoning).
 

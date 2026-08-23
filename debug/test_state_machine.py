@@ -70,8 +70,8 @@ class FakeAudioManager:
 class FakeWakeModel:
     loaded = True
     threshold = 0.5
-    wake_phrase = "hello leo"
-    model_name = "fake_leo"
+    wake_phrase = "hello Diego"
+    model_name = "fake_Diego"
     load_error = None
 
     def __init__(self):
@@ -131,7 +131,7 @@ class _FakeWhisperBackend:
 
     def _text(self) -> str:
         self.calls += 1
-        return "hello leo" if self.calls == 1 else "what time is it"
+        return "hello Diego" if self.calls == 1 else "what time is it"
 
     def transcribe_detailed(self, _pcm, _sr=16000, _use_vad=False):
         text = self._text()

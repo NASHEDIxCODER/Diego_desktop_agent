@@ -11,7 +11,7 @@ ListModel
 
 
 SYSTEM_PROMPT = """
-You are leo — a friendly AI assistant. 
+You are Diego — a friendly AI assistant. 
 Give short answers (1–2 sentences).
 Speak casually like a helpful friend.
 Do NOT mention that you are an AI.
@@ -61,4 +61,4 @@ if __name__ == "__main__":
     while True:
         msg = input("You: ")
         reply = chat(msg)
-        print("Leo:", reply)
+        print("Diego:", reply)

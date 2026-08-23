@@ -1,5 +1,5 @@
 """
-Base plugin interface for Leo Desktop Assistant.
+Base plugin interface for Diego Desktop Assistant.
 
 All plugins must inherit from BasePlugin and implement
 the required methods. The PluginManager discovers,
@@ -34,7 +34,7 @@ class PluginMetadata:
 
 class BasePlugin(ABC):
     """
-    Abstract base class for all Leo plugins.
+    Abstract base class for all Diego plugins.
 
     Plugins hook into the event bus and provide slot-based
     functionality. They can handle events, execute commands,

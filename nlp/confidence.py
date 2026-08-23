@@ -1,5 +1,5 @@
 """
-Confidence scoring for Leo NLP pipeline.
+Confidence scoring for Diego NLP pipeline.
 
 Computes confidence scores for intent classifications
 and determines when to fall back to LLM.

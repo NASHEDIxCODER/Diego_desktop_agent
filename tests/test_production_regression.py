@@ -1,5 +1,5 @@
 """
-Production Regression Tests — Leo must pass these before claiming production-ready.
+Production Regression Tests — Diego must pass these before claiming production-ready.
 
 Validates every stage of the pipeline with real failure scenarios.
 

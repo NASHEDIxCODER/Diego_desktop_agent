@@ -1,5 +1,5 @@
 """
-Brightness Control Plugin for Leo Desktop Assistant.
+Brightness Control Plugin for Diego Desktop Assistant.
 
 Wraps the existing scripts/brightness.py functionality as a
 BasePlugin with event bus integration.
@@ -41,7 +41,7 @@ class BrightnessPlugin(BasePlugin):
             name="Brightness",
             version="2.0.0",
             description="Control screen brightness via voice",
-            author="Leo Team",
+            author="Diego Team",
             commands=["set brightness to N", "brightness up", "brightness down"],
             events=["brightness_set", "brightness_up", "brightness_down"],
         )

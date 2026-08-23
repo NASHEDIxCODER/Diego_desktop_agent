@@ -1,5 +1,5 @@
 """
-Voice subsystem for Leo Desktop Assistant.
+Voice subsystem for Diego Desktop Assistant.
 
 CLEAN ARCHITECTURE (2026-08-05):
 

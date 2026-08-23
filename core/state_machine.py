@@ -1,5 +1,5 @@
 """
-RuntimeStateMachine — Leo's production-grade runtime state machine.
+RuntimeStateMachine — Diego's production-grade runtime state machine.
 
 Siri-style lifecycle (Problem 8):
 
@@ -46,7 +46,7 @@ the wake detector is NEVER active.
 Design goals:
   * Every transition is validated against a legal transition table.
   * Any state can RECOVER after a subsystem failure — a single failure
-    NEVER terminates Leo.
+    NEVER terminates Diego.
   * State changes are broadcast on the event bus (`runtime.state`).
   * A bounded history is retained for the runtime dashboard.
   * The machine is thread-safe (used from async event loop only).
@@ -381,7 +381,7 @@ class RuntimeStateMachine:
         3. The handlers (orchestrator) decide the return state.
         4. Returns the chosen recovery target state.
 
-        Leo NEVER terminates because of one subsystem — this is the
+        Diego NEVER terminates because of one subsystem — this is the
         guarantee this machine enforces.
         """
         self._recovery_count += 1

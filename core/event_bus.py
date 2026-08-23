@@ -1,5 +1,5 @@
 """
-Async Event Bus for Leo Desktop Assistant.
+Async Event Bus for Diego Desktop Assistant.
 
 Decouples components via publish/subscribe pattern.
 Plugins and internal modules communicate through the bus

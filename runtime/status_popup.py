@@ -1,5 +1,5 @@
 """
-StatusPopup — Tiny always-on-top floating window for Leo's runtime state.
+StatusPopup — Tiny always-on-top floating window for Diego's runtime state.
 
 Shows (Problem 9):
   - Current state: Waiting for wake word / Listening / Thinking / Speaking /
@@ -9,7 +9,7 @@ Shows (Problem 9):
   - Face box (during face auth)
   - Conversation timer (countdown to session timeout)
   - Current transcript (what the user said)
-  - Current response (what Leo is saying)
+  - Current response (what Diego is saying)
   - Tool currently executing
 
 THREAD-SAFETY MODEL (same as FaceAuthPopup):
@@ -87,7 +87,7 @@ class PopupStatus:
 class StatusPopup:
     """Main-thread-marshalled status popup. Owns NO GUI thread."""
 
-    def __init__(self, title: str = "Leo"):
+    def __init__(self, title: str = "Diego"):
         self._title = title
         self._win = None
         self._canvas = None
@@ -216,7 +216,7 @@ class StatusPopup:
         r = 14
         self._round_rect(c, 4, 4, WIN_W-4, WIN_H-4, r, fill=CARD,
                          outline="#23262e", width=1, tags="card")
-        c.create_text(16, 20, text="🎙  Leo", anchor="w",
+        c.create_text(16, 20, text="🎙  Diego", anchor="w",
                       fill=FG, font=("Segoe UI", 11, "bold"), tags="card")
 
     @staticmethod
@@ -295,7 +295,7 @@ class StatusPopup:
 
         # ── Current response ──
         if st.response:
-            c.create_text(16, 142, text="Leo:", anchor="w", fill=SUB,
+            c.create_text(16, 142, text="Diego:", anchor="w", fill=SUB,
                           font=("Segoe UI", 8, "bold"), tags="content")
             c.create_text(16, 156, text=st.response[:60], anchor="w",
                           fill=ACCENT, font=("Segoe UI", 9), width=WIN_W-32,

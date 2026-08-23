@@ -1,7 +1,7 @@
 """
-CodeAssistant — Multi-language code understanding for Leo.
+CodeAssistant — Multi-language code understanding for Diego.
 
-Leo understands code visible on screen or in clipboard content:
+Diego understands code visible on screen or in clipboard content:
   - Errors and warnings (compiler output, linters, type checkers)
   - Tracebacks (Python, Java, Go, Rust, JavaScript, C++)
   - Test output (pytest, go test, cargo test, jest, etc.)

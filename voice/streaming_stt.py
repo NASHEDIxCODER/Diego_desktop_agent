@@ -1,5 +1,5 @@
 """
-StreamingSTT — True streaming speech recognition for Leo.
+StreamingSTT — True streaming speech recognition for Diego.
 
 Implements a Gemini-Live-style continuous transcription pipeline:
 
@@ -742,7 +742,7 @@ class StreamingSTT:
         return self._ready
 
     def pause_listening(self) -> None:
-        """Mute STT — used during TTS playback to prevent Leo from
+        """Mute STT — used during TTS playback to prevent Diego from
         transcribing his own voice."""
         self._listen_enabled.clear()
         logger.info("[STREAM-STT] Listening PAUSED (TTS guard)")
@@ -847,7 +847,7 @@ class StreamingSTT:
             # When resume_listening() is called after TTS ends, it sets
             # _drain_requested.  We jump last_total to the current write
             # position (total_samples), discarding all audio that arrived
-            # during TTS playback.  This prevents Leo from transcribing
+            # during TTS playback.  This prevents Diego from transcribing
             # his own voice as a phantom user command.
             if self._drain_requested:
                 self._drain_requested = False
@@ -1220,7 +1220,7 @@ class StreamingSTT:
         for i in range(0, n - FRAME_SAMPLES + 1, step):
             yield i, audio[i:i + FRAME_SAMPLES]
 
-    # ── Interruption detection while Leo speaks ───────────
+    # ── Interruption detection while Diego speaks ───────────
 
     async def detect_interruption(self, stop_event: asyncio.Event) -> None:
         if not self._ready:

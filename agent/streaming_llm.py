@@ -1,5 +1,5 @@
 """
-StreamingLLM — Token-streaming LLM client for conversational Leo.
+StreamingLLM — Token-streaming LLM client for conversational Diego.
 
 Replaces the blocking `llm_client.chat()` with a streaming pipeline:
   - Streams tokens from Ollama as they are generated
@@ -9,7 +9,7 @@ Replaces the blocking `llm_client.chat()` with a streaming pipeline:
   - Integrates conversation memory + personality
 
 This enables the "begin speaking after the first meaningful sentence"
-behavior that makes Leo feel like ChatGPT Voice / Gemini Live.
+behavior that makes Diego feel like ChatGPT Voice / Gemini Live.
 
 Usage:
     from agent.streaming_llm import streaming_llm
@@ -33,8 +33,8 @@ from agent.personality import personality
 logger = logging.getLogger(__name__)
 
 
-# Leo's conversational system prompt — makes Leo an autonomous desktop agent
-LEO_SYSTEM_PROMPT = """You are Leo — an autonomous desktop agent that lives on the user's computer.
+# Diego's conversational system prompt — makes Diego an autonomous desktop agent
+DIEGO_SYSTEM_PROMPT = """You are Diego — an autonomous desktop agent that lives on the user's computer.
 
 CORE IDENTITY:
 - You are NOT a chatbot. You are a desktop agent that sees, thinks, and acts.
@@ -266,7 +266,7 @@ class StreamingLLM:
             user_text: What the user said.
             cancel_event: If set, generation stops immediately (interruption).
             screen_context: Optional description of what's currently on screen.
-                Injected into the prompt so Leo can answer "what is going on"
+                Injected into the prompt so Diego can answer "what is going on"
                 or act on "click here" requests.
 
         Yields:
@@ -297,12 +297,12 @@ class StreamingLLM:
         conv_memory.add_user(user_text)
         context = conv_memory.build_context()
 
-        prompt_parts = [LEO_SYSTEM_PROMPT]
+        prompt_parts = [DIEGO_SYSTEM_PROMPT]
         if screen_context:
             prompt_parts.append(f"\nScreen context:\n{screen_context}")
         if context:
             prompt_parts.append(f"\nContext:\n{context}")
-        prompt_parts.append(f"\nUser: {user_text}\nLeo:")
+        prompt_parts.append(f"\nUser: {user_text}\nDiego:")
         prompt = "\n".join(prompt_parts)
 
         payload = {
@@ -411,7 +411,7 @@ class StreamingLLM:
     def _format_memory_answer(question: str, fact: str) -> str:
         """Turn a stored fact into a natural spoken answer."""
         q = question.lower()
-        # "my project is Leo" + "what was my project called?" → "Your project is Leo."
+        # "my project is Diego" + "what was my project called?" → "Your project is Diego."
         if "called" in q or "name" in q:
             fact = re.sub(r"^my\s+", "your ", fact, flags=re.IGNORECASE)
             return f"Your {fact.split('your ', 1)[-1]}." if "your " in fact else f"{fact.capitalize()}."

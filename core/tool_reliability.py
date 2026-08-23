@@ -1,5 +1,5 @@
 """
-ToolReliability — Confidence scores for every tool/action Leo can perform.
+ToolReliability — Confidence scores for every tool/action Diego can perform.
 
 Maintains per-tool confidence scores based on success/failure history.
 The planner automatically prefers higher-confidence tools.
@@ -231,7 +231,7 @@ class ToolStats:
 
 class ToolReliability:
     """
-    Maintains confidence scores for every tool Leo can use.
+    Maintains confidence scores for every tool Diego can use.
 
     The planner queries this before selecting tools. Higher-confidence
     tools are preferred. Failed tools are deprioritized.

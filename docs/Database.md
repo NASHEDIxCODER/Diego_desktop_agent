@@ -1,6 +1,6 @@
 # Database Layer — DuckDB
 
-Leo Desktop Assistant uses **DuckDB** as its embedded database engine. This document
+Diego Desktop Assistant uses **DuckDB** as its embedded database engine. This document
 covers DuckDB-specific design decisions, SQL dialect differences, and migration notes.
 
 ---
@@ -114,14 +114,14 @@ rather than `VALUES`.
 
 ## 4. Migration from Old Schema
 
-If you have an existing `data/leo.duckdb` file created with the old PostgreSQL-style
+If you have an existing `data/Diego.duckdb` file created with the old PostgreSQL-style
 schema (sequences + `nextval`), the schema is **already compatible** since DuckDB
 uses the same sequence mechanism. Only the ID retrieval pattern changed.
 
 ### Option A — Delete and recreate (clean slate)
 
 ```bash
-rm data/leo.duckdb data/leo.duckdb.wal
+rm data/Diego.duckdb data/Diego.duckdb.wal
 ```
 
 The store will recreate all tables with the correct schema on next startup.

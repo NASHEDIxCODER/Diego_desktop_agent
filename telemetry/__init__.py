@@ -1,1 +1,1 @@
-# Leo Desktop Assistant - Telemetry Package
+# Diego Desktop Assistant - Telemetry Package

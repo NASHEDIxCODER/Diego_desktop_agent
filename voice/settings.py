@@ -1,5 +1,5 @@
 """
-VoiceSettings — Runtime voice configuration for Leo.
+VoiceSettings — Runtime voice configuration for Diego.
 
 Provides runtime-configurable voice parameters that can be
 changed without restarting the assistant. All settings are
@@ -15,7 +15,7 @@ Settings:
   TTS_STREAMING: Enable streaming playback (true/false)
   VOICE_PITCH: Voice pitch (0.5 to 2.0, default 1.0)
   WAKE_WORD: Wake word phrase
-  WAKE_PHRASE: Phrase used for wake detection ("hello leo")
+  WAKE_PHRASE: Phrase used for wake detection ("hello Diego")
   WAKE_MODEL: Path to a local ONNX wake model (optional)
   WAKE_SENSITIVITY: Wake word detection sensitivity (0.0 to 1.0)
   LANG_CODE: Language code for STT
@@ -124,9 +124,9 @@ class VoiceSettings:
         if os.getenv("VOICE_ID"):
             self.voice_id = os.getenv("VOICE_ID", "default")
         if os.getenv("WAKE_WORD"):
-            self.wake_word = os.getenv("WAKE_WORD", "leo")
+            self.wake_word = os.getenv("WAKE_WORD", "Diego")
         if os.getenv("WAKE_PHRASE"):
-            self.wake_phrase = os.getenv("WAKE_PHRASE", "hello leo")
+            self.wake_phrase = os.getenv("WAKE_PHRASE", "hello Diego")
         if os.getenv("WAKE_MODEL"):
             self.wake_model = os.getenv("WAKE_MODEL")
         if os.getenv("LANG_CODE"):

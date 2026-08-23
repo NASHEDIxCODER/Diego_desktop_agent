@@ -1,5 +1,5 @@
 """
-Embedding generation for Leo NLP pipeline.
+Embedding generation for Diego NLP pipeline.
 
 Uses sentence-transformers to generate semantic embeddings
 for intent matching and similarity search.

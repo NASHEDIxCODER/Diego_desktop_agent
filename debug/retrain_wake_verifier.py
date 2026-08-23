@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Retrain the openWakeWord custom verifier for "hello leo" — DETERMINISTIC.
+Retrain the openWakeWord custom verifier for "hello Diego" — DETERMINISTIC.
 
 Root causes fixed here (all proven offline against the installed
 openwakeword package):
@@ -65,7 +65,7 @@ NON_WAKE_PHRASES = [
     "open the terminal", "search google for news",
 ]
 
-# Synthetic CLEAN "hello leo" positives (engine, voice, speed): the user's
+# Synthetic CLEAN "hello Diego" positives (engine, voice, speed): the user's
 # legacy recordings were captured through an overdriven pipeline (Whisper
 # hears nothing in them), so clean synthetic renderings teach the verifier
 # the phrase itself — any speaker, any clean capture — while the user
@@ -155,14 +155,14 @@ def build_dataset() -> bool:
             n_pos += 1
             write_wav_int16(POS / f"positive_{n_pos:03d}.wav", v)
 
-    # ── Synthetic clean "hello leo" positives (deterministic espeak) ──
+    # ── Synthetic clean "hello Diego" positives (deterministic espeak) ──
     for engine, voice, spd in SYNTH_WAKE_VOICES:
         cmd = [engine]
         if voice:
             cmd += ["-v", voice]
         if spd:
             cmd += ["-s", str(spd)]
-        cmd += ["-w", None, "hello leo"]  # placeholder for tmp path
+        cmd += ["-w", None, "hello Diego"]  # placeholder for tmp path
         tmp = tempfile.mktemp(suffix=".wav")
         cmd[cmd.index(None)] = tmp
         try:
@@ -189,7 +189,7 @@ def build_dataset() -> bool:
 
     # 2a. Non-wake speech via espeak (deterministic, offline). Every phrase
     # is rendered by BOTH engines and at several speeds so the verifier
-    # learns the "hello <not leo>" class robustly (a single rendering left
+    # learns the "hello <not Diego>" class robustly (a single rendering left
     # a measured blind spot: held-out 'hello everyone' scored 0.95).
     for phrase in NON_WAKE_PHRASES:
         for engine, extra in (("espeak-ng", []), ("espeak-ng", ["-s", "110"]),
@@ -208,7 +208,7 @@ def build_dataset() -> bool:
             _put("esp", audio.astype(np.float32) / 32768.0)
 
     # 2b. The wake chime must NEVER fire the detector.
-    for chime_name in ("leo.wav", "leo_voice_backup.wav"):
+    for chime_name in ("Diego.wav", "Diego_voice_backup.wav"):
         chime = ROOT / chime_name
         if chime.exists():
             a = read_wav_int16(chime)
@@ -294,7 +294,7 @@ def train() -> bool:
     from sklearn.preprocessing import FunctionTransformer, StandardScaler
 
     from voice.calibrate_wake import _select_base_model
-    base_model_path = _select_base_model("hello leo")
+    base_model_path = _select_base_model("hello Diego")
     if base_model_path is None:
         logger.error("No bundled base model found")
         return False
@@ -379,7 +379,7 @@ def train() -> bool:
     print(f"  detection_threshold = {threshold:.3f}")
 
     metadata = {
-        "wake_phrase": "hello leo",
+        "wake_phrase": "hello Diego",
         "base_model": base_stem,
         "verifier_path": "verifier.pkl",
         "positive_count": len(list(POS.glob('*.wav'))),
@@ -428,7 +428,7 @@ def validate() -> bool:
           f"{'OK' if wake >= thr else 'MISS'}")
     ok &= wake >= thr
 
-    for name, path in (("silence", None), ("chime", ROOT / "leo.wav")):
+    for name, path in (("silence", None), ("chime", ROOT / "Diego.wav")):
         if path is None:
             wmm.hard_reset()
             best = 0.0

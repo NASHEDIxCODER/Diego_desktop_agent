@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Standalone face authentication test for Leo Desktop Assistant.
+Standalone face authentication test for Diego Desktop Assistant.
 
 Tests the full face authentication pipeline:
   - Camera initialization

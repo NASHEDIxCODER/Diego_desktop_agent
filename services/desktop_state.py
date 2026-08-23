@@ -1,7 +1,7 @@
 """
 DesktopState — Real-time desktop context awareness.
 
-Leo knows what the user is doing without being told:
+Diego knows what the user is doing without being told:
 
     - Focused window (title + application)
     - Clipboard content (text only)
@@ -89,7 +89,7 @@ class DesktopSnapshot:
 
 class DesktopState:
     """
-    Real-time desktop awareness for Leo.
+    Real-time desktop awareness for Diego.
 
     Polls desktop state on demand. Never blocks the event loop.
     All methods are safe to call from any thread.
@@ -130,9 +130,9 @@ class DesktopState:
         Return a compact context block for LLM injection.
 
         Example output:
-            Window: PyCharm - leo_desktop_assistant
+            Window: PyCharm - Diego_desktop_agent
             Git: feature/planner-rewrite
-            Terminal: ~/projects/leo
+            Terminal: ~/projects/Diego
             Battery: 85% (charging)
             Browser: YouTube - "lofi hip hop"
         """

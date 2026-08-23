@@ -7,7 +7,7 @@ Never silently fails — every failure explains exactly why.
 Used by vision_service.analyze() to produce a complete audit trail.
 
 Also provides `inspect_screen()` — a comprehensive text report of the
-current screen state for the `leo inspect screen` command.
+current screen state for the `Diego inspect screen` command.
 """
 
 from __future__ import annotations
@@ -72,7 +72,7 @@ class ForensicReport:
         """Human-readable forensic report."""
         lines = [
             "=" * 72,
-            "  LEO VISION FORENSIC AUDIT",
+            "  DIEGO VISION FORENSIC AUDIT",
             "=" * 72,
             f"  Total latency: {self.total_latency_ms:.1f}ms",
             f"  Overall: {'PASS' if self.overall_success else 'FAIL'}",
@@ -221,7 +221,7 @@ class ForensicLogger:
         return self.StageContext(self, stage_num, name, input_summary)
 
 
-# ── Screen inspection (for `leo inspect screen` command) ──────
+# ── Screen inspection (for `Diego inspect screen` command) ──────
 
 def inspect_screen(ctx: Any) -> str:
     """
@@ -235,7 +235,7 @@ def inspect_screen(ctx: Any) -> str:
     """
     lines = [
         "=" * 60,
-        "  LEO SCREEN INSPECTION",
+        "  DIEGO SCREEN INSPECTION",
         "=" * 60,
         "",
     ]

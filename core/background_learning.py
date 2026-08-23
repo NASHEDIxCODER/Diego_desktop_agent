@@ -1,7 +1,7 @@
 """
-BackgroundLearning — Idle-time self-improvement for Leo.
+BackgroundLearning — Idle-time self-improvement for Diego.
 
-While the user is not speaking, Leo continuously learns:
+While the user is not speaking, Diego continuously learns:
   - Crawls trusted documentation and technical websites
   - Builds embeddings, summaries, and searchable knowledge
   - Updates a local knowledge base (no LLM retraining)
@@ -18,7 +18,7 @@ Usage:
     from core.background_learning import background_learner
 
     await background_learner.start()
-    # ... Leo runs ...
+    # ... Diego runs ...
     # Learner runs autonomously in the background during idle
 
     await background_learner.stop()
@@ -121,7 +121,7 @@ class BackgroundLearner:
 
     @property
     def is_idle(self) -> bool:
-        """True when Leo is idle and learning can run.
+        """True when Diego is idle and learning can run.
 
         CRITICAL FIX: The engine stores state in `_state` (private), not
         `state`. The EngineState enum has IDLE/WAKE/FACE_AUTH/LISTEN/

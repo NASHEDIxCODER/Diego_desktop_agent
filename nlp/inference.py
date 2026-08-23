@@ -1,5 +1,5 @@
 """
-Inference-only NLP engine for Leo.
+Inference-only NLP engine for Diego.
 
 - Loads pre-trained classifier from disk.
 - Loads cached embeddings from disk.
@@ -39,7 +39,7 @@ class InferenceEngine:
             return True
 
         if not is_model_ready():
-            logger.warning("No trained model found. Run: leo train")
+            logger.warning("No trained model found. Run: Diego train")
             return False
 
         # Load classifier

@@ -1,6 +1,6 @@
 # 🗑️ Delete.md — Useless Files & Components
 
-> **Safe to delete.** Removing any of the items listed below will have **zero impact** on Leo's runtime, voice pipeline, agent intelligence, or any production functionality.
+> **Safe to delete.** Removing any of the items listed below will have **zero impact** on Diego's runtime, voice pipeline, agent intelligence, or any production functionality.
 
 ---
 
@@ -39,7 +39,7 @@ patterns = [f"{app_name}.exe"]
 ```
 
 - **What it does**: Searches Windows filesystem for `WhatsApp.exe`
-- **Why it's useless**: Leo is a **Linux-only** desktop assistant. This script uses Windows paths, searches for `.exe` files, and has no imports or references from any other module in the project.
+- **Why it's useless**: Diego is a **Linux-only** desktop assistant. This script uses Windows paths, searches for `.exe` files, and has no imports or references from any other module in the project.
 - **Impact if deleted**: None. Zero references anywhere in the codebase.
 
 ---
@@ -124,7 +124,7 @@ desktop/
 
 - **What it is**: A runtime-generated JSON file for the knowledge base.
 - **Why it's useless**: This is runtime state, not source code. It should be in `.gitignore` (similar to `*.db`, `*.duckdb`, `*.pkl`). The knowledge base is rebuilt at runtime by `learning/learning_engine.py` and `agent/conversation_memory.py`.
-- **Impact if deleted**: None. Leo will regenerate it on next run if needed.
+- **Impact if deleted**: None. Diego will regenerate it on next run if needed.
 
 ---
 
@@ -188,5 +188,5 @@ rm docs/TRAINING_PIPELINE.md
 ---
 
 <p align="center">
-  <em>None of these deletions affect Leo's ability to wake, listen, think, speak, see, act, learn, or remember.</em>
+  <em>None of these deletions affect Diego's ability to wake, listen, think, speak, see, act, learn, or remember.</em>
 </p>

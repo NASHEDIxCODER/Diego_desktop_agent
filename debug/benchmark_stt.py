@@ -1,6 +1,6 @@
 """
 STT Benchmark — Measure command recognition accuracy, first-word detection,
-and transcription latency for Leo's streaming speech recognition pipeline.
+and transcription latency for Diego's streaming speech recognition pipeline.
 
 Usage:
     python debug/benchmark_stt.py                    # Run all benchmarks
@@ -610,7 +610,7 @@ class STTBenchmark:
         """Format a benchmark report as a readable string."""
         lines = []
         lines.append("=" * 70)
-        lines.append("  LEO STT BENCHMARK REPORT")
+        lines.append("  DIEGO STT BENCHMARK REPORT")
         lines.append("=" * 70)
         lines.append(f"  Commands tested:    {report.total_commands}")
         lines.append(f"  Successful:         {report.successful}")
@@ -919,7 +919,7 @@ def load_report() -> Optional[BenchmarkReport]:
 
 async def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Leo STT Benchmark — Measure speech recognition accuracy")
+        description="Diego STT Benchmark — Measure speech recognition accuracy")
     parser.add_argument("--quick", action="store_true",
                         help="Quick 20-command smoke test")
     parser.add_argument("--report", action="store_true",

@@ -2,7 +2,7 @@
 LiveAuth — Face authentication with a live popup UI.
 
 This is the NEW authentication flow. It runs ONLY after the wake word,
-NEVER at startup, and NEVER blocks Leo from booting.
+NEVER at startup, and NEVER blocks Diego from booting.
 
 NEW BEHAVIOUR (single-capture):
   - Opens the FaceAuthPopup and streams the webcam at ~30 FPS.

@@ -86,7 +86,7 @@ def _capture_screen_region(left=0, top=0, width=800, height=600):
     except ImportError:
         pass
     # Fallback: ImageMagick import command
-    tmp = f"/tmp/leo_vision_region.png"
+    tmp = f"/tmp/Diego_vision_region.png"
     result = subprocess.run(
         ["import", "-window", "root", "-crop", f"{width}x{height}+{left}+{top}", tmp],
         capture_output=True, timeout=10
@@ -121,12 +121,12 @@ async def test_screen_capture() -> Dict[str, Any]:
         except ImportError:
             t0 = time.time()
             result = subprocess.run(
-                ["import", "-window", "root", "/tmp/leo_screen_test.png"],
+                ["import", "-window", "root", "/tmp/Diego_screen_test.png"],
                 capture_output=True, timeout=10
             )
             if result.returncode != 0:
                 raise RuntimeError("No screen capture backend available")
-            full = Image.open("/tmp/leo_screen_test.png")
+            full = Image.open("/tmp/Diego_screen_test.png")
             full_latency = (time.time() - t0) * 1000
             backend = "import (ImageMagick)"
 

@@ -1,7 +1,7 @@
 """
-BackgroundAgent — Leo's proactive observation system.
+BackgroundAgent — Diego's proactive observation system.
 
-Leo should OBSERVE and ACT without being asked:
+Diego should OBSERVE and ACT without being asked:
 
     Compilation finished.   → Notify user.
     Git push failed.        → Offer fix.
@@ -137,8 +137,8 @@ def _notification_forward_rule(data: dict) -> bool:
     """Forward significant desktop notifications."""
     app = (data.get("app", "") or "").lower()
     summary = (data.get("summary", "") or "").lower()
-    # Skip Leo's own notifications to avoid loops
-    if "leo" in app or "leo" in summary:
+    # Skip Diego's own notifications to avoid loops
+    if "Diego" in app or "Diego" in summary:
         return False
     return bool(summary)
 

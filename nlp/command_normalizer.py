@@ -219,7 +219,7 @@ _VERB_ALIASES: Dict[str, str] = {
 # ── Noise words to remove ──────────────────────────────────────
 _NOISE_WORDS = {
     "please", "can you", "could you", "would you", "will you",
-    "hey", "hey leo", "ok leo", "okay leo", "leo", "listen",
+    "hey", "hey Diego", "ok Diego", "okay Diego", "Diego", "listen",
     "i want to", "i need to", "i'd like to", "i would like to",
     "can i", "could i", "let's", "lets", "go ahead and",
     "just", "maybe", "perhaps", "kind of", "sort of",

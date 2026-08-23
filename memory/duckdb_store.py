@@ -1,5 +1,5 @@
 """
-DuckDB storage layer for Leo Desktop Assistant.
+DuckDB storage layer for Diego Desktop Assistant.
 
 Stores:
 - intents and intent_examples
@@ -61,7 +61,7 @@ class DuckDBStore:
     Persistent storage using DuckDB.
 
     Creates tables on first use and provides CRUD operations
-    for all Leo data types.
+    for all Diego data types.
 
     Transaction support:
         begin_transaction()

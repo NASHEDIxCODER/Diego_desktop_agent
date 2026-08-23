@@ -1,5 +1,5 @@
 """
-StartupHealth — Subsystem state tracking for Leo.
+StartupHealth — Subsystem state tracking for Diego.
 
 Each subsystem reports one of:
   READY    — Fully operational

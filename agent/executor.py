@@ -316,7 +316,7 @@ class AgentExecutor:
         if not self._pyautogui:
             return False, "Desktop automation not available"
         try:
-            path = f"/tmp/leo_desktop_{int(time.time())}.png"
+            path = f"/tmp/Diego_desktop_{int(time.time())}.png"
             screenshot = self._pyautogui.screenshot(path)
             agent_memory.set_last_screenshot(path)
             return True, f"Screenshot: {path}"

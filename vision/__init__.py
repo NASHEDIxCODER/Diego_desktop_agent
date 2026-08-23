@@ -1,5 +1,5 @@
 """
-Leo Desktop Assistant — Production Vision System (v3)
+Diego Desktop Assistant — Production Vision System (v3)
 
 Backward-compatible bridge to the new vision pipeline.
 

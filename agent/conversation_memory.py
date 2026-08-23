@@ -1,13 +1,13 @@
 """
-ConversationMemory — Rolling context + long-term memory for Leo.
+ConversationMemory — Rolling context + long-term memory for Diego.
 
 Architecture:
   - Short-term: rolling window of recent turns (configurable, default 20)
-  - Long-term: facts extracted from conversation (e.g. "user's project is Leo")
+  - Long-term: facts extracted from conversation (e.g. "user's project is Diego")
   - Auto-tracking: projects, folders, repos, apps, websites, commands
   - Summaries: old history automatically summarized when window overflows
 
-This makes Leo remember things across the session without sending the
+This makes Diego remember things across the session without sending the
 entire history to the LLM every time.
 
 Usage:
@@ -144,7 +144,7 @@ class ConversationMemory:
         text_lower = text.lower()
 
         # ── Project detection ─────────────────────────────
-        # "open GhostLine" / "my GhostLine project" / "working on Leo"
+        # "open GhostLine" / "my GhostLine project" / "working on Diego"
         project_patterns = [
             r"(?:open|start|launch|work on|working on|my)\s+([A-Z][a-zA-Z0-9_-]+)(?:\s+project)?",
             r"project\s+(?:is\s+)?(?:called\s+)?([A-Z][a-zA-Z0-9_-]+)",
@@ -283,7 +283,7 @@ class ConversationMemory:
         """Extract long-term facts from user text."""
         text_lower = text.lower().strip()
 
-        # "remember my project is Leo" → "user's project is Leo"
+        # "remember my project is Diego" → "user's project is Diego"
         for pattern in self._remember_patterns:
             match = re.search(pattern, text_lower)
             if match:
@@ -360,7 +360,7 @@ class ConversationMemory:
         if self._turns:
             recent = self._turns[-self._max_turns:]
             turns_str = "\n".join(
-                f"{'User' if t.role == 'user' else 'Leo'}: {t.text}"
+                f"{'User' if t.role == 'user' else 'Diego'}: {t.text}"
                 for t in recent
             )
             parts.append(f"Recent conversation:\n{turns_str}")

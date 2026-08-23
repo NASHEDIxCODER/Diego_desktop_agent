@@ -1,9 +1,9 @@
 """
-LeoPersonality — Natural, varied conversational personality.
+DiegoPersonality — Natural, varied conversational personality.
 
-Makes Leo sound like a real desktop companion, not a chatbot.
+Makes Diego sound like a real desktop companion, not a chatbot.
 Generates varied greetings, acknowledgments, and filler responses
-so Leo never repeats the same phrase.
+so Diego never repeats the same phrase.
 
 NEVER says:
   - "How may I assist you?"
@@ -28,7 +28,7 @@ from typing import List, Optional
 logger = logging.getLogger(__name__)
 
 
-class LeoPersonality:
+class DiegoPersonality:
     """
     Generates varied, natural conversational responses.
 
@@ -337,9 +337,9 @@ class LeoPersonality:
 
         # ── "Who are you" responses ──────────────────────
         self._who_are_you = [
-            "I'm Leo, your desktop assistant.",
-            "Leo. Your desktop companion.",
-            "I'm Leo. I live on your desktop and help you get things done.",
+            "I'm Diego, your desktop assistant.",
+            "Diego. Your desktop companion.",
+            "I'm Diego. I live on your desktop and help you get things done.",
         ]
 
         # ── "Who made you" responses ─────────────────────
@@ -889,4 +889,4 @@ class LeoPersonality:
 
 
 # Global singleton
-personality = LeoPersonality()
+personality = DiegoPersonality()

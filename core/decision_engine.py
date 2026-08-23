@@ -18,7 +18,7 @@ Architecture:
     ↓
     L7: Do I actually need the LLM? (last resort)
 
-This is the THINKING layer that Leo uses before calling the LLM.
+This is the THINKING layer that Diego uses before calling the LLM.
 It wraps and extends the existing CommandRouter with memory/plan checks.
 
 Usage:
@@ -302,7 +302,7 @@ class DecisionEngine:
                     logger.debug("[DECIDE:L1] Resolved re-route failed: %s", e)
             # CRITICAL FIX: If the resolved text could not be re-routed to
             # an action, do NOT return a response-only decision. That would
-            # make Leo say "I'll open firefox." but never actually open it.
+            # make Diego say "I'll open firefox." but never actually open it.
             # Instead, fall through to the LLM path so the Brain can plan
             # and dispatch the resolved command properly.
             return Decision(

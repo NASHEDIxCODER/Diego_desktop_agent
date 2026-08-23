@@ -1,4 +1,4 @@
-# Leo ASR Alternatives Benchmark
+# Diego ASR Alternatives Benchmark
 
 **Date:** 2026-08-15
 **Hardware:** NVIDIA GeForce RTX 3050 Laptop GPU (4 GB VRAM), 16 GB RAM, Linux, CUDA available
@@ -8,13 +8,13 @@
 
 ## Executive Summary
 
-**Whisper is NOT replaced.** None of the five alternatives demonstrably beats faster-whisper on Leo's real command workload. faster-whisper remains the PRIMARY ASR.
+**Whisper is NOT replaced.** None of the five alternatives demonstrably beats faster-whisper on Diego's real command workload. faster-whisper remains the PRIMARY ASR.
 
 **Recommendation:**
 - **PRIMARY ASR:** faster-whisper (base, CPU int8) — unchanged.
 - **FALLBACK ASR:** NVIDIA Parakeet CTC 1.1B INT8 (sherpa-onnx) — best accuracy/latency balance among the alternatives, with a viable path to lower latency.
 
-The single most important finding: **command accuracy is the bottleneck, not latency.** faster-whisper's 53.3% command accuracy (vs. the 52% baseline) is the highest of any model tested, and the alternatives all score lower (25–44%). Latency is a secondary concern because Leo's endpointing already adds ~1s of silence before finalization.
+The single most important finding: **command accuracy is the bottleneck, not latency.** faster-whisper's 53.3% command accuracy (vs. the 52% baseline) is the highest of any model tested, and the alternatives all score lower (25–44%). Latency is a secondary concern because Diego's endpointing already adds ~1s of silence before finalization.
 
 ---
 
@@ -32,7 +32,7 @@ The single most important finding: **command accuracy is the bottleneck, not lat
 **Notes:**
 - The Parakeet **RNNT 1.1B Multilingual** export requested in the spec does NOT exist in sherpa-onnx; the closest available 1.1B Parakeet export is **CTC English** (`runanywhere/sherpa-onnx-nemo-parakeet-ctc-1.1b-int8`). The RNNT (transducer) architecture is only available at 0.6B/110M sizes.
 - The **streaming Zipformer EN** model **crashes on load** (C++ segfault: `'attention_dims' does not exist in the metadata`) with sherpa-onnx 1.13.5. It is not usable on this hardware/runtime combination.
-- FireRedASR2 CTC is trained for Chinese+English but performs catastrophically on English commands (4.9% accuracy) — it is effectively unusable for Leo.
+- FireRedASR2 CTC is trained for Chinese+English but performs catastrophically on English commands (4.9% accuracy) — it is effectively unusable for Diego.
 
 ---
 
@@ -81,7 +81,7 @@ The single most important finding: **command accuracy is the bottleneck, not lat
 | FireRedASR2 CTC | 12.5% |
 | Qwen3-ASR 0.6B INT8 | 0.0% |
 
-Qwen3-ASR **discards all short commands** (0.0%) — it appears to have a minimum-utterance gate that drops single-word inputs. This is disqualifying for Leo's conversational interaction.
+Qwen3-ASR **discards all short commands** (0.0%) — it appears to have a minimum-utterance gate that drops single-word inputs. This is disqualifying for Diego's conversational interaction.
 
 ### Noise (hallucination rate under fan/keyboard/music)
 
@@ -129,7 +129,7 @@ Weights: 40% command accuracy, 20% first-word accuracy, 15% streaming latency, 1
 - **Cons:** Low accuracy (25.4%); high hallucination (37.7%); no Hindi.
 
 ### FireRedASR2 CTC zh_en INT8
-- **Pros:** None for Leo's workload.
+- **Pros:** None for Diego's workload.
 - **Cons:** Catastrophic English accuracy (4.9%); 60.7% hallucination; 107s load time.
 
 ### Streaming Zipformer EN INT8
@@ -142,7 +142,7 @@ Weights: 40% command accuracy, 20% first-word accuracy, 15% streaming latency, 1
 
 ### PRIMARY ASR: faster-whisper (unchanged)
 
-Do NOT replace Whisper. On Leo's real command workload it remains the most accurate model (53.3% command accuracy, 72.1% first-word accuracy), and no alternative demonstrably beats it. The 52% accuracy problem is **not** a Whisper-specific defect — it reflects the difficulty of the command set (natural speech, short commands, Hindi) and the synthetic espeak-ng audio.
+Do NOT replace Whisper. On Diego's real command workload it remains the most accurate model (53.3% command accuracy, 72.1% first-word accuracy), and no alternative demonstrably beats it. The 52% accuracy problem is **not** a Whisper-specific defect — it reflects the difficulty of the command set (natural speech, short commands, Hindi) and the synthetic espeak-ng audio.
 
 ### FALLBACK ASR: NVIDIA Parakeet CTC 1.1B INT8 (sherpa-onnx)
 
@@ -193,4 +193,4 @@ Results are written to `data/asr_alternatives_benchmark.json`.
 | `debug/benchmark_asr_alternatives.py` | Orchestrating benchmark + weighted ranking |
 | `docs/ASR_ALTERNATIVES_BENCHMARK.md` | This report |
 
-**No Leo production files (Brain, Planner, Dispatcher, ConversationEngine, TTS, WakeListener, wake-word model) were modified.** Only ASR provider integration was added, and the existing Whisper provider continues to work unchanged.
+**No Diego production files (Brain, Planner, Dispatcher, ConversationEngine, TTS, WakeListener, wake-word model) were modified.** Only ASR provider integration was added, and the existing Whisper provider continues to work unchanged.

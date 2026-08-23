@@ -1,5 +1,5 @@
 {
-  "wake_phrase": "hello leo",
+  "wake_phrase": "hello Diego",
   "base_model": "hey_mycroft_v0.1",
   "verifier_path": "verifier.pkl",
   "positive_count": 61,

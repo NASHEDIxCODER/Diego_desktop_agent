@@ -1,7 +1,7 @@
 """
-Autonomous Project Mode — Leo remembers project context across sessions.
+Autonomous Project Mode — Diego remembers project context across sessions.
 
-When the user says "Work on GhostLine", Leo enters project mode and
+When the user says "Work on GhostLine", Diego enters project mode and
 automatically remembers:
   - Repository path
   - Terminal working directory
@@ -195,7 +195,7 @@ class ProjectMode:
         If new, auto-detect everything about it.
 
         Args:
-            project_name: "GhostLine", "leo_desktop_assistant", etc.
+            project_name: "GhostLine", "Diego_desktop_agent", etc.
             path: Optional explicit path to the repository.
 
         Returns:

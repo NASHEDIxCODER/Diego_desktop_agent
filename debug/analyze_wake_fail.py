@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Wake Fail Audio Analyzer for Leo Desktop Assistant.
+Wake Fail Audio Analyzer for Diego Desktop Assistant.
 
 Analyzes every saved wake_fail.wav file and computes:
   - Maximum amplitude

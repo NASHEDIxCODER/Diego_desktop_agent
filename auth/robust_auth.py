@@ -1,5 +1,5 @@
 """
-RobustAuth — Enhanced face authentication for Leo.
+RobustAuth — Enhanced face authentication for Diego.
 
 Builds on the existing detector + camera infrastructure and adds the
 robustness requirements:

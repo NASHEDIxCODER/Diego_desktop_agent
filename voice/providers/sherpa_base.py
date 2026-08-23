@@ -3,7 +3,7 @@ SherpaOnnxProvider — shared base for all sherpa-onnx ASR backends.
 
 Every sherpa-onnx model (Qwen3-ASR, Parakeet RNNT, streaming Zipformer,
 FireRedASR, SenseVoice) is wrapped behind the SAME ASRProvider interface
-so the benchmark and Leo's command pipeline treat them interchangeably.
+so the benchmark and Diego's command pipeline treat them interchangeably.
 
 DESIGN RULES (identical to the rest of the ASR stack):
   - Providers consume the SAME normalized float32 [-1,1] 16 kHz mono audio

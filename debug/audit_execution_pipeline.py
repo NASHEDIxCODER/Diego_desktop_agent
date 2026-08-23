@@ -317,7 +317,7 @@ async def run_single_command(brain, cmd: str) -> None:
 
 async def main() -> None:
     print("═" * 70)
-    print("  LEO DESKTOP ASSISTANT — RUNTIME EXECUTION PIPELINE AUDIT")
+    print("  DIEGO DESKTOP ASSISTANT — RUNTIME EXECUTION PIPELINE AUDIT")
     print("═" * 70)
 
     from agent.brain import agent_brain

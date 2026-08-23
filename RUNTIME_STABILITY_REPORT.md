@@ -1,4 +1,4 @@
-# RUNTIME_STABILITY_REPORT.md — Leo Desktop Assistant
+# RUNTIME_STABILITY_REPORT.md — Diego Desktop Assistant
 
 Date: 2026-08-13
 Scope: Full runtime error elimination task (Phases 1–17).
@@ -28,7 +28,7 @@ below).
 | 3 | No structured STATE TIMEOUT / recovery: a stalled LISTEN/THINK/SPEAK state could hang without diagnostics. | `_set_state()` logged transitions but had no timeout watchdog or recovery. | `core/conversation_engine.py` |
 | 4 | Wake-loop model-reload failure crashed the wake task silently (worker died, no log). | The `wake_model_manager.load()` retry was OUTSIDE the try/except; a load-raising exception escaped the coroutine. | `voice/wake_listener.py` |
 | 5 | Background learner cycle errors logged at DEBUG only (`logger.debug`), essentially silent worker failures. | `_learn_loop` swallowed `_learn_one_cycle` exceptions. | `core/background_learning.py` |
-| 6 | Shutdown had no hard upper timeout — a hung worker could prevent exit. | `await shutdown()` unguarded. | `leo.py` |
+| 6 | Shutdown had no hard upper timeout — a hung worker could prevent exit. | `await shutdown()` unguarded. | `Diego.py` |
 
 No deadlocks, no duplicate InputStreams, no stalled VAD OPEN/CLOSED state,
 and no silent-failure in the audio ring buffer were found (audited in
@@ -45,7 +45,7 @@ observed LIVE in the production boot log.
 
 `voice/wake_word.py`, `voice/wake_listener.py`, `voice/command_listener.py`,
 `voice/vad.py`, `core/conversation_engine.py`, `core/background_learning.py`,
-`leo.py`.
+`Diego.py`.
 
 ## 4. Exact fix
 
@@ -69,7 +69,7 @@ observed LIVE in the production boot log.
    audio/speech timestamps) updated in `speech_prob()`.
 6. **`core/background_learning.py`** — worker exception now logs structured
    `[WORKER-CRASH] worker=background_learner ...`.
-7. **`leo.py`** — `shutdown()` wrapped in `asyncio.wait_for(..., timeout=15.0)`
+7. **`Diego.py`** — `shutdown()` wrapped in `asyncio.wait_for(..., timeout=15.0)`
    with an explicit `[SHUTDOWN] Hard timeout exceeded` log.
 
 No logging was suppressed; no functionality was removed; no architecture
@@ -131,7 +131,7 @@ New file `tests/test_runtime_stability.py`:
 - `voice/vad.py` (observability)
 - `core/conversation_engine.py` (state watchdog)
 - `core/background_learning.py` (worker crash reporting)
-- `leo.py` (shutdown hard timeout)
+- `Diego.py` (shutdown hard timeout)
 
 ---
 
@@ -160,12 +160,12 @@ Wake rejected (score=1.00 transcript='you') — still listening
 
 Wake trigger (score=0.916 ≥ 0.85) — verifying transcript…
 [WAKE] VERDICT: transcript='All right, dude.' confidence=-0.893
-[WAKE-VERIFY] REJECTED: text='all right dude' best='all'≈'leo' confidence=0.333 (< 0.80)
+[WAKE-VERIFY] REJECTED: text='all right dude' best='all'≈'Diego' confidence=0.333 (< 0.80)
 Wake rejected (score=0.92 transcript='All right, dude.') — still listening
 ```
 
 Zero ERROR / CRITICAL / STATE TIMEOUT / VIOLATION / WORKER-CRASH lines. Clean
-shutdown (`[LEO] Shutdown complete.`).
+shutdown (`[DIEGO] Shutdown complete.`).
 
 The conversation session machinery (fresh-audio handoff, VAD, endpoint,
 Whisper, response guarantee, TTS) is verified by the 20 passing unit tests and

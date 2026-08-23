@@ -1,5 +1,5 @@
 """
-UnifiedMemoryService — Merges all Leo memory into one searchable layer.
+UnifiedMemoryService — Merges all Diego memory into one searchable layer.
 
 Merges:
   * Conversation      — rolling turns + long-term facts (ConversationMemory)

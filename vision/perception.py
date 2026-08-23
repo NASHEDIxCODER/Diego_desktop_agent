@@ -1,7 +1,7 @@
 """
-PerceptionService — Continuous desktop awareness (Leo's eyes).
+PerceptionService — Continuous desktop awareness (Diego's eyes).
 
-Leo should always know:
+Diego should always know:
     Current screen, focused window, open applications, notifications,
     OCR, UI elements, clipboard, mouse, active monitor, browser tabs,
     terminal output.

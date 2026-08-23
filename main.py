@@ -1,7 +1,7 @@
 """
-Leo Desktop Assistant — Production Entry Point
+Diego Desktop Assistant — Production Entry Point
 
-  python main.py               # Start Leo (conversational runtime)
+  python main.py               # Start Diego (conversational runtime)
   python main.py --no-auth     # Start without face auth (development only)
   python main.py --train       # Train the NLP model and exit
   python main.py --status      # Show NLP model status and exit
@@ -16,7 +16,7 @@ THE VOICE PIPELINE (exactly ONE implementation — core/conversation_engine.py):
   verification → face authentication (camera opens ONLY here) →
   streaming Whisper → LLM → tool execution (ONE dispatcher) →
   streaming TTS → continuous conversation → 60 s silence / goodbye →
-  back to wake listening. Models load ONCE. Leo NEVER exits on its own.
+  back to wake listening. Models load ONCE. Diego NEVER exits on its own.
 
 Heavy subsystems are imported LAZILY inside each command so the runtime
 entry path never inherits a broken legacy import.
@@ -91,10 +91,10 @@ except Exception:
 # ── Python 3.14 compatibility: inject removed stdlib modules ──
 import compat  # noqa: F401
 
-# ── The conversational runtime (light module-level import: leo.py only
+# ── The conversational runtime (light module-level import: Diego.py only
 # imports compat/config/telemetry at module scope; the engine, models and
-# audio hardware are loaded inside run()). leo.py owns logging setup. ──
-import leo
+# audio hardware are loaded inside run()). Diego.py owns logging setup. ──
+import Diego
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +125,7 @@ def cmd_status() -> None:
         print("NLP model not found. Run: python main.py --train")
         return
     status = get_model_status()
-    print("Leo NLP Model Status")
+    print("Diego NLP Model Status")
     print("=" * 40)
     print(f"  Ready:        ✓")
     print(f"  Version:      {status.get('version', '?')}")
@@ -228,7 +228,7 @@ def cmd_audio_debug() -> None:
 # ═══════════════════════════════════════════════════════════════
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Leo Desktop Assistant")
+    parser = argparse.ArgumentParser(description="Diego Desktop Assistant")
     parser.add_argument("--train", action="store_true",
                         help="Train the NLP model and exit")
     parser.add_argument("--examples", type=int, default=100,
@@ -271,7 +271,7 @@ def main() -> None:
 
     # ── Default: the conversational runtime (boots once, waits forever
     # for the wake word, never exits unless the user quits). ──
-    leo.run(no_auth=args.no_auth, record_session=args.record_session)
+    Diego.run(no_auth=args.no_auth, record_session=args.record_session)
 
 
 if __name__ == "__main__":

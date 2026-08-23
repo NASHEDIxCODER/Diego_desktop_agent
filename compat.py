@@ -1,5 +1,5 @@
 """
-Python 3.14 compatibility module for Leo Desktop Assistant.
+Python 3.14 compatibility module for Diego Desktop Assistant.
 
 Python 3.14 removed aifc, imghdr, and audioop from the standard library.
 Several third-party dependencies (speech_recognition, telethon) still

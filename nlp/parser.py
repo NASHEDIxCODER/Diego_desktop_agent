@@ -1,5 +1,5 @@
 """
-Main NLP parser for Leo Desktop Assistant.
+Main NLP parser for Diego Desktop Assistant.
 
 Orchestrates the full NLP pipeline:
 1. Tokenize

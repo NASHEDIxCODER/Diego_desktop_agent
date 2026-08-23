@@ -1,4 +1,4 @@
-# Leo NLP Training Pipeline
+# Diego NLP Training Pipeline
 
 ## Architecture
 
@@ -255,7 +255,7 @@ Expected times: 2-3x slower.
 |-------|-------|-----|
 | `No module named 'sentence_transformers'` | Missing dependency | `pip install sentence-transformers` |
 | `TFPreTrainedModel` import error | Transformers/TF conflict | Fixed by patching `_tf_available = False` in `embeddings.py` |
-| DuckDB migration errors | Schema mismatch | Delete `data/leo.duckdb` and retrain |
+| DuckDB migration errors | Schema mismatch | Delete `data/Diego.duckdb` and retrain |
 | `spaCy not available` | Optional dependency | Falls back to simple tokenizer (no action needed) |
 | Model not found on startup | No trained model | Run `python main.py --train` |
 | "training exceeded 30s" | Old timeout-based watchdog | Already fixed — heartbeat-based watchdog uses 600s timeout |

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Standalone microphone test for Leo Desktop Assistant.
+Standalone microphone test for Diego Desktop Assistant.
 
 Tests sounddevice import, device enumeration, audio capture, and STT.
-Works completely independently of the main Leo codebase.
+Works completely independently of the main Diego codebase.
 
 Usage:
     python debug/test_microphone.py

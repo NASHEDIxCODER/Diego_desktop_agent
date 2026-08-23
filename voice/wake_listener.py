@@ -1,5 +1,5 @@
 """
-WakeListener — THE single wake-detection pipeline for Leo.
+WakeListener — THE single wake-detection pipeline for Diego.
 
     Microphone
       ↓

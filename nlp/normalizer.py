@@ -1,5 +1,5 @@
 """
-Text normalizer for Leo NLP pipeline.
+Text normalizer for Diego NLP pipeline.
 
 Handles:
 - Lowercasing

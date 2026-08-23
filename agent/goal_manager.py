@@ -108,7 +108,7 @@ class GoalManager:
     Persistent goal storage backed by DuckDB.
 
     Goals, their tasks, and lifecycle events are stored in DuckDB
-    and survive Leo restarts. Long-running goals like "Finish GhostLine"
+    and survive Diego restarts. Long-running goals like "Finish GhostLine"
     persist across sessions.
     """
 

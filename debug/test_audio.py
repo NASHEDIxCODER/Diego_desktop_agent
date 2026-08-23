@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Standalone audio pipeline test for Leo Desktop Assistant.
+Standalone audio pipeline test for Diego Desktop Assistant.
 
 Tests the unified AudioManager:
   - sounddevice import

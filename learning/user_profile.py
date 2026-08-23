@@ -1,5 +1,5 @@
 """
-UserProfile — Learned facts about Leo's owner.
+UserProfile — Learned facts about Diego's owner.
 
 Stores:
   - preferred apps (editor, browser, terminal, etc.)

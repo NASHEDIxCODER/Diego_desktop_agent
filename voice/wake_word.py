@@ -77,7 +77,7 @@ def _normalize_wake_text(text: str) -> str:
 
 def _distinctive_wake_words() -> List[str]:
     """Return the distinctive (non-generic) words across all wake variants
-    AND the configured WAKE_PHRASE — e.g. 'leo', 'lio', 'leyo', 'lido'."""
+    AND the configured WAKE_PHRASE — e.g. 'Diego', 'lio', 'leyo', 'lido'."""
     distinctive = set()
     sources = list(DEFAULT_WAKE_VARIANTS) + [voice_settings.wake_phrase or ""]
     for variant in sources:
@@ -98,7 +98,7 @@ def _phonetic_match(a: str, b: str) -> bool:
     """True when both words share a metaphone phonetic encoding.
 
     Catches Whisper's phonetically-plausible mishearings of the wake word
-    ('leo', 'lea', 'lio' → metaphone 'L') that edit-distance alone would
+    ('Diego', 'lea', 'lio' → metaphone 'L') that edit-distance alone would
     miss, while staying immune to unrelated words ('please' → 'PLS').
     """
     if not _HAS_METAPHONE or len(a) < 2 or len(b) < 2:
@@ -144,7 +144,7 @@ def verify_wake_transcript(text: Optional[str], wake_score: float = 0.0,
 
     The openWakeWord model must ALSO have fired (enforced by the caller —
     this function only runs after the model crossed its threshold), so a
-    phonetic near-match cannot wake Leo on its own.
+    phonetic near-match cannot wake Diego on its own.
     """
     if not text:
         return False

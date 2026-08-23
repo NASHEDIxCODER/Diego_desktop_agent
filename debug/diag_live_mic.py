@@ -3,7 +3,7 @@ Live microphone diagnostic — capture real audio through the full pipeline
 and measure Silero's response at every stage.
 
 Run (speak during the recording window):
-    LEO_VAD_DIAG=1 python debug/diag_live_mic.py
+    DIEGO_VAD_DIAG=1 python debug/diag_live_mic.py
 
 Records ~4 seconds of live audio, then reports:
   1. raw mic (44.1kHz)

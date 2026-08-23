@@ -1,5 +1,5 @@
 """
-Structured logging for Leo Desktop Assistant.
+Structured logging for Diego Desktop Assistant.
 
 Provides JSON-formatted logging with:
 - Correlation IDs for request tracing
@@ -113,7 +113,7 @@ def setup_logging(level: Optional[str] = None) -> None:
     root_logger.handlers.clear()
     root_logger.addHandler(handler)
 
-    # Set levels for all Leo subsystems
+    # Set levels for all Diego subsystems
     for subsystem in ["__main__", "core", "nlp", "plugins", "voice",
                       "memory", "ai", "telemetry", "auth", "config"]:
         logging.getLogger(subsystem).setLevel(getattr(logging, level.upper(), logging.INFO))

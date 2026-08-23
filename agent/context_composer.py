@@ -61,7 +61,7 @@ class ContextItem:
 
 class ContextComposer:
     """
-    Smart context composer for Leo's LLM prompts.
+    Smart context composer for Diego's LLM prompts.
 
     1. Collects memories from all learning subsystems
     2. Computes relevance score for each memory

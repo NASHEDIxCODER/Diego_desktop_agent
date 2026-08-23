@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Standalone camera test for Leo Desktop Assistant.
+Standalone camera test for Diego Desktop Assistant.
 
 Tests camera initialization, frame capture, and quality metrics.
-Works independently of the main Leo codebase.
+Works independently of the main Diego codebase.
 
 Usage:
     python debug/test_camera.py

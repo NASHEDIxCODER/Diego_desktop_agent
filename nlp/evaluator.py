@@ -1,5 +1,5 @@
 """
-Evaluator for Leo NLP pipeline.
+Evaluator for Diego NLP pipeline.
 
 Benchmarks intent classification accuracy, measures
 latency, and provides performance reports.

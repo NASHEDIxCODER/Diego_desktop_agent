@@ -1,7 +1,7 @@
 """
-Service Layer — Leo's layered architecture backbone.
+Service Layer — Diego's layered architecture backbone.
 
-Every subsystem in Leo is a Service. Services:
+Every subsystem in Diego is a Service. Services:
 
   * Start/stop through a uniform lifecycle (async start/stop)
   * Report health (health() -> dict, is_ready property)
@@ -73,7 +73,7 @@ class ServiceHealth:
 
 class BaseService:
     """
-    Base class for all Leo services.
+    Base class for all Diego services.
 
     Subclasses implement `_start()` and `_stop()`. The public `start()`
     / `stop()` wrappers manage lifecycle safety (idempotency, state

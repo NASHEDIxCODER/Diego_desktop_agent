@@ -83,8 +83,8 @@ def build_commands() -> List[Tuple[str, str, str]]:
         "please open {app}",
         "can you open {app}",
         "could you open {app}",
-        "hey leo open {app}",
-        "ok leo open {app}",
+        "hey Diego open {app}",
+        "ok Diego open {app}",
         "i want to open {app}",
         "i'd like to open {app}",
         "go ahead and open {app}",
@@ -292,7 +292,7 @@ def build_commands() -> List[Tuple[str, str, str]]:
     # ── Noisy variants (programmatic: prefix noise before commands) ──
     noisy_prefixes = [
         "please ", "can you ", "could you ", "would you ", "will you ",
-        "hey leo ", "ok leo ", "okay leo ", "i want to ", "i need to ",
+        "hey Diego ", "ok Diego ", "okay Diego ", "i want to ", "i need to ",
         "i'd like to ", "go ahead and ", "just ",
     ]
     base_commands = [

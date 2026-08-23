@@ -1,7 +1,7 @@
-# Leo → Conversational Desktop Agent — Transformation
+# Diego → Conversational Desktop Agent — Transformation
 
 ## Goal
-Transform Leo from a command executor into a real conversational desktop
+Transform Diego from a command executor into a real conversational desktop
 companion (Siri / ChatGPT Voice / Gemini Live): full-duplex, streaming,
 interruptible, with memory, personality, vision, and automatic action.
 
@@ -21,7 +21,7 @@ interruptible, with memory, personality, vision, and automatic action.
 | `auth/robust_auth.py` | Multi-frame voting, confidence averaging, head-pose estimation, anti-spoofing (texture/moiré/motion) | ✅ imports |
 | `auth/face_popup.py` | Floating always-on-top Tk popup (420×320, dark, rounded, live 30 FPS preview, red/yellow/green states) | ✅ render test |
 | `auth/live_auth.py` | Live auth loop: waits forever for a face, quality→guidance, 15-frame majority vote + confidence averaging | ✅ logic |
-| `leo.py` | Conversational entry: BOOT → models → audio → WAIT_WAKE (NO startup auth) | ✅ status cmd |
+| `Diego.py` | Conversational entry: BOOT → models → audio → WAIT_WAKE (NO startup auth) | ✅ status cmd |
 
 ### Modified
 - `main.py` — launches conversational mode by default (`--legacy` for old loop, `--no-auth` for dev)
@@ -35,18 +35,18 @@ interruptible, with memory, personality, vision, and automatic action.
 - **Natural pauses (<600ms)** — `MIN_PAUSE_MS=600`, `ENDPOINT_SILENCE_MS=900` in streaming_stt. ✅
 - **Filler words** — `is_filler()` keeps turn open for "umm/wait/hold on/actually/no". ✅
 - **Streaming pipeline** — every stage streams; TTS starts on first sentence. ✅
-- **Memory** — rolling context + facts; "remember my project is Leo" → "what was my project called?" answered in ~117ms. ✅
+- **Memory** — rolling context + facts; "remember my project is Diego" → "what was my project called?" answered in ~117ms. ✅
 - **Personality** — varied greetings, no robotic phrases. ✅
 - **Voice** — Kokoro primary (verified synthesizing), XTTS/Piper fallback, pyttsx3 emergency. ✅
 - **Intelligence** — LLM emits ACTION lines → action_dispatcher executes (open VS Code, search, Spotify, etc.) without confirmation. ✅
 - **Vision** — active-window title + OCR injected when the user references the screen. ✅
 - **Face auth** — mandatory; robust multi-frame voting + pose + anti-spoofing; falls back to standard recognizer. ✅
-- **Wake system** — "leo/hey leo/hello leo" via partials (fast); stays in conversation; sleeps on goodbye/timeout. ✅
+- **Wake system** — "Diego/hey Diego/hello Diego" via partials (fast); stays in conversation; sleeps on goodbye/timeout. ✅
 - **Async/cancellation** — all async, cancellable, graceful shutdown. ✅
 
 ### Verified end-to-end (logic test)
 ```
-wake partial "hey leo"   → mode: wake → conversation, greeting spoken
+wake partial "hey Diego"   → mode: wake → conversation, greeting spoken
 "open vs code"           → speaks ack + executes desktop_open(code)
 "umm"                    → no response (turn stays open)
 "goodbye"                → mode: conversation → wake
@@ -60,19 +60,19 @@ That was wrong. The corrected state machine:
 ```
 BOOT → LOAD MODELS → INIT AUDIO → WAIT_WAKE
         ("Listening for wake word..." — nothing else, no camera/auth/greeting)
-  ↓ wake word ("leo" / "hey leo" / "hello leo")
+  ↓ wake word ("Diego" / "hey Diego" / "hello Diego")
 OPEN FACE AUTH POPUP → WAIT_FOR_FACE → FACE VERIFIED
   ↓
 GREETING ("Welcome back, Sonu.") → conversation → GOODBYE → WAIT_WAKE
 ```
 
-- **Boot never fails.** Leo always reaches WAIT_WAKE and stays alive forever.
-- **Auth only after wake.** `conversation_engine._on_wake()` → `_do_auth_and_enter()` → `leo.authenticate_on_wake()` → `auth.live_auth.authenticate_live()`.
+- **Boot never fails.** Diego always reaches WAIT_WAKE and stays alive forever.
+- **Auth only after wake.** `conversation_engine._on_wake()` → `_do_auth_and_enter()` → `Diego.authenticate_on_wake()` → `auth.live_auth.authenticate_live()`.
 - **Popup** (`auth/face_popup.py`): floating, always-on-top, 420×320, dark, rounded, live 30 FPS preview, no OpenCV window, no terminal spam. States: searching / no-face (red) / guidance (red) / detected (yellow) / verified (green).
 - **Waits forever for a face** — no "no face" timeout. Quality failures show guidance instead of failing ("Move closer", "Too dark", "Too blurry", "Look at camera", "Center your face").
 - **Multi-frame verification** — 15 consecutive good frames, majority vote (8), confidence averaging.
 - **Re-auth suppression** — 10-minute session (`AUTH_SESSION_S`); `invalidate_auth()` forces re-auth (logout/security/lock).
-- **Auth failure NEVER terminates Leo** — denies the interaction, returns to WAIT_WAKE.
+- **Auth failure NEVER terminates Diego** — denies the interaction, returns to WAIT_WAKE.
 
 ### Verified auth-on-wake flow (logic test)
 ```
@@ -81,7 +81,7 @@ wake#1               → auth called ONCE → "Welcome back, Sonu." → conversa
 goodbye              → wake
 wake#2 (in session)  → NO auth call (suppressed) → conversation
 session expired      → needs_auth again
-auth denied          → Leo STAYS ALIVE in wake, "I couldn't verify your identity."
+auth denied          → Diego STAYS ALIVE in wake, "I couldn't verify your identity."
 ```
 
 ### Verified popup render (GUI test)
@@ -98,8 +98,8 @@ non-popup auth.
 ### How to run
 ```bash
 source .venv/bin/activate
-python leo.py            # conversational Leo
-python leo.py --status   # check subsystems
+python Diego.py            # conversational Diego
+python Diego.py --status   # check subsystems
 python main.py           # same conversational mode (default)
 python main.py --legacy  # old command-executor loop
 ```

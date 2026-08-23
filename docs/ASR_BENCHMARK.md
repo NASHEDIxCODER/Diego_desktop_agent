@@ -1,7 +1,7 @@
-# LEO ASR BENCHMARK — Nemotron vs Whisper
+# DIEGO ASR BENCHMARK — Nemotron vs Whisper
 
 **Date:** 2026-08-15
-**Scope:** Evaluate NVIDIA Nemotron-3.5-ASR-Streaming as a potential replacement for Leo's current faster-whisper command ASR. **No architecture was changed.** faster-whisper, wake-word detection, VAD, Brain, Planner, Dispatcher, TTS, and conversation flow remain untouched.
+**Scope:** Evaluate NVIDIA Nemotron-3.5-ASR-Streaming as a potential replacement for Diego's current faster-whisper command ASR. **No architecture was changed.** faster-whisper, wake-word detection, VAD, Brain, Planner, Dispatcher, TTS, and conversation flow remain untouched.
 
 ---
 
@@ -53,7 +53,7 @@
 
 ## 3. Benchmark Methodology
 
-- Real Leo command set (25 utterances): English commands, natural speech, and Hindi/Hinglish.
+- Real Diego command set (25 utterances): English commands, natural speech, and Hindi/Hinglish.
 - Audio synthesized to 16 kHz mono WAV via `espeak-ng` (English `en-us`, Hindi `hi` voices).
 - Each clip transcribed through every available `ASRProvider`.
 - Metrics recorded per transcript: model, language, transcript, expected, WER, command accuracy, first-word accuracy, time-to-first-token, finalization latency, real-time factor (RTF), CPU, GPU VRAM, GPU utilization, RAM, dropped chunks, hallucinations.

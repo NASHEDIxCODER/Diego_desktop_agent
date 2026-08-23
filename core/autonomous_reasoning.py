@@ -1,7 +1,7 @@
 """
 AutonomousReasoning — Auto-detect desktop context before asking questions.
 
-When the user says "fix this", Leo should automatically determine:
+When the user says "fix this", Diego should automatically determine:
 
   1. Active window (which app is focused)
   2. Project (which project/directory)
@@ -28,7 +28,7 @@ Usage:
     from core.autonomous_reasoning import auto_context
 
     ctx = await auto_context.collect()
-    print(ctx.summary)  # "VS Code - leo_desktop_assistant | Terminal: ~/projects/leo | Error: ImportError..."
+    print(ctx.summary)  # "VS Code - Diego_desktop_agent | Terminal: ~/projects/Diego | Error: ImportError..."
 """
 
 from __future__ import annotations
@@ -154,8 +154,8 @@ class AutonomousContextCollector:
     """
     Collects desktop context for autonomous reasoning.
 
-    Leo calls this BEFORE asking the user questions. If the context
-    reveals enough information, Leo acts directly. Otherwise, it asks
+    Diego calls this BEFORE asking the user questions. If the context
+    reveals enough information, Diego acts directly. Otherwise, it asks
     the minimal clarifying question.
 
     All methods are non-blocking and fast (<50ms total).

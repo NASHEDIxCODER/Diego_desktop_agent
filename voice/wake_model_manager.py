@@ -1,5 +1,5 @@
 """
-WakeModelManager — Production wake-model lifecycle for Leo.
+WakeModelManager — Production wake-model lifecycle for Diego.
 
 Responsibilities:
   - Load the wake model (WAKE_MODEL env → custom models/wake/*.onnx →

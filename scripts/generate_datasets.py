@@ -34,7 +34,7 @@ TEMPLATES = {
 }
 
 WORD_POOLS = {
-    "name": ["leo", "there", "buddy", "friend"],
+    "name": ["Diego", "there", "buddy", "friend"],
     "app": ["calculator", "browser", "firefox", "vs code", "terminal", "settings",
             "spotify", "chrome", "file manager", "discord", "telegram", "python",
             "notepad", "gedit", "thunderbird", "libreoffice", "slack", "zoom",

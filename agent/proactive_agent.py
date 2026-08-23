@@ -1,7 +1,7 @@
 """
 ProactiveAgent — Event-driven proactive helper.
 
-Leo monitors desktop events and proactively offers help:
+Diego monitors desktop events and proactively offers help:
 
   - Tests complete → summarize failures
   - Compilation failed → explain error
@@ -52,7 +52,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class Suggestion:
-    """A proactive suggestion from Leo to the user."""
+    """A proactive suggestion from Diego to the user."""
     type: str  # "info", "warning", "error", "action"
     title: str
     description: str
@@ -136,7 +136,7 @@ class ProactiveAgent:
     Event-driven proactive helper.
 
     Subscribes to desktop events and generates suggestions when
-    it detects situations where Leo can help.
+    it detects situations where Diego can help.
 
     Suggestions are published to the EventBus and can be consumed
     by the Conversation Engine, Brain, or UI layers.

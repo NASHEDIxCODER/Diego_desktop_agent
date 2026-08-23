@@ -125,9 +125,9 @@ class CommandResult:
 # Decomposition Prompt
 # ═══════════════════════════════════════════════════════════════
 
-DECOMPOSE_PROMPT = """You are Leo, an autonomous desktop AI agent. Decompose the user's goal into a sequence of concrete, executable tasks.
+DECOMPOSE_PROMPT = """You are Diego, an autonomous desktop AI agent. Decompose the user's goal into a sequence of concrete, executable tasks.
 
-Each task must be a single action Leo can perform on the desktop. Tasks should be ordered logically, with dependencies noted.
+Each task must be a single action Diego can perform on the desktop. Tasks should be ordered logically, with dependencies noted.
 
 Available task types:
 - Navigate: open a URL, open an application, switch windows
@@ -354,7 +354,7 @@ class AgentBrain:
         text = normalized
 
         # ── Record user turn in conversation memory ──────────
-        # CRITICAL FIX: Without this, Leo has no memory of what the
+        # CRITICAL FIX: Without this, Diego has no memory of what the
         # user said. Pronoun resolution, follow-ups, and context
         # awareness all depend on conv_memory having the turns.
         from agent.conversation_memory import conv_memory
@@ -368,7 +368,7 @@ class AgentBrain:
         # Before ANY planning or action, check if this is just
         # conversation. Greetings, thanks, how-are-you, corrections,
         # and simple acknowledgments should NEVER invoke the planner
-        # or the LLM. Leo is a companion first, a tool second.
+        # or the LLM. Diego is a companion first, a tool second.
         from agent.personality import personality
         conversational = personality.contextual_response(text)
         if conversational:
@@ -399,7 +399,7 @@ class AgentBrain:
             immediate_response = ""
             if decision.action:
                 # Presence check: if the app is already running, say so
-                # instead of "Opening X." — Leo feels present.
+                # instead of "Opening X." — Diego feels present.
                 already = self._check_already_running(decision.action)
                 if already:
                     result.response = already
@@ -436,7 +436,7 @@ class AgentBrain:
                 if result.actions_failed == 0:
                     # All succeeded — use a natural confirmation.
                     # CRITICAL FIX: Use personality for variety instead of
-                    # always "Done." — Leo should sound alive, not robotic.
+                    # always "Done." — Diego should sound alive, not robotic.
                     detail = self._action_detail(decision)
                     confirmation = personality.task_confirmation(detail) if detail else personality.acknowledgment()
                     if result.speak_immediately:
@@ -482,7 +482,7 @@ class AgentBrain:
             result.response = await self._generate_response(text, perception_ctx, result)
 
         # ── Record assistant turn in conversation memory ──────
-        # CRITICAL FIX: Leo must remember what it said so follow-ups
+        # CRITICAL FIX: Diego must remember what it said so follow-ups
         # like "what was that" / "say again" work.
         if result.response:
             conv_memory.add_assistant(result.response)
@@ -851,7 +851,7 @@ class AgentBrain:
             return f"I ran into an issue with {result.actions_failed} of the steps."
 
         # Otherwise, use the LLM to generate a response.
-        # CRITICAL FIX: inject the perception context (what Leo sees on
+        # CRITICAL FIX: inject the perception context (what Diego sees on
         # screen) so "what is going on" / "click here" actually work.
         # Without this, the LLM has no idea what's on the screen.
         try:

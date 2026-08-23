@@ -1,4 +1,4 @@
-# Leo Desktop Assistant v3.0 — System Health Report
+# Diego Desktop Assistant v3.0 — System Health Report
 
 **Generated:** 2026-07-29  
 **Audit Tool:** `debug/audit_system.py`  
@@ -18,7 +18,7 @@
 | **FaceAuth** | ⚠️ DISABLED | N/A | cv2 not installed — `pip install opencv-python face_recognition` |
 | **Vision** | ✅ READY | 323ms | Capture: ImageMagick ✓, OCR: Tesseract ✓ |
 | **DuckDB** | ✅ READY | 68ms | Connected, schema v2 |
-| **Browser** | ⚠️ DEGRADED | 2,027ms | Chrome 136+ blocks CDP attach to default profile. Falls back to persistent Leo profile at `~/.leo/browser_profile` |
+| **Browser** | ⚠️ DEGRADED | 2,027ms | Chrome 136+ blocks CDP attach to default profile. Falls back to persistent Diego profile at `~/.Diego/browser_profile` |
 | **Ollama** | ✅ READY | 193ms | 3 models auto-detected: kimi-k2.6, deepseek-coder-v2, deepseek-coder |
 | **Plugins** | ⚠️ DEGRADED | 4ms | 2 enabled (Brightness, YouTube), 1 disabled (Telegram: no API creds in .env) |
 | **Planner** | ✅ READY | N/A | Agent planner initialized |
@@ -45,7 +45,7 @@
 
 ### Browser → DEGRADED (documented)
 - Chrome 136+ security blocks CDP attach to default profile
-- Automatic fallback to persistent Leo profile at `~/.leo/browser_profile`
+- Automatic fallback to persistent Diego profile at `~/.Diego/browser_profile`
 - Clear logging explains why fallback occurred
 - To fix: start Chrome manually with `google-chrome --remote-debugging-port=9222`
 

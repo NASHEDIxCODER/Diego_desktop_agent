@@ -1,5 +1,5 @@
 """
-Audio Processing Pipeline for Leo Desktop Assistant.
+Audio Processing Pipeline for Diego Desktop Assistant.
 
 Real-time audio preprocessing to make wake word detection robust in
 noisy environments (laptop fan, background chatter, etc.).
@@ -63,9 +63,9 @@ logger = logging.getLogger(__name__)
 # ── Logging-volume control ──────────────────────────────────────
 # The audio callback runs every ~30ms and historically produced multiple
 # [TRACE]/[STAGE]/[SATURATION] lines per callback, flooding the terminal.
-# All per-frame audio tracing is now OFF by default. Set LEO_AUDIO_TRACE=1
+# All per-frame audio tracing is now OFF by default. Set DIEGO_AUDIO_TRACE=1
 # to re-enable verbose per-stage tracing for debugging.
-AUDIO_TRACE_ENABLED = os.environ.get("LEO_AUDIO_TRACE", "0") == "1"
+AUDIO_TRACE_ENABLED = os.environ.get("DIEGO_AUDIO_TRACE", "0") == "1"
 
 
 class GainError(RuntimeError):
@@ -255,7 +255,7 @@ class _StageTracer:
         Emitted at most once per SUMMARY_INTERVAL_S per stage — never
         per-callback, so it is safe on the 30 ms real-time path.
 
-        GATED: only emitted when LEO_AUDIO_TRACE=1 (default OFF) to avoid
+        GATED: only emitted when DIEGO_AUDIO_TRACE=1 (default OFF) to avoid
         flooding the terminal during idle listening.
         """
         if not AUDIO_TRACE_ENABLED:
@@ -406,7 +406,7 @@ class AutomaticGainControl:
     ran ``np.clip(mono, -1, 1)`` as its FIRST step, guaranteeing that any
     residual over-unity energy was destroyed before inference. openWakeWord
     (log-mel frontend) still scored 0.96–0.995 on the clipped audio, but
-    Whisper hallucinated ("hello leo" → "hello", "it's so big") and every
+    Whisper hallucinated ("hello Diego" → "hello", "it's so big") and every
     wake verification was rejected.
 
     DESIGN (production AGC — NOT a clipper):

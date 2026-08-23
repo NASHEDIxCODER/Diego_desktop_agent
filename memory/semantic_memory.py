@@ -1,5 +1,5 @@
 """
-SemanticMemory — Auto-linking memory graph for Leo.
+SemanticMemory — Auto-linking memory graph for Diego.
 
 Extends the current in-memory and DuckDB stores with a semantic layer
 that understands relationships between stored facts:

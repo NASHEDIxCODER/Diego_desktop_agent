@@ -2,7 +2,7 @@
 ManualSessionRecorder — Real-world validation recording for every conversation turn.
 
 Enabled via:
-    LEO_RECORD_SESSION=1 python main.py
+    DIEGO_RECORD_SESSION=1 python main.py
     python main.py --record-session
 
 Records per-interaction metrics:

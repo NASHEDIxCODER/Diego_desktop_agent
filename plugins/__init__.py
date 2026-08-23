@@ -1,1 +1,1 @@
-# Leo Desktop Assistant - Plugins Package
+# Diego Desktop Assistant - Plugins Package

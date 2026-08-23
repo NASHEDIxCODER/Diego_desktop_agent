@@ -56,7 +56,7 @@ PROFILE_PATH = Path(__file__).resolve().parent.parent / "data" / "learner_profil
 
 class LearningEngine(BaseService):
     """
-    Continuous self-learning engine for Leo.
+    Continuous self-learning engine for Diego.
 
     Extends BaseService for lifecycle management. Hooks into the
     event bus to observe every user action and builds a profile

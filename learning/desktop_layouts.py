@@ -1,7 +1,7 @@
 """
-Desktop Layout Learning — Leo remembers common UI locations across sessions.
+Desktop Layout Learning — Diego remembers common UI locations across sessions.
 
-Instead of re-discovering layouts every time, Leo learns:
+Instead of re-discovering layouts every time, Diego learns:
 
   - Common application layouts (VS Code, Firefox, Chrome, Terminal, etc.)
   - Where buttons typically are (toolbar position, status bar position)
@@ -406,12 +406,12 @@ class LayoutMemory:
     """
     Learns and remembers desktop application layouts.
 
-    Persists to a JSON file so Leo retains layout knowledge
+    Persists to a JSON file so Diego retains layout knowledge
     across restarts. Combines built-in templates with observed
     learning from real desktop usage.
     """
 
-    STORAGE_PATH = Path.home() / ".leo" / "desktop_layouts.json"
+    STORAGE_PATH = Path.home() / ".Diego" / "desktop_layouts.json"
 
     def __init__(self):
         self._templates: Dict[str, AppLayoutTemplate] = {}

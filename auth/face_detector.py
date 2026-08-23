@@ -1,5 +1,5 @@
 """
-FaceDetector — Multi-backend face detection abstraction for Leo.
+FaceDetector — Multi-backend face detection abstraction for Diego.
 
 Detection pipeline (best available backend is auto-selected):
   1. OpenCV YuNet (FaceDetectorYN) — fast, accurate, DNN-based

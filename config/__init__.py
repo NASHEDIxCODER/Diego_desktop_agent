@@ -1,1 +1,1 @@
-# Leo Desktop Assistant - Configuration Package
+# Diego Desktop Assistant - Configuration Package

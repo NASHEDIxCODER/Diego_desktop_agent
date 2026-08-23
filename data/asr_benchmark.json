@@ -604,7 +604,7 @@
     {
       "model": "faster-whisper",
       "language": "en",
-      "transcript": "Leo can you open Firefox?",
+      "transcript": "Diego can you open Firefox?",
       "expected": "open firefox",
       "wer": 1.5,
       "command_accuracy": false,

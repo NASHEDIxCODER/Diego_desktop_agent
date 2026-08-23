@@ -1,7 +1,7 @@
 """
-Leo Desktop Assistant — Self-Learning Engine
+Diego Desktop Assistant — Self-Learning Engine
 
-Leo continuously learns from its owner WITHOUT retraining any AI model.
+Diego continuously learns from its owner WITHOUT retraining any AI model.
 All learning is database-backed: frequencies, preferences, habits, and
 skill memories are stored in DuckDB and improve organically over time.
 
