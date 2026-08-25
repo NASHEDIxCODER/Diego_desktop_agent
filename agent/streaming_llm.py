@@ -184,7 +184,7 @@ class StreamingLLM:
         "mistral:7b", "tinyllama",
     )
     TEXT_MODEL = "qwen2.5:7b"
-    VISION_MODEL = "qwen2.5vl:latest"
+    VISION_MODEL = "qwen2.5vl:3b"
 
     @classmethod
     def _is_vision_model(cls, name: str) -> bool:
