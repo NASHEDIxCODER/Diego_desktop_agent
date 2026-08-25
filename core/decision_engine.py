@@ -10,17 +10,17 @@ Architecture:
         ↓
     L2: Can I answer from session memory? (unified_memory recent)
         ↓
+    Explicit vision intent (screen-dependent requests)
+        ↓
     L3: Can I execute directly? (command_router simple commands)
         ↓
-    L4: Is this an explicit vision request?
+    L4: Can I reuse an existing successful plan?
         ↓
-    L5: Can I reuse an existing successful plan?
+    L5: Do I already have vision context?
         ↓
-    L6: Do I already have vision context?
+    L6: Do I need web search?
         ↓
-    L7: Do I need web search?
-        ↓
-    L8: Do I actually need the LLM? (last resort)
+    L7: Do I actually need the LLM? (last resort)
 
 This is the THINKING layer that Diego uses before calling the LLM.
 
@@ -32,7 +32,6 @@ Important routing rule:
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
@@ -284,40 +283,18 @@ class DecisionEngine:
 
             return result
 
-        # ──────────────────────────────────────────────────────
-        # L3 — Direct execution
-        # ──────────────────────────────────────────────────────
 
-        result = await self._check_direct_execution(
-            normalized
-        )
-
-        if result is not None:
-            self._record(
-                DecisionPath.DIRECT_EXECUTION,
-                t_start,
-            )
-
-            self._cache_decision(
-                cache_key,
-                result,
-            )
-
-            return result
 
         # ──────────────────────────────────────────────────────
-        # L4 — EXPLICIT VISION
+        # Explicit vision intent
         #
-        # This intentionally occurs BEFORE reusable plans.
+        # Screen-dependent requests must win BEFORE command_router.
+        # Otherwise a generic direct route such as read_screen can
+        # swallow the original question and drop the user context.
         #
-        # Example:
-        #   "What is on my screen?"
-        #   "Read my screen"
-        #
-        # These commands require a fresh observation of reality.
-        # An old learned plan must never override that.
+        # The returned action deliberately carries the original
+        # question so ActionDispatcher can pass it to the vision model.
         # ──────────────────────────────────────────────────────
-
         if self._needs_vision(normalized):
             self._record(
                 DecisionPath.VISION,
@@ -325,7 +302,7 @@ class DecisionEngine:
             )
 
             logger.info(
-                "[DECIDE:L4] Explicit vision request: %s",
+                "[DECIDE:VISION] Explicit vision request: %s",
                 normalized[:120],
             )
 
@@ -350,9 +327,6 @@ class DecisionEngine:
                 },
             )
 
-            # We deliberately cache this because the deterministic
-            # routing decision is safe to reuse. The action itself
-            # must still capture a fresh frame when executed.
             self._cache_decision(
                 cache_key,
                 decision,
@@ -361,7 +335,28 @@ class DecisionEngine:
             return decision
 
         # ──────────────────────────────────────────────────────
-        # L5 — Reuse an existing successful plan
+        # L3 — Direct execution
+        # ──────────────────────────────────────────────────────
+
+        result = await self._check_direct_execution(
+            normalized
+        )
+
+        if result is not None:
+            self._record(
+                DecisionPath.DIRECT_EXECUTION,
+                t_start,
+            )
+
+            self._cache_decision(
+                cache_key,
+                result,
+            )
+
+            return result
+
+        # ──────────────────────────────────────────────────────
+        # L4 — Reuse an existing successful plan
         # ──────────────────────────────────────────────────────
 
         result = self._check_reusable_plan(
@@ -1045,16 +1040,30 @@ class DecisionEngine:
         explicit_phrases = (
             "read my screen",
             "read the screen",
+            "read my display",
+            "read the display",
+            "read this screen",
+            "read this page",
+            "read this window",
             "what is on my screen",
             "what's on my screen",
+            "what is on screen",
+            "what's on screen",
             "what is on the screen",
             "what's on the screen",
+            "tell me what is on my screen",
+            "tell me what's on my screen",
+            "tell me what's on screen",
             "look at my screen",
             "look at the screen",
+            "look at my display",
+            "look at the display",
             "what do you see on my screen",
             "what do you see on the screen",
+            "what do you see on screen",
             "describe my screen",
             "describe the screen",
+            "describe what is on my screen",
             "what am i looking at",
             "what am i looking at on screen",
             "what is this on my screen",
@@ -1062,9 +1071,6 @@ class DecisionEngine:
             "what error is on my screen",
             "what error is shown",
             "what error do you see",
-            "read this screen",
-            "read this page",
-            "read this window",
         )
 
         return any(

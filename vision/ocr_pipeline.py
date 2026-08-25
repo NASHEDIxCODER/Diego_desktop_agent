@@ -499,7 +499,7 @@ class EnhancedOCREngine:
 
     def _ocr_paddle(self, image: np.ndarray) -> List[OCRBox]:
         try:
-            results = self._paddle.ocr(image, cls=True)
+            results = self._paddle.ocr(image, cls=false)
             boxes: List[OCRBox] = []
             if results and results[0]:
                 for line in results[0]:

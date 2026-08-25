@@ -108,7 +108,7 @@ class ActionDispatcher:
 
         # Screen reading is async because it uses the VisionService event loop.
         if name == "read_screen":
-            return await self._read_screen()
+            return await self._read_screen(params)
 
         # ── Music actions must run in the event loop, not a thread ──
         if name == "play_media":
@@ -803,11 +803,17 @@ class ActionDispatcher:
 
     # ── Screen reading / context ──────────────────────────
 
-    async def _read_screen(self, params: dict) -> str:
+    async def _read_screen(self, params: dict | None = None) -> str:
+        params = params or {}
+
+        question = (
+                params.get("question")
+                or "What is currently visible on my screen?"
+        )
         try:
             from services.screen_capture import screen_capture_service
 
-            capture = screen_capture_service.capture()
+            capture = await screen_capture_service.capture_fullscreen()
 
             if capture is None:
                 return "I couldn't capture the screen."
