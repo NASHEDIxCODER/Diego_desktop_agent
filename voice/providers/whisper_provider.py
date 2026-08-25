@@ -35,8 +35,8 @@ class WhisperProvider(ASRProvider):
     def __init__(self, model_size: str = "base"):
         self._model = None
         self._ready = False
-        self._device = "cpu"
-        self._compute = "int8"
+        self._device = "cuda"
+        self._compute = "int8_float16"
         self._model_size = model_size
         self._lock = threading.Lock()
         # Streaming state (partial hypotheses)

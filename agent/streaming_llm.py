@@ -139,6 +139,7 @@ class StreamingLLM:
     def __init__(self):
         self._base_url = settings.OLLAMA_BASE_URL.rstrip("/")
         self._model: Optional[str] = None
+        self._vision_model: Optional[str] = None
         self._available = False
         self._checked = False
         self._model_names: list = []
@@ -157,6 +158,7 @@ class StreamingLLM:
                     logger.info("[STREAM-LLM] Ollama available. Models: %s", self._model_names)
                     self._available = True
                     self._select_model()
+                    self._vision_model = self._select_vision_model()
                 else:
                     logger.warning("[STREAM-LLM] Ollama returned status %d", resp.status_code)
         except httpx.ConnectError:
@@ -181,12 +183,43 @@ class StreamingLLM:
         "gemma2:2b", "gemma2:9b",
         "mistral:7b", "tinyllama",
     )
+    TEXT_MODEL = "qwen2.5:7b"
+    VISION_MODEL = "qwen2.5vl:3b"
 
     @classmethod
     def _is_vision_model(cls, name: str) -> bool:
         """True if the model name matches a known vision-model pattern."""
         lower = name.lower()
         return any(pat in lower for pat in cls._VISION_MODEL_PATTERNS)
+
+    def _needs_vision(self, user_text: str) -> bool:
+        """Return True when the user is explicitly asking Diego to see the screen."""
+        text = user_text.lower().strip()
+
+        vision_phrases = (
+            "read my screen",
+            "read the screen",
+            "what's on my screen",
+            "what is on my screen",
+            "what do you see",
+            "look at my screen",
+            "look at the screen",
+            "what am i looking at",
+            "what is this on my screen",
+            "where is the button",
+            "where is the run button",
+            "find the button",
+            "find this button",
+            "read this",
+            "read that",
+            "what error is shown",
+            "what error do you see",
+            "what's wrong on my screen",
+            "what is wrong on my screen",
+        )
+
+        return any(phrase in text for phrase in vision_phrases)
+
 
     def _select_model(self) -> None:
         """Auto-select the best available model.
@@ -230,6 +263,44 @@ class StreamingLLM:
         self._model = self._model_names[0]
         logger.warning("[STREAM-LLM] No small/non-vision model found — "
                        "falling back to: %s (may be heavy)", self._model)
+
+    def _select_vision_model(self) -> Optional[str]:
+        """Select the best installed vision-capable Ollama model."""
+        if not self._model_names:
+            return None
+
+        preferred = (
+            "qwen2.5vl:3b",
+            "qwen2.5vl:7b",
+            "qwen2.5vl",
+            "qwen2-vl",
+            "llama3.2-vision",
+            "minicpm-v",
+            "llava",
+            "bakllava",
+            "moondream",
+        )
+
+        for wanted in preferred:
+            for installed in self._model_names:
+                if installed == wanted or installed.startswith(f"{wanted}:"):
+                    logger.info(
+                        "[STREAM-LLM] Vision model selected: %s",
+                        installed,
+                    )
+                    return installed
+
+        for installed in self._model_names:
+            if self._is_vision_model(installed):
+                logger.info(
+                    "[STREAM-LLM] Vision model fallback selected: %s",
+                    installed,
+                )
+                return installed
+
+        logger.warning("[STREAM-LLM] No vision model installed")
+        return None
+
 
     @staticmethod
     def _extract_complete_sentences(buffer: str):

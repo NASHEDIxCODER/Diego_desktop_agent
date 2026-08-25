@@ -106,6 +106,10 @@ class ActionDispatcher:
         t0 = time.time()
         loop = asyncio.get_event_loop()
 
+        # Screen reading is async because it uses the VisionService event loop.
+        if name == "read_screen":
+            return await self._read_screen()
+
         # ── Music actions must run in the event loop, not a thread ──
         if name == "play_media":
             return await self._play_media_async(params.get("query", ""))
@@ -257,8 +261,6 @@ class ActionDispatcher:
             return self._open_url_fallback(url)
 
         # ── Screen reading ────────────────────────────────
-        if name == "read_screen":
-            return self._read_screen()
 
         # ── Mouse / keyboard ──────────────────────────────
         if name == "click_text":
@@ -801,16 +803,28 @@ class ActionDispatcher:
 
     # ── Screen reading / context ──────────────────────────
 
-    def _read_screen(self) -> str:
-        """OCR + describe the current screen."""
+    async def _read_screen(self) -> str:
+        """Read the current screen using the unified vision pipeline."""
         try:
-            text = self._ocr_sync()
-            if text:
-                return f"On screen: {text[:500]}"
-        except Exception as e:
-            logger.debug("[ACTIONS] read_screen failed: %s", e)
-        return "I couldn't read the screen right now."
+            from services.vision_service import vision_service
 
+            ctx = await vision_service.force_analyze()
+
+            if ctx.capture is None or not ctx.capture.is_valid:
+                logger.warning("[ACTIONS] Screen capture failed during read_screen")
+                return "I couldn't capture the screen right now."
+
+            if ctx.semantic_summary:
+                return f"On screen: {ctx.semantic_summary}"
+
+            if ctx.ocr_text:
+                return f"On screen: {ctx.ocr_text[:2000]}"
+
+            return "I captured the screen, but I couldn't extract useful information."
+
+        except Exception as e:
+            logger.exception("[ACTIONS] read_screen failed: %s", e)
+            return "I couldn't read the screen right now."
     def _ocr_sync(self) -> str:
         """Synchronous OCR of the active window."""
         try:
@@ -825,13 +839,6 @@ class ActionDispatcher:
             logger.debug("[ACTIONS] OCR failed: %s", e)
             return ""
 
-    async def _ocr_async(self) -> str:
-        """Async OCR helper."""
-        try:
-            from services.vision_service import vision_service
-            return await vision_service.ocr_only()
-        except Exception:
-            return ""
 
     async def screen_context(self) -> str:
         """
