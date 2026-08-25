@@ -803,28 +803,56 @@ class ActionDispatcher:
 
     # ── Screen reading / context ──────────────────────────
 
-    async def _read_screen(self) -> str:
-        """Read the current screen using the unified vision pipeline."""
+    async def _read_screen(self, params: dict) -> str:
         try:
-            from services.vision_service import vision_service
+            from services.screen_capture import screen_capture_service
 
-            ctx = await vision_service.force_analyze()
+            capture = screen_capture_service.capture()
 
-            if ctx.capture is None or not ctx.capture.is_valid:
-                logger.warning("[ACTIONS] Screen capture failed during read_screen")
-                return "I couldn't capture the screen right now."
+            if capture is None:
+                return "I couldn't capture the screen."
 
-            if ctx.semantic_summary:
-                return f"On screen: {ctx.semantic_summary}"
+            image = capture.image
 
-            if ctx.ocr_text:
-                return f"On screen: {ctx.ocr_text[:2000]}"
+            if image is None:
+                return "I couldn't capture the screen."
 
-            return "I captured the screen, but I couldn't extract useful information."
+            import io
+            from PIL import Image
 
-        except Exception as e:
-            logger.exception("[ACTIONS] read_screen failed: %s", e)
-            return "I couldn't read the screen right now."
+            pil_image = Image.fromarray(image)
+
+            buffer = io.BytesIO()
+            pil_image.save(
+                buffer,
+                format="JPEG",
+                quality=85,
+                optimize=True,
+            )
+
+            image_bytes = buffer.getvalue()
+
+            from agent.streaming_llm import streaming_llm
+
+            answer = await streaming_llm.vision_generate(
+                prompt=(
+                    "Look carefully at this desktop screenshot. "
+                    "Describe what is visibly on the screen. "
+                    "Identify the active application, important visible text, "
+                    "errors, dialogs, buttons, and other relevant UI. "
+                    "Do not invent anything that is not visible."
+                ),
+                image_bytes=image_bytes,
+            )
+
+            if answer:
+                return answer
+
+            return "I captured the screen, but I couldn't interpret it."
+
+        except Exception as exc:
+            logger.exception("[VISION] read_screen failed: %s", exc)
+            return "I couldn't read the screen."
     def _ocr_sync(self) -> str:
         """Synchronous OCR of the active window."""
         try:

@@ -184,7 +184,7 @@ class StreamingLLM:
         "mistral:7b", "tinyllama",
     )
     TEXT_MODEL = "qwen2.5:7b"
-    VISION_MODEL = "qwen2.5vl:3b"
+    VISION_MODEL = "qwen2.5vl:latest"
 
     @classmethod
     def _is_vision_model(cls, name: str) -> bool:
@@ -488,6 +488,73 @@ class StreamingLLM:
             return f"Your {fact.split('your ', 1)[-1]}." if "your " in fact else f"{fact.capitalize()}."
         fact = re.sub(r"^my\s+", "your ", fact, flags=re.IGNORECASE)
         return f"{fact.capitalize()}."
+
+    async def vision_generate(
+            self,
+            prompt: str,
+            image_bytes: bytes,
+            model: Optional[str] = None,
+    ) -> str:
+        """
+        Send an actual screenshot to a vision-capable Ollama model.
+        """
+
+        if not await self.ensure_initialized():
+            return ""
+
+        vision_model = model or self._select_vision_model()
+
+        if not vision_model:
+            logger.warning("[VISION-LLM] No vision model available")
+            return ""
+
+        import base64
+
+        image_b64 = base64.b64encode(image_bytes).decode("ascii")
+
+        payload = {
+            "model": vision_model,
+            "prompt": prompt,
+            "images": [image_b64],
+            "stream": False,
+            "options": {
+                "temperature": 0.1,
+                "num_predict": 220,
+            },
+        }
+
+        logger.info(
+            "[VISION-LLM] model=%s image_bytes=%d",
+            vision_model,
+            len(image_bytes),
+        )
+
+        try:
+            async with httpx.AsyncClient(timeout=90.0) as client:
+                response = await client.post(
+                    f"{self._base_url}/api/generate",
+                    json=payload,
+                )
+                response.raise_for_status()
+
+                data = response.json()
+                answer = (data.get("response") or "").strip()
+
+                logger.info(
+                    "[VISION-LLM] complete model=%s response_chars=%d",
+                    vision_model,
+                    len(answer),
+                )
+
+                return answer
+
+        except Exception as exc:
+            logger.warning(
+                "[VISION-LLM] failed model=%s error=%s",
+                vision_model,
+                exc,
+            )
+            return ""
 
 
 # Global singleton

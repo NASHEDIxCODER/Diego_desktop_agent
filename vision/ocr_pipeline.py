@@ -228,22 +228,60 @@ class EnhancedOCREngine:
         # PaddleOCR
         if _HAS_PADDLEOCR:
             try:
-                self._paddle = _PaddleOCR(
-                    use_angle_cls=True,
-                    lang="en",
-                    use_gpu=False,
-                    show_log=False,
+                import torch
+
+                cuda_available = bool(torch.cuda.is_available())
+                logger.info(
+                    "[OCR] CUDA available=%s device=%s",
+                    cuda_available,
+                    torch.cuda.get_device_name(0) if cuda_available else "CPU",
                 )
+
+                paddle_kwargs = {
+                    "lang": "en",
+                }
+
+                # Newer PaddleOCR versions use device instead of use_gpu.
+                try:
+                    paddle_kwargs["device"] = "gpu:0" if cuda_available else "cpu"
+                    self._paddle = _PaddleOCR(**paddle_kwargs)
+                except (TypeError, ValueError):
+                    # Compatibility with older PaddleOCR versions.
+                    paddle_kwargs.pop("device", None)
+                    paddle_kwargs["use_gpu"] = cuda_available
+                    self._paddle = _PaddleOCR(**paddle_kwargs)
+
                 self._active = "paddleocr"
-                logger.info("[OCR] Backend: PaddleOCR")
+                logger.info(
+                    "[OCR] Backend: PaddleOCR device=%s",
+                    "GPU" if cuda_available else "CPU",
+                )
                 return True
+
             except Exception as e:
                 logger.warning("[OCR] PaddleOCR init failed: %s", e)
 
         # EasyOCR
         if _HAS_EASYOCR:
             try:
-                self._easyocr_reader = _easyocr.Reader(["en"], gpu=False)
+                import torch
+
+                cuda_available = bool(torch.cuda.is_available())
+
+                self._easyocr_reader = _easyocr.Reader(
+                    ["en"],
+                    gpu=cuda_available,
+                )
+
+                self._active = "easyocr"
+
+                logger.info(
+                    "[OCR] Backend: EasyOCR device=%s",
+                    "GPU" if cuda_available else "CPU",
+                )
+
+                return True
+                # self._easyocr_reader = _easyocr.Reader(["en"], gpu=False)
                 self._active = "easyocr"
                 logger.info("[OCR] Backend: EasyOCR")
                 return True
