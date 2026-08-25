@@ -250,7 +250,14 @@ class VisionService(BaseService):
 
     async def _start(self) -> bool:
         """Initialise all vision subsystems."""
-        ocr_ok = enhanced_ocr.initialize()
+        # Run potentially-slow OCR init off the event loop with a timeout
+        try:
+            ocr_ok = await asyncio.wait_for(
+                asyncio.to_thread(enhanced_ocr.initialize), timeout=10.0
+            )
+        except asyncio.TimeoutError:
+            logger.warning("[VISION] OCR init timed out")
+            ocr_ok = False
         self._ocr_ready = ocr_ok
 
         details = {

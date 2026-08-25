@@ -269,6 +269,25 @@ def main() -> None:
         cmd_train_wake()
         sys.exit(0)
 
+    # Attempt automatic microphone selection at startup so the runtime
+    # doesn't require manual `--select-mic`. This starts the
+    # AudioManager briefly to let the detection/probe persist a verified
+    # device selection, then stops it. Failure is non-fatal; Diego will
+    # still attempt to start audio when the engine boots.
+    try:
+        from voice.audio_manager import audio_manager
+        if not audio_manager._mic_verified:
+            print("\n  Auto-selecting microphone (startup probe)...")
+            ok = audio_manager.start()
+            if ok:
+                audio_manager.stop()
+                print("  ✓ Microphone auto-selected and persisted.")
+            else:
+                print("  ✗ Microphone auto-selection failed (will retry at runtime).")
+    except Exception:
+        # Non-fatal: proceed to normal runtime which will try again.
+        pass
+
     # ── Default: the conversational runtime (boots once, waits forever
     # for the wake word, never exits unless the user quits). ──
     Diego.run(no_auth=args.no_auth, record_session=args.record_session)

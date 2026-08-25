@@ -130,7 +130,8 @@ class WakeModelManager:
                 if "detection_threshold" in meta:
                     self._threshold = float(meta["detection_threshold"])
 
-            self._model = OWWModel(wakeword_model_paths=[str(resolved)], **kwargs)
+            self._model = OWWModel(wakeword_model_paths=[str(resolved)],
+                                   inference_framework="onnx", **kwargs)
             self._loaded = True
             self._load_error = None
 
@@ -472,19 +473,48 @@ class WakeModelManager:
         return self._select_bundled_model(self._wake_phrase)
 
     def _bundled_models(self) -> Dict[str, Path]:
-        """Return {model_stem: Path} for all bundled openWakeWord models."""
+        """Return {model_stem: Path} for all bundled openWakeWord models.
+
+        Searches multiple candidate locations so the models are found even
+        when the active openwakeword install lacks its resources/models dir
+        (e.g. a pip install that omitted the bundled .onnx files):
+          1. The active openwakeword package's resources/models.
+          2. A project-local models/wake/bundled/ directory.
+          3. Any other openwakeword install on the system (site-packages).
+        """
+        candidates: List[Path] = []
+
+        # 1) Active openwakeword package resources/models
         try:
             import openwakeword as _oww
+            candidates.append(Path(_oww.__file__).parent / "resources" / "models")
         except ImportError:
-            return {}
-        d = Path(_oww.__file__).parent / "resources" / "models"
+            pass
+
+        # 2) Project-local bundled models directory
+        candidates.append(settings.MODELS_WAKE_DIR / "bundled")
+
+        # 3) Other openwakeword installs on the system (site-packages)
+        try:
+            import site
+            for sp in site.getsitepackages():
+                candidates.append(Path(sp) / "openwakeword" / "resources" / "models")
+        except Exception:
+            pass
+
         out: Dict[str, Path] = {}
-        if not d.exists():
-            return out
-        for f in d.glob("*.onnx"):
-            if f.name in NON_WAKE_FILES:
+        seen: set = set()
+        for d in candidates:
+            if not d.exists():
                 continue
-            out[f.stem] = f
+            for f in d.glob("*.onnx"):
+                if f.name in NON_WAKE_FILES:
+                    continue
+                key = f.stem
+                if key in seen:
+                    continue
+                seen.add(key)
+                out[key] = f
         return out
 
     def _bundled_model_path(self, model_stem: str) -> Optional[Path]:

@@ -160,6 +160,34 @@ GARBAGE_PATTERNS = [
     r"^(i|i'm|im|you|it|that|this)[.!?]?$",
 ]
 
+# ── Common conversational phrases exempt from confidence gate ──
+# CRITICAL FIX (2026-08-23): Whisper confidence on this system runs -0.4 to
+# -0.9 even for perfectly clear speech ("How are you?" scored -0.737). Blanket
+# low-confidence rejection wrongly blocks valid conversation. These phrases are
+# unambiguous and should never be rejected on confidence alone.
+CONVERSATIONAL_EXEMPT_PHRASES = (
+    "how are you", "i am fine", "i'm fine", "im fine",
+    "thank you", "thanks", "you are welcome", "you're welcome",
+    "i am good", "i'm good", "im good", "what is up", "what's up",
+    "good morning", "good afternoon", "good evening", "good night",
+    "nice to meet you", "hello", "hey", "hi", "whats up",
+    "what can you do", "who are you", "what is your name",
+    "whats your name", "tell me about yourself", "how do you do",
+    "i am bored", "i'm bored",
+)
+
+
+def _is_conversational_exempt(text: str) -> bool:
+    """True if this is a common conversational phrase that should never
+    be rejected on confidence alone."""
+    t = text.strip().lower()
+    if not t:
+        return False
+    t = re.sub(r'[.!?]+$', '', t).strip()
+    return any(t == p or t.startswith(p + " ") or t.endswith(" " + p)
+               for p in CONVERSATIONAL_EXEMPT_PHRASES)
+
+
 # ── Filler words ───────────────────────────────────────────────
 FILLERS = {
     "umm", "um", "uh", "uhh", "er", "erm", "hmm", "hm",
@@ -348,26 +376,32 @@ def _validate_transcript(
     if language_prob is not None and language_prob < 0.2:
         return False, FAILURE_LOW_CONFIDENCE
 
-    # 6. Confidence is now a SOFT signal. A low confidence alone is NOT a
-    #    rejection. We only reject when confidence is EXTREMELY low AND the
-    #    transcript is very short (a clear hallucination). Normal speech
-    #    with confidence=-0.366 (e.g. "Now tell me can you see my screen?")
-    #    is ACCEPTED.
-    #
-    # CRITICAL FIX (2026-08-23): Whisper hallucinations like "Blame the sun,
-    # Blieber" (conf=-1.024) and "Played in the song logo" (conf=-0.837) were
-    # passing through because the threshold was too lenient. These are classic
-    # hallucinations produced when Whisper is fed silence/noise. We now reject
-    # any transcript with confidence < -0.5 AND speech duration < 1.5s (a
-    # real command has enough audio to be confident). Also reject any
-    # transcript with confidence < -0.8 regardless of length — a real
-    # utterance never scores that low.
-    if confidence < -0.8:
+    # 5b. CRITICAL FIX (2026-08-23): Exempt common conversational phrases
+    #     like "how are you" from the confidence gate. On this system,
+    #     Whisper scores real speech as low as -0.7 (e.g. "How are you?"
+    #     scored -0.737), while hallucinations run -0.8 to -1.3. These
+    #     unambiguous phrases must never be rejected on confidence alone.
+    if _is_conversational_exempt(t):
+        return True, ""
+
+    # 6. Confidence is now a soft signal. We combine it with word count and
+    #    speech duration. Real speech on this system scores -0.2 to -0.9;
+    #    hallucinations score -0.8 to -1.3. We only reject clear
+    #    hallucination signatures:
+    #      - confidence below -1.0 (real commands essentially never score this)
+    #      - confidence below -0.6 AND either very short audio or a tiny
+    #        transcript (a blip like "I do." / "My skin.")
+    if confidence < -1.0:
         return False, FAILURE_LOW_CONFIDENCE
-    if confidence < -0.5 and speech_dur_ms < 1500:
+    if confidence < -0.6 and (speech_dur_ms < 1200 or word_count <= 2):
         return False, FAILURE_LOW_CONFIDENCE
-    if confidence < -0.5 and word_count <= 3:
-        return False, FAILURE_LOW_CONFIDENCE
+
+    # 6b. CRITICAL FIX (2026-08-23): Reject fragmented utterances that
+    #     begin with a conjunction. Whisper often splits a longer sentence
+    #     and the listener only captures the tail ("and you're doing",
+    #     "but I was thinking"). These are never complete commands.
+    if re.match(r'^(and|but|or|so|because|then|if|when|while)\b', t):
+        return False, FAILURE_GARBAGE
 
     # Accepted.
     return True, ""
@@ -1038,10 +1072,19 @@ class CommandListener:
                             # Clear utterance state → WAITING_FOR_SPEECH.
                             self._reset_utterance_state(state)
                             if final is not None:
-                                if is_filler(final.text):
+                                # CRITICAL FIX (2026-08-23): NEVER swallow
+                                # failure events. `is_filler("")` returns True
+                                # so rejected transcripts (text="") were being
+                                # silently dropped and the user got no response.
+                                # Passive failure events must reach the
+                                # ConversationEngine so it can speak a response.
+                                if final.kind == "failure":
+                                    yield final
+                                elif is_filler(final.text):
                                     logger.info("[CMD-LISTEN] Filler '%s' — turn stays open", final.text)
                                     continue
-                                yield final
+                                else:
+                                    yield final
                             continue
 
                 # ── TASK 4/5: Partial transcription (HINTS ONLY, background) ──
@@ -1085,8 +1128,12 @@ class CommandListener:
                     final = await self._finalize(
                         frozen_frames, frozen_start, endpoint_reason="max_duration")
                     self._reset_utterance_state(state)
-                    if final is not None and not is_filler(final.text):
-                        yield final
+                    if final is not None:
+                        # Critical fix: failure events must never be swallowed.
+                        if final.kind == "failure":
+                            yield final
+                        elif not is_filler(final.text):
+                            yield final
 
             pending = pending[n_frames * FRAME_SAMPLES:]
 

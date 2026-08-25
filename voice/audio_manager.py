@@ -332,30 +332,41 @@ def probe_device(sd, device: dict, duration: float = PROBE_DURATION) -> dict:
     # CAPTURE-BY-NAME devices report max_input_channels == 0 but open for
     # capture when addressed by their EXACT enumerated name (PipeWire hides
     # physical codecs behind output-only entries). Normal devices open by
-    # index.
+    # index. Some systems may enumerate a physical codec by name but still
+    # fail to open by that name; allow a numeric-index fallback in that
+    # case so the probe has a better chance of succeeding.
     by_name = bool(device.get("capture_by_name"))
-    open_target = device["name"] if by_name else device["index"]
+    # Try name first for capture-by-name devices, then fall back to index.
+    open_targets = ([device["name"]] if by_name else [device["index"]])
+    if by_name and device.get("index") is not None:
+        open_targets.append(device["index"])
     native_ch = 2 if by_name else max(1, int(device["max_input_channels"]))
     samplerate = int(device["default_samplerate"]) or SAMPLE_RATE
     recording = None
-
-    for channels in dict.fromkeys((min(native_ch, PROBE_MAX_CHANNELS), 1)):
-        try:
-            recording = sd.rec(
-                int(duration * samplerate),
-                samplerate=samplerate,
-                channels=channels,
-                dtype="int16",
-                device=open_target,
-                blocking=True,
-            )
-            result["probe_channels"] = channels
-            result["open_target"] = open_target
-            result["open_channels"] = channels
+    # Try each open target (name then index) and both channel counts (native, mono)
+    for target in open_targets:
+        for channels in dict.fromkeys((min(native_ch, PROBE_MAX_CHANNELS), 1)):
+            try:
+                recording = sd.rec(
+                    int(duration * samplerate),
+                    samplerate=samplerate,
+                    channels=channels,
+                    dtype="int16",
+                    device=target,
+                    blocking=True,
+                )
+                result["probe_channels"] = channels
+                result["open_target"] = target
+                result["open_channels"] = channels
+                # Record which form we used (name or index) for diagnostics
+                result["open_used_name"] = isinstance(target, str)
+                break
+            except Exception as e:
+                # preserve last error for reporting, but continue to fallback
+                result["error"] = str(e)
+                recording = None
+        if recording is not None:
             break
-        except Exception as e:
-            result["error"] = str(e)
-            recording = None
 
     if recording is None:
         logger.warning("[MIC-DETECT] STEP 4: [%s] %s — open failed: %s",
@@ -803,10 +814,29 @@ class AudioManager:
         # ── STEP 5: choose highest speech energy; persist verified only ──
         working = [p for p in probes if p["valid"]]
         if not working:
-            # ── STEP 6: everything was silent — report and STOP ──
-            clear_saved_selection()
-            report_no_working_microphone(probes)
-            return False
+            # No verified physical device — as a last resort probe the
+            # previously excluded virtual devices (pulse/pipewire/default).
+            # This allows systems where the physical codec reports odd
+            # enumeration (capture_by_name) to still work via a virtual
+            # source when available.
+            logger.warning(
+                "[MIC-DETECT] No verified physical device — probing virtual devices as fallback"
+            )
+            virtuals = [d for d in devices if d not in candidates]
+            for dev in virtuals:
+                if dev["index"] in already:
+                    probes.append(next(p for p in self._probe_report
+                                       if p["index"] == dev["index"]))
+                    continue
+                probe = probe_device(sd, dev)
+                probes.append(probe)
+                self._probe_report.append(probe)
+            working = [p for p in probes if p["valid"]]
+            if not working:
+                # ── STEP 6: everything was silent — report and STOP ──
+                clear_saved_selection()
+                report_no_working_microphone(probes)
+                return False
 
         best = max(working, key=lambda p: p["speech_energy"])
         # STEP 3 preference: a preferred hardware device within 70% of the
