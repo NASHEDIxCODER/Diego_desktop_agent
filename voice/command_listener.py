@@ -116,6 +116,25 @@ class CommandListenerConfig:
     # and the combined score >= 0.4, above end_threshold=0.35).
     use_robust_vad: bool = False
 
+    # ── ENERGY FALLBACK (2026-08-25 root-cause fix) ──
+    # Silero VAD returns ~0.0 on this system's muffled/quiet microphone
+    # audio even when the user is clearly speaking (Whisper transcribes it
+    # fine, openWakeWord scores 1.000). The command listener previously
+    # relied ENTIRELY on Silero, so it never entered SPEECH_ACTIVE and the
+    # conversation timed out after 60s of silence.
+    #
+    # When Silero is uncertain (prob < speech_start_threshold) but the
+    # frame has strong energy (RMS above energy_speech_rms), we treat it
+    # as speech. This is a FALLBACK — it only boosts the score when Silero
+    # is low AND the frame is clearly voiced. It does NOT keep the score
+    # high during silence (silence has low RMS, so energy_score ≈ 0).
+    #
+    # Thresholds (int16 scale): real voiced frames on this system measure
+    # RMS ~1700-2500; background room tone measures ~1200-1500. We use a
+    # conservative floor so only clearly-voiced audio triggers the boost.
+    energy_speech_rms: float = 1500.0   # int16 RMS floor for the boost
+    energy_boost_ceiling: float = 0.95  # max boosted probability
+
     # TASK 6: failure responses — never silently return to wake mode.
     failure_response_ms: int = 0
 
@@ -949,6 +968,34 @@ class CommandListener:
                 if prob != prob:  # NaN
                     prob = 0.0
                 prob = min(max(prob, 0.0), 1.0)
+
+                # ── ENERGY FALLBACK (2026-08-25 root-cause fix) ──
+                # Silero VAD returns ~0.0 on this system's muffled/quiet
+                # microphone audio even when the user is clearly speaking
+                # (Whisper transcribes it fine, openWakeWord scores 1.000).
+                # When Silero is uncertain but the frame has strong energy,
+                # boost the score so the state machine can enter SPEECH_ACTIVE.
+                #
+                # This is a FALLBACK — it only boosts when Silero is LOW AND
+                # the frame is clearly voiced (RMS above energy_speech_rms).
+                # It does NOT keep the score high during silence (silence has
+                # low RMS, so the boost never applies). The boost is capped at
+                # energy_boost_ceiling so it can never exceed the Silero
+                # threshold by a huge margin and cause flapping.
+                if prob < cfg.speech_start_threshold and raw_rms >= cfg.energy_speech_rms:
+                    # Strong energy + Silero uncertain → treat as speech.
+                    # Scale the boost so louder frames get a higher score.
+                    boost = min(
+                        cfg.energy_boost_ceiling,
+                        cfg.speech_start_threshold
+                        + (raw_rms - cfg.energy_speech_rms) / 10000.0,
+                    )
+                    prob = max(prob, boost)
+                    if AUDIO_TRACE_ENABLED:
+                        logger.info(
+                            "[CMD-VAD] ENERGY FALLBACK: silero=%.3f rms=%.1f "
+                            "boosted=%.3f (state=%s)",
+                            silero_prob, raw_rms, prob, state["state"])
 
                 # ── Aggregate VAD metrics into the 1s summary ──
                 _metrics_vad_sum += prob
