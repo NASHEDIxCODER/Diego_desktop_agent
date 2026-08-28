@@ -419,8 +419,11 @@ def train() -> bool:
     base_stem = Path(base_model_path).stem
     print(f"  Base model: {base_stem}")
 
-    oww = OWWModel(wakeword_model_paths=[str(base_model_path)],
-                   inference_framework="onnx")
+    # NOTE: `inference_framework` is NOT passed here. The installed
+    # openwakeword version forwards **kwargs to AudioFeatures.__init__,
+    # which only accepts melspec/embedding paths, sr, and ncpu. Passing
+    # inference_framework raises TypeError and breaks wake detection.
+    oww = OWWModel(wakeword_model_paths=[str(base_model_path)])
     feats_ndx = oww.model_inputs[base_stem]
 
     def harvest(dat: np.ndarray):

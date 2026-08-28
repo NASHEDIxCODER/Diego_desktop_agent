@@ -130,8 +130,11 @@ class WakeModelManager:
                 if "detection_threshold" in meta:
                     self._threshold = float(meta["detection_threshold"])
 
-            self._model = OWWModel(wakeword_model_paths=[str(resolved)],
-                                   inference_framework="onnx", **kwargs)
+            # NOTE: `inference_framework` is NOT passed here. The installed
+            # openwakeword version forwards **kwargs to AudioFeatures.__init__,
+            # which only accepts melspec/embedding paths, sr, and ncpu. Passing
+            # inference_framework raises TypeError and breaks wake detection.
+            self._model = OWWModel(wakeword_model_paths=[str(resolved)], **kwargs)
             self._loaded = True
             self._load_error = None
 

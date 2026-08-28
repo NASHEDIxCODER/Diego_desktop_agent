@@ -55,6 +55,7 @@ import numpy as np
 
 from voice.audio_manager import audio_manager, SAMPLE_RATE, FRAME_SAMPLES
 from voice.audio_processing import float32_to_int16, AUDIO_TRACE_ENABLED
+from voice.settings import voice_settings
 from voice.vad import unified_vad
 
 logger = logging.getLogger(__name__)
@@ -129,10 +130,13 @@ class CommandListenerConfig:
     # is low AND the frame is clearly voiced. It does NOT keep the score
     # high during silence (silence has low RMS, so energy_score ≈ 0).
     #
-    # Thresholds (int16 scale): real voiced frames on this system measure
-    # RMS ~1700-2500; background room tone measures ~1200-1500. We use a
-    # conservative floor so only clearly-voiced audio triggers the boost.
-    energy_speech_rms: float = 1500.0   # int16 RMS floor for the boost
+    # Thresholds (int16 scale) — CALIBRATED 2026-08-28 to the actual
+    # runtime capture path (PipeWire virtual source @ 55% gain):
+    #   real voiced frames  → RMS ~3500-6500 (measured via audio_diagnostics)
+    #   background room tone → RMS ~300-600
+    # We use 900 as the floor: clearly above room tone, comfortably below
+    # real speech, so only voiced frames trigger the boost.
+    energy_speech_rms: float = 900.0    # int16 RMS floor for the boost
     energy_boost_ceiling: float = 0.95  # max boosted probability
 
     # TASK 6: failure responses — never silently return to wake mode.
@@ -426,6 +430,22 @@ def _validate_transcript(
     return True, ""
 
 
+def _whisper_language() -> Optional[str]:
+    """Resolve the Whisper language from the configured voice settings.
+
+    faster-whisper accepts ISO 639-1 language codes (e.g. "en", "es") or
+    None for auto-detection. The project's `lang_code` setting is a locale
+    ("en-IN"), which faster-whisper does NOT accept — so we extract the base
+    language segment. If the setting is unset or malformed, fall back to
+    None (auto-detect) so transcription never breaks.
+    """
+    raw = voice_settings.lang_code
+    if not raw:
+        return None
+    base = raw.strip().split("-")[0].lower()
+    return base if len(base) >= 2 else None
+
+
 class _WhisperTranscriber:
     """faster-whisper transcriber for partial + final transcription."""
 
@@ -506,7 +526,7 @@ class _WhisperTranscriber:
             segments, _ = self._model.transcribe(
                 audio,
                 beam_size=5,          # Beam search for higher accuracy
-                language="en",
+                language=_whisper_language(),
                 temperature=0.0,
                 best_of=5,            # Best-of-N for better hypotheses
                 condition_on_previous_text=False,
@@ -537,7 +557,7 @@ class _WhisperTranscriber:
             segments, _ = self._model.transcribe(
                 audio,
                 beam_size=1,
-                language="en",
+                language=_whisper_language(),
                 temperature=0.0,
                 best_of=1,
                 condition_on_previous_text=False,
@@ -574,7 +594,7 @@ class _WhisperTranscriber:
             segments, _ = self._model.transcribe(
                 audio,
                 beam_size=5,
-                language="en",
+                language=_whisper_language(),
                 temperature=0.0,
                 best_of=5,
                 condition_on_previous_text=False,

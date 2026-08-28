@@ -5,9 +5,10 @@
   "positive_count": 11,
   "negative_count": 71,
   "verifier_threshold": 0.0,
-  "detection_threshold": 0.85,
+  "detection_threshold": 0.6,
   "domain": "int16-16kHz-mono",
   "trained_at": 1787583471.464613,
   "classifier": "logreg(c=1.0, regime-identical-windows)",
-  "accept": "oww-trigger + whisper-transcript-verification"
+  "accept": "oww-trigger + whisper-transcript-verification",
+  "calibrated_at": 1787583471.464613
 }

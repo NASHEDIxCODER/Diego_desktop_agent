@@ -56,7 +56,9 @@ DEFAULT_WAKE_VARIANTS = [
     "okay diego",
     "hello dego",
     "hello digo",
-    "hello diego",
+    "hello lio",
+    "hello leyo",
+    "hello lido",
     "diego",
     "dego",
 ]

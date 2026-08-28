@@ -17,7 +17,9 @@ print("  PASS: base model =", r)
 
 # Test 2: OWWModel can be constructed with onnx inference framework
 print("\nTEST 2: Constructing OWWModel with inference_framework='onnx'...")
-oww = OWWModel(wakeword_model_paths=[str(r)], inference_framework="onnx")
+# inference_framework is NOT passed: the installed openwakeword forwards
+# **kwargs to AudioFeatures.__init__ which rejects it (TypeError).
+oww = OWWModel(wakeword_model_paths=[str(r)])
 base_stem = r.stem
 feats_ndx = oww.model_inputs[base_stem]
 print("  PASS: model constructed, feats_ndx =", feats_ndx)
