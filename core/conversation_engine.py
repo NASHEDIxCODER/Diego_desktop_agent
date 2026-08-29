@@ -106,13 +106,16 @@ class EngineState(str, Enum):
 
 
 ALLOWED_TRANSITIONS = {
-    EngineState.IDLE:      {EngineState.WAKE},
+    # IDLE → WAKE is the normal wake-word path.
+    # IDLE → LISTEN is the --no-wake development path (bypasses wake + auth).
+    EngineState.IDLE:      {EngineState.WAKE, EngineState.LISTEN},
     EngineState.WAKE:      {EngineState.FACE_AUTH, EngineState.LISTEN},
     EngineState.FACE_AUTH: {EngineState.LISTEN},
     EngineState.LISTEN:    {EngineState.THINK, EngineState.IDLE},
     EngineState.THINK:     {EngineState.SPEAK},
     EngineState.SPEAK:     {EngineState.LISTEN, EngineState.IDLE},
 }
+
 
 
 # ═══════════════════════════════════════════════════════════════
