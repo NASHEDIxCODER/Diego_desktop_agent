@@ -67,11 +67,16 @@ from core.response_guarantee import response_guarantee
 logger = logging.getLogger(__name__)
 
 # ── Tuning ─────────────────────────────────────────────────────
+# Silence timeout: how long the system waits in LISTEN after the last
+# speech before returning to IDLE (wake mode). 60s is the documented
+# conversational timeout — long enough for natural pauses, short enough
+# to return to wake mode when the user is done.
 CONVERSATION_TIMEOUT_S = 60.0
 # Per-state watchdog ceilings (Phase 3). Any state held longer than its
 # ceiling is reported as a structured STATE TIMEOUT record and the turn
-# recovers safely. WAKE and FACE_AUTH are intentionally unbounded (Leo
+# recovers safely. WAKE and FACE_AUTH are intentionally unbounded (Diego
 # waits forever for the wake word / camera popup), so they are NOT listed.
+
 STATE_WATCHDOG_INTERVAL_S = 1.0
 STATE_TIMEOUTS_S = {
     "LISTEN": CONVERSATION_TIMEOUT_S + 15.0,

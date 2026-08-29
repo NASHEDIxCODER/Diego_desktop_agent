@@ -83,7 +83,11 @@ class CommandListenerConfig:
     # Endpoint detection (milliseconds of audio, sample-accurate).
     min_context_ms: int = 800         # Minimum audio before Whisper sees anything
     endpoint_silence_ms: int = 700    # Sustained silence that finalizes (TASK 3)
-    min_utterance_ms: int = 300       # Shorter than this → discard
+    # CRITICAL FIX (2026-08-29): min_utterance_ms was 300ms, which discarded
+    # short commands like "hi", "yes", "no", "open Chrome" as
+    # FAILURE_TRANSCRIPTION_FAILED. Real speech can be as short as 150ms
+    # for a single word. Lowered to 150ms so short commands are transcribed.
+    min_utterance_ms: int = 150       # Shorter than this → discard
     max_utterance_s: float = 20.0     # Hard cap on utterance length (SAFETY ONLY)
     min_speech_ms: int = 300          # Minimum speech before endpoint
     min_silence_ms: int = 300         # Minimum silence before endpoint
@@ -91,6 +95,7 @@ class CommandListenerConfig:
 
     # Streaming partials (TASK 5).
     partial_min_context_ms: int = 1200   # min speech before FIRST partial
+
     partial_new_audio_ms: int = 800      # min NEW audio between partials
     partial_max_freq_s: float = 1.0      # max partial frequency (1/sec)
     partial_rolling_context_s: float = 2.5  # rolling context window for partials
@@ -115,9 +120,19 @@ class CommandListenerConfig:
     # score above end_threshold during silence (root cause of the
     # "SPEECH_ACTIVE forever" bug: background RMS ~2000 kept energy_score=1.0
     # and the combined score >= 0.4, above end_threshold=0.35).
-    use_robust_vad: bool = False
+    #
+    # CRITICAL FIX (2026-08-29): use_robust_vad was False, so the command
+    # listener relied ENTIRELY on raw Silero probability. On this system's
+    # quiet/muffled microphone, Silero returns ~0.0 even when the user is
+    # clearly speaking (Whisper transcribes fine, openWakeWord scores 1.000).
+    # The energy fallback only triggered when prob < 0.55, but the boost
+    # barely crossed the 0.55 start threshold, causing flapping and missed
+    # speech detection after wake. Enabling robust VAD combines Silero +
+    # energy + hysteresis so quiet speech is reliably detected.
+    use_robust_vad: bool = True
 
     # ── ENERGY FALLBACK (2026-08-25 root-cause fix) ──
+
     # Silero VAD returns ~0.0 on this system's muffled/quiet microphone
     # audio even when the user is clearly speaking (Whisper transcribes it
     # fine, openWakeWord scores 1.000). The command listener previously
@@ -412,14 +427,22 @@ def _validate_transcript(
     #    hallucinations score -0.8 to -1.3. We only reject clear
     #    hallucination signatures:
     #      - confidence below -1.0 (real commands essentially never score this)
-    #      - confidence below -0.6 AND either very short audio or a tiny
+    #      - confidence below -0.6 AND very short audio (< 600ms) AND a tiny
     #        transcript (a blip like "I do." / "My skin.")
+    #
+    # CRITICAL FIX (2026-08-29): The old gate rejected ANY 2-word command
+    # with confidence < -0.6, even if the speech duration was healthy
+    # (e.g. "open Chrome" — 2 words, 1.5s of clear speech, confidence -0.7).
+    # This silently dropped valid commands after wake. The gate now requires
+    # BOTH short audio (< 600ms) AND a tiny transcript (<= 2 words) to reject,
+    # so a clear 2-word command with adequate audio is accepted.
     if confidence < -1.0:
         return False, FAILURE_LOW_CONFIDENCE
-    if confidence < -0.6 and (speech_dur_ms < 1200 or word_count <= 2):
+    if confidence < -0.6 and speech_dur_ms < 600 and word_count <= 2:
         return False, FAILURE_LOW_CONFIDENCE
 
     # 6b. CRITICAL FIX (2026-08-23): Reject fragmented utterances that
+
     #     begin with a conjunction. Whisper often splits a longer sentence
     #     and the listener only captures the tail ("and you're doing",
     #     "but I was thinking"). These are never complete commands.
