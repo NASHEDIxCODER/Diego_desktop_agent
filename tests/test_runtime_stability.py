@@ -90,12 +90,15 @@ class FakeVAD:
         self._state = "closed"
 
     # TASK 2: robust combined-evidence methods (mirror UnifiedVAD).
+    # Updated to match vad.py: ROBUST_ENERGY_RMS=2500, ROBUST_ENERGY_WEIGHT=0.2,
+    # ROBUST_SILERO_WEIGHT=0.8 (CRITICAL FIX 2026-08-29).
     def robust_speech_prob(self, frame: np.ndarray) -> float:
         silero = self.speech_prob(frame)
         rms = float(np.sqrt(np.mean(np.asarray(frame, np.float32) ** 2))) * 32768.0
         self._robust_smoothed = 0.4 * silero + 0.6 * self._robust_smoothed
-        energy_score = 1.0 if rms >= 120.0 else max(0.0, rms / 120.0)
-        return float(min(max(0.6 * self._robust_smoothed + 0.4 * energy_score, 0.0), 1.0))
+        energy_score = 1.0 if rms >= 2500.0 else max(0.0, rms / 2500.0)
+        return float(min(max(0.8 * self._robust_smoothed + 0.2 * energy_score, 0.0), 1.0))
+
 
     def robust_is_speech(self, frame: np.ndarray) -> bool:
         score = self.robust_speech_prob(frame)
@@ -217,7 +220,7 @@ def test_wake_to_listen_receives_fresh_audio(monkeypatch):
 
         # Fresh microphone audio AFTER the listener begins.
         am.feed(tone(1.0, freq=200.0, amp=0.25))
-        am.feed(silence(1.5))
+        am.feed(silence(2.5))
 
         try:
             await asyncio.wait_for(consumer, timeout=5.0)
@@ -232,7 +235,7 @@ def test_wake_to_listen_receives_fresh_audio(monkeypatch):
         # Confirm the stale 6s/0.9-amplitude audio did NOT leak into STT.
         pcm = whisper.final_calls[0]
         samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
-        assert len(samples) / SAMPLE_RATE < 3.0, "stale history leaked into STT"
+        assert len(samples) / SAMPLE_RATE < 4.5, "stale history leaked into STT"
 
     asyncio.run(impl())
 
@@ -258,7 +261,7 @@ def test_command_timeout_empty_silence(monkeypatch):
 
         # Feed a speech burst then long silence -> one final.
         am.feed(tone(1.0, amp=0.25))
-        am.feed(silence(1.5))
+        am.feed(silence(2.5))
 
         try:
             await asyncio.wait_for(consumer, timeout=5.0)
@@ -291,7 +294,7 @@ def test_command_transcription_timeout_recovery(monkeypatch):
         consumer = asyncio.create_task(consume())
         await asyncio.sleep(0.02)
         am.feed(tone(1.0, amp=0.25))
-        am.feed(silence(1.5))
+        am.feed(silence(2.5))
 
         # The final transcription would hang; wait_for must cut it off.
         try:

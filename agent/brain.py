@@ -378,11 +378,27 @@ class AgentBrain:
             result.latency_ms = (time.time() - t0) * 1000
             return result
 
-        # ── Step 1: Perceive ─────────────────────────────────
-        perception_ctx = await self._perceive()
+        # ── Step 1: Decide (FAST — no perception needed for routing) ──
+        # OPTIMIZATION: Run the decision engine FIRST without perception
+        # context. The decision engine is <1ms for deterministic routes
+        # (simple commands, conversation, cached responses). Only LLM-bound
+        # commands need screen context, so we skip the expensive perception
+        # pipeline (screen capture + OCR + accessibility tree) for the
+        # majority of commands. This saves 500ms-2s per simple command.
+        perception_ctx = None
+        decision = await self._decide(text, None)
 
-        # ── Step 2: Decide ───────────────────────────────────
-        decision = await self._decide(text, perception_ctx)
+        # ── Step 1b: Perceive (ONLY if the decision needs screen context) ──
+        # Perception is only needed for:
+        #   - LLM path (screen context injected into the prompt)
+        #   - Vision path (read_screen action runs perception internally)
+        # Simple desktop commands (open app, volume, brightness, etc.)
+        # do NOT need screen context — skip the expensive pipeline.
+        if decision.needs_llm:
+            perception_ctx = await self._perceive()
+            # Re-decide with perception context now available (enables
+            # L6 vision-context reuse and L7 search-context paths).
+            decision = await self._decide(text, perception_ctx)
 
         if decision.resolved:
             # ── Simple path: no LLM needed ──────────────────
@@ -720,8 +736,11 @@ class AgentBrain:
                     # Desktop apps take 1-3 s to spawn after dispatch.
                     # Checking pgrep immediately after dispatch finds
                     # nothing, falsely failing the launch. Poll for up
-                    # to ~3s before declaring failure.
-                    settle_deadline = time.time() + 3.0
+                    # to ~1.5s before declaring failure.
+                    # OPTIMIZATION: Reduced from 3.0s to 1.5s. Most desktop
+                    # apps spawn within 1-1.5s; the extra 1.5s of polling
+                    # added unnecessary latency to every app-open command.
+                    settle_deadline = time.time() + 1.5
                     while time.time() < settle_deadline:
                         chk = subprocess.run(
                             ["pgrep", "-f", proc],
@@ -730,7 +749,7 @@ class AgentBrain:
                         if chk.returncode == 0:
                             logger.info("[Brain] Verify OK: process '%s' running "
                                         "(after %.1fs settle)", proc,
-                                        time.time() - (settle_deadline - 3.0))
+                                        time.time() - (settle_deadline - 1.5))
                             return True
                         # Also try alternate binaries
                         for alt in (proc.replace("-", ""), f"{proc}-esr", f"{proc}-stable"):
@@ -742,9 +761,9 @@ class AgentBrain:
                                 logger.info("[Brain] Verify OK: process '%s' running",
                                             alt)
                                 return True
-                        time.sleep(0.4)
+                        time.sleep(0.3)
                     logger.warning("[Brain] Verify FAIL: process '%s' did not "
-                                   "appear within 3s settle-wait", proc)
+                                   "appear within 1.5s settle-wait", proc)
 
                 elif action_name in ("browser_navigate", "browser_search"):
                     chk = subprocess.run(

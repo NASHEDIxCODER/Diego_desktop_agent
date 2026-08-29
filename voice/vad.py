@@ -38,14 +38,26 @@ ENERGY_THRESHOLD = 300.0
 #
 # These are the combined-evidence thresholds. They are NOT a blind
 # lowering of the Silero threshold; energy + duration must ALSO agree.
-ROBUST_SILERO_WEIGHT = 0.6        # weight of Silero prob in combined score
-ROBUST_ENERGY_WEIGHT = 0.4        # weight of energy evidence
+#
+# CRITICAL FIX (2026-08-29): ROBUST_ENERGY_RMS raised from 120→2500 and
+# ROBUST_ENERGY_WEIGHT reduced from 0.4→0.2. The old 120 floor was far
+# below this system's background noise (RMS ~1200-2300), so energy_score
+# was ALWAYS 1.0. With weight 0.4, the combined score was always ≥0.4
+# (0.6*0 + 0.4*1.0), above ROBUST_EXIT_SCORE (0.35). The VAD could NEVER
+# detect silence — the state machine never transitioned to SILENCE_PENDING
+# and always hit the 20s safety timeout. Raising the floor to 2500 (above
+# background noise, below real speech ~3500-6500) and reducing the weight
+# to 0.2 ensures the combined score drops below 0.35 during silence while
+# still providing energy evidence for quiet speech detection.
+ROBUST_SILERO_WEIGHT = 0.8        # weight of Silero prob in combined score
+ROBUST_ENERGY_WEIGHT = 0.2        # weight of energy evidence
 ROBUST_SPEECH_PROB = 0.35         # Silero prob floor to consider speech
-ROBUST_ENERGY_RMS = 120.0         # int16-scale RMS floor for voiced audio
+ROBUST_ENERGY_RMS = 2500.0        # int16-scale RMS floor for voiced audio
 ROBUST_ENTER_SCORE = 0.55         # combined score to ENTER speech
 ROBUST_EXIT_SCORE = 0.35          # combined score to EXIT speech (hysteresis)
 ROBUST_MIN_SPEECH_FRAMES = 3      # min consecutive speech frames (≈96ms)
 ROBUST_SMOOTH_ALPHA = 0.4         # EMA smoothing for Silero prob
+
 
 
 class UnifiedVAD:

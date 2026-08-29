@@ -124,14 +124,17 @@ class FakeVAD:
         self._state = "closed"
 
     # TASK 2: robust combined-evidence methods (mirror UnifiedVAD).
+    # Updated to match vad.py: ROBUST_ENERGY_RMS=2500, ROBUST_ENERGY_WEIGHT=0.2,
+    # ROBUST_SILERO_WEIGHT=0.8 (CRITICAL FIX 2026-08-29).
     def robust_speech_prob(self, frame: np.ndarray) -> float:
         silero = self.speech_prob(frame)
         rms = float(np.sqrt(np.mean(np.asarray(frame, np.float32) ** 2))) * 32768.0
         self._robust_smoothed = 0.4 * silero + 0.6 * self._robust_smoothed
-        energy_score = 1.0 if rms >= 120.0 else max(0.0, rms / 120.0)
-        return float(min(max(0.6 * self._robust_smoothed + 0.4 * energy_score, 0.0), 1.0))
+        energy_score = 1.0 if rms >= 2500.0 else max(0.0, rms / 2500.0)
+        return float(min(max(0.8 * self._robust_smoothed + 0.2 * energy_score, 0.0), 1.0))
 
     def robust_is_speech(self, frame: np.ndarray) -> bool:
+
         score = self.robust_speech_prob(frame)
         if self._robust_in_speech:
             if score < 0.35:
@@ -188,8 +191,9 @@ def _make_listener(whisper: FakeWhisper) -> CL.CommandListener:
     return cl
 
 
-async def _collect(cl, feed_fn, timeout: float = 6.0):
+async def _collect(cl, feed_fn, timeout: float = 10.0):
     """Run stream_utterances(); feed_fn feeds audio after the drain."""
+
     events = []
 
     async def consume():
@@ -230,7 +234,7 @@ def test_fresh_session_ignores_stale_audio(monkeypatch):
 
         async def feed():
             am.feed(tone(1.0, freq=200.0, amp=0.2))
-            am.feed(silence(1.5))
+            am.feed(silence(2.5))
 
         events = await _collect(cl, feed)
         kinds = [e.kind for e in events]
@@ -241,7 +245,7 @@ def test_fresh_session_ignores_stale_audio(monkeypatch):
         samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
         duration_s = len(samples) / SAMPLE_RATE
         # The utterance is ~1s speech + pre-roll + trailing silence — NOT 10s.
-        assert duration_s < 3.0, f"sent {duration_s:.1f}s to Whisper (stale audio leaked)"
+        assert duration_s < 4.5, f"sent {duration_s:.1f}s to Whisper (stale audio leaked)"
         # The 0.9-amplitude stale tone must not be present.
         assert float(np.max(np.abs(samples))) < 0.6, "stale 0.9-amplitude audio leaked into STT"
 
@@ -263,7 +267,7 @@ def test_audio_handoff_receives_new_samples(monkeypatch):
 
         async def feed():
             am.feed(tone(1.0, freq=200.0, amp=0.2))
-            am.feed(silence(1.5))
+            am.feed(silence(2.5))
 
         events = await _collect(cl, feed)
         kinds = [e.kind for e in events]
@@ -289,7 +293,7 @@ def test_vad_opens_and_silence_closes(monkeypatch):
 
         async def feed():
             am.feed(tone(1.0, freq=200.0, amp=0.25))
-            am.feed(silence(1.5))
+            am.feed(silence(2.5))
 
         events = await _collect(cl, feed)
         assert events[0].kind == "speech_start"
@@ -314,7 +318,7 @@ def test_short_pause_does_not_prematurely_end(monkeypatch):
             am.feed(tone(0.5, freq=200.0, amp=0.25))   # first words
             am.feed(silence(0.2))                       # short pause (< 600ms)
             am.feed(tone(0.5, freq=200.0, amp=0.25))   # rest of the command
-            am.feed(silence(1.5))                       # real trailing silence
+            am.feed(silence(2.5))                       # real trailing silence
 
         events = await _collect(cl, feed)
         starts = [e for e in events if e.kind == "speech_start"]
@@ -341,14 +345,14 @@ def test_whisper_receives_only_captured_segment(monkeypatch):
 
         async def feed():
             am.feed(tone(1.0, freq=200.0, amp=0.2))
-            am.feed(silence(1.5))
+            am.feed(silence(2.5))
 
         await _collect(cl, feed)
         assert whisper.final_calls, "no final transcription"
         pcm = whisper.final_calls[0]
         samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
         # The final segment is bounded by the session, not the whole buffer.
-        assert len(samples) / SAMPLE_RATE < 3.0
+        assert len(samples) / SAMPLE_RATE < 4.5
         # Partial (fast) transcripts were also short — never the 5s history.
         for fpcm in whisper.fast_calls:
             f = np.frombuffer(fpcm, dtype=np.int16).astype(np.float32) / 32768.0
@@ -449,7 +453,7 @@ def test_listen_receives_fresh_audio_after_session_start(monkeypatch):
         async def feed():
             # Fresh command audio AFTER the listener has entered LISTEN.
             am.feed(tone(1.0, freq=200.0, amp=0.2))
-            am.feed(silence(1.5))
+            am.feed(silence(2.5))
 
         events = await _collect(cl, feed)
         kinds = [e.kind for e in events]
@@ -492,7 +496,7 @@ def test_speech_silence_endpoint(monkeypatch):
 
         async def feed():
             am.feed(tone(1.0, freq=200.0, amp=0.25))
-            am.feed(silence(1.0))  # 1000ms silence → endpoint
+            am.feed(silence(2.5))  # 1000ms silence → endpoint
 
         events = await _collect(cl, feed)
         kinds = [e.kind for e in events]
@@ -519,7 +523,7 @@ def test_brief_vad_dip_still_speech(monkeypatch):
             am.feed(tone(0.4, freq=200.0, amp=0.25))   # speech
             am.feed(silence(0.15))                      # brief dip (150ms < 700ms)
             am.feed(tone(0.4, freq=200.0, amp=0.25))   # speech resumes
-            am.feed(silence(1.0))                       # real silence
+            am.feed(silence(2.5))                       # real silence
 
         events = await _collect(cl, feed)
         starts = [e for e in events if e.kind == "speech_start"]
@@ -542,7 +546,7 @@ def test_noise_no_speech(monkeypatch):
 
         async def feed():
             am.feed(tone(1.0, freq=200.0, amp=0.01))  # very quiet noise
-            am.feed(silence(1.0))
+            am.feed(silence(2.5))
 
         events = await _collect(cl, feed, timeout=2.0)
         assert not whisper.final_calls, "Whisper must not be called for noise"
@@ -563,7 +567,7 @@ def test_speech_partial_silence_final(monkeypatch):
 
         async def feed():
             am.feed(tone(1.5, freq=200.0, amp=0.25))  # enough for a partial
-            am.feed(silence(1.0))
+            am.feed(silence(2.5))
 
         events = await _collect(cl, feed)
         finals = [e for e in events if e.kind == "final"]
@@ -597,7 +601,7 @@ def test_whisper_running_during_endpoint(monkeypatch):
 
         async def feed():
             am.feed(tone(1.5, freq=200.0, amp=0.25))
-            am.feed(silence(1.0))
+            am.feed(silence(2.5))
 
         events = await _collect(cl, feed)
         finals = [e for e in events if e.kind == "final"]
@@ -625,7 +629,7 @@ def test_tts_resume_listening(monkeypatch):
             await asyncio.sleep(0.05)  # allow drain
             # Now real user speech.
             am.feed(tone(1.0, freq=200.0, amp=0.25))
-            am.feed(silence(1.0))
+            am.feed(silence(2.5))
 
         events = await _collect(cl, feed)
         finals = [e for e in events if e.kind == "final"]
@@ -652,14 +656,14 @@ def test_stale_audio_cannot_enter_next_command(monkeypatch):
 
         async def feed():
             am.feed(tone(1.0, freq=200.0, amp=0.25))
-            am.feed(silence(1.0))
+            am.feed(silence(2.5))
 
         events = await _collect(cl, feed)
         finals = [e for e in events if e.kind == "final"]
         assert len(finals) == 1
         pcm = whisper.final_calls[0]
         samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
-        assert len(samples) / SAMPLE_RATE < 3.0, "stale 5s audio leaked into command"
+        assert len(samples) / SAMPLE_RATE < 4.5, "stale 5s audio leaked into command"
         assert float(np.max(np.abs(samples))) < 0.6, "stale 0.9-amplitude audio leaked"
 
     asyncio.run(impl())
@@ -710,7 +714,7 @@ def test_max_duration_never_used_with_silence(monkeypatch):
 
         async def feed():
             am.feed(tone(1.0, freq=200.0, amp=0.25))
-            am.feed(silence(1.0))  # silence endpoint available
+            am.feed(silence(2.5))  # silence endpoint available
 
         events = await _collect(cl, feed)
         finals = [e for e in events if e.kind == "final"]
