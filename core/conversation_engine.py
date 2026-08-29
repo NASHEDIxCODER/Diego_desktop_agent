@@ -129,6 +129,7 @@ class ConversationEngine:
         self._state: Optional[EngineState] = None
         self._state_entered: float = time.monotonic()
         self._running = False
+        self._no_wake: bool = False
 
         # Face-auth session
         self._auth_user: Optional[str] = None
@@ -212,8 +213,15 @@ class ConversationEngine:
 
     # ── Main run loop ─────────────────────────────────────
 
-    async def run(self) -> None:
-        """IDLE → WAKE → (FACE_AUTH) → LISTEN → THINK → SPEAK → IDLE … forever."""
+    async def run(self, no_wake: bool = False) -> None:
+        """IDLE → WAKE → (FACE_AUTH) → LISTEN → THINK → SPEAK → IDLE … forever.
+
+        When `no_wake` is True, the engine bypasses wake detection and face
+        authentication entirely, entering LISTEN directly. This is the
+        `--no-wake` development path: VAD, STT, routing, LLM, search, tools,
+        verification and TTS all remain fully active.
+        """
+        self._no_wake = no_wake
         self._running = True
         loop = asyncio.get_event_loop()
 
@@ -262,6 +270,13 @@ class ConversationEngine:
         # ── Forever loop ──
         try:
             while self._running:
+                if self._no_wake:
+                    # ── --no-wake path: bypass wake + auth, enter LISTEN ──
+                    logger.info("[ENGINE] --no-wake: bypassing wake detection and face auth")
+                    self._set_state(EngineState.LISTEN)
+                    await self._conversation_session()
+                    continue
+
                 # STATE: WAKE
                 self._set_state(EngineState.WAKE)
                 event = await self._wake_listen_loop()
@@ -421,7 +436,15 @@ class ConversationEngine:
                 return
 
         events: "asyncio.Queue[UtteranceEvent]" = asyncio.Queue()
-        stream = command_listener.stream_utterances()
+        # CRITICAL FIX (2026-08-29): stream_utterances() can raise (e.g.
+        # _frames_to_bytes ValueError on empty frames). Wrap it so the
+        # engine never crashes — it recovers by returning to IDLE.
+        try:
+            stream = command_listener.stream_utterances()
+        except Exception as e:
+            logger.error("[LISTEN] stream_utterances failed: %s", e)
+            await self._speak_guarded("I had trouble starting to listen.")
+            return
         pump = asyncio.create_task(self._stt_event_pump(stream, events))
 
         self._session_deadline = time.monotonic() + CONVERSATION_TIMEOUT_S
@@ -699,7 +722,17 @@ class ConversationEngine:
         monitor = asyncio.create_task(self._watch_interruption(events))
         command_listener.pause_listening()
         try:
-            played = await streaming_tts.speak_sentences(sentences(), interrupt)
+            # CRITICAL FIX (2026-08-29): TTS can hang (e.g. Kokoro model
+            # loading). Add a hard timeout so the SPEAK state watchdog can
+            # recover. 120s matches the SPEAK state ceiling.
+            played = await asyncio.wait_for(
+                streaming_tts.speak_sentences(sentences(), interrupt),
+                timeout=120.0,
+            )
+        except asyncio.TimeoutError:
+            logger.error("[SPEAK] TTS timed out after 120s — recovering")
+            streaming_tts.stop()
+            played = False
         finally:
             # Let the TTS echo decay before resuming, so Diego never
             # transcribes its own voice as a user command. 0.5s covers

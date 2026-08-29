@@ -450,12 +450,15 @@ def _validate_transcript(
     if confidence < -0.6 and speech_dur_ms < 600 and word_count <= 2:
         return False, FAILURE_LOW_CONFIDENCE
 
-    # 6b. CRITICAL FIX (2026-08-23): Reject fragmented utterances that
-
-    #     begin with a conjunction. Whisper often splits a longer sentence
-    #     and the listener only captures the tail ("and you're doing",
-    #     "but I was thinking"). These are never complete commands.
-    if re.match(r'^(and|but|or|so|because|then|if|when|while)\b', t):
+    # 6b. CRITICAL FIX (2026-08-29): Reject fragmented utterances that
+    #     begin with a conjunction ONLY when they are short fragments.
+    #     Whisper often splits a longer sentence and the listener only
+    #     captures the tail ("and you're doing", "but I was thinking").
+    #     However, "and open Chrome" is a VALID command — the user may
+    #     naturally start with "and". Only reject when the transcript is
+    #     short (<= 4 words) AND starts with a conjunction, which is the
+    #     classic fragment signature.
+    if re.match(r'^(and|but|or|so|because|then|if|when|while)\b', t) and word_count <= 4:
         return False, FAILURE_GARBAGE
 
     # Accepted.
@@ -1348,6 +1351,19 @@ class CommandListener:
         dur_ms = len(frames) * (FRAME_SAMPLES / SAMPLE_RATE * 1000)
         num_samples = len(pcm) // 2
 
+        # CRITICAL FIX: never crash on empty frames. If the audio buffer
+        # was reset between endpoint detection and _finalize(), return a
+        # failure event instead of raising ValueError from np.concatenate.
+        if not frames or len(pcm) < 512:
+            logger.info("[CMD-LISTEN] Utterance DISCARDED (empty_frames: %d frames, %d bytes)",
+                        len(frames), len(pcm))
+            return UtteranceEvent(
+                kind="failure", is_final=True,
+                started_at=start, ended_at=time.time(),
+                audio_duration_ms=dur_ms,
+                endpoint_reason=endpoint_reason,
+                failure_reason=FAILURE_TRANSCRIPTION_FAILED)
+
         if dur_ms < cfg.min_utterance_ms or len(pcm) < 512:
             logger.info("[CMD-LISTEN] Utterance DISCARDED (too_short: %.0fms)", dur_ms)
             return UtteranceEvent(
@@ -1425,7 +1441,11 @@ class CommandListener:
     def _frames_to_bytes(frames: List[np.ndarray]) -> bytes:
         if not frames:
             return b""
-        return float32_to_int16(np.concatenate(frames)).tobytes()
+        try:
+            return float32_to_int16(np.concatenate(frames)).tobytes()
+        except ValueError:
+            # Empty or malformed frames — never crash the streaming loop.
+            return b""
 
     @staticmethod
     def _iter_frames_overlap(audio: np.ndarray, step: int):

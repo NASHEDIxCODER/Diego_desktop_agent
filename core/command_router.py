@@ -676,15 +676,16 @@ class CommandRouter:
                         elif action_name == "scroll":
                             params["direction"] = g
                         elif action_name == "play_media":
-                            # For "search youtube for lo-fi" → play_media with YouTube search
-                            if g and "youtube" in g.lower() and ("for " in g.lower() or " " in g.strip()):
-                                # Convert "youtube for lo-fi" → query "lo-fi", force YouTube
-                                cleaned = g.strip()
-                                cleaned = re.sub(r"^\s*(?:for|about)\s+", "", cleaned, flags=re.IGNORECASE)
-                                params["query"] = cleaned
-                                params["youtube"] = True
-                            else:
+                            # For "search youtube for lo-fi" → play_media with YouTube search.
+                            # The regex `^search\s+youtube\s+(?:for\s+)?(.+)$` already consumed
+                            # "search youtube", so the captured group `g` is just the query
+                            # (e.g. "lo-fi hip hop"). The "youtube" keyword is in the ORIGINAL
+                            # text, not in `g`. Check the full text instead.
+                            if g:
                                 params["query"] = g
+                                # Force YouTube when the original text mentioned "youtube"
+                                if "youtube" in text.lower():
+                                    params["youtube"] = True
                         elif action_name == "browser_search":
                             params["query"] = g
                         elif action_name == "browser_navigate":

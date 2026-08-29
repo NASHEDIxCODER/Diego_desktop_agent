@@ -359,7 +359,7 @@ class DecisionEngine:
         # L4 — Reuse an existing successful plan
         # ──────────────────────────────────────────────────────
 
-        result = self._check_reusable_plan(
+        result = await self._check_reusable_plan(
             normalized
         )
 
@@ -787,6 +787,18 @@ class DecisionEngine:
                 )
 
         # ── Knowledge base search ────────────────────────────
+        # CRITICAL FIX (2026-08-29): The old keyword-match heuristic
+        # (>= 2 overlapping words) was too loose — it matched unrelated
+        # knowledge-base entries to valid questions like "tell me about
+        # animal DNA". Only answer from the knowledge base when the
+        # query is a clear memory recall ("what was my project called",
+        # "remember my...") or the match is very strong (>= 3 keywords).
+        # Explicit web-search requests ("search for X", "tell me about X")
+        # must NOT be answered from the knowledge base — they need search.
+
+        # Skip knowledge base for explicit search requests.
+        if self._needs_search(text_lower):
+            return None
 
         try:
             from core.background_learning import (
@@ -803,11 +815,14 @@ class DecisionEngine:
                     kb_results[0].summary[:200]
                 )
 
+                # Require a STRONG keyword overlap (>= 3 meaningful words)
+                # to avoid unrelated matches.
                 if (
                     len(summary) > 50
                     and self._keyword_match(
                         text_lower,
                         summary,
+                        min_overlap=3,
                     )
                 ):
                     logger.info(
@@ -925,7 +940,7 @@ class DecisionEngine:
     # L5 — Reusable plans
     # ──────────────────────────────────────────────────────────
 
-    def _check_reusable_plan(
+    async def _check_reusable_plan(
         self,
         text: str,
     ) -> Optional[Decision]:
@@ -969,16 +984,18 @@ class DecisionEngine:
                         confidence,
                     )
 
+                    # CRITICAL FIX (2026-08-29): plan_steps are natural-language
+                    # descriptions (e.g. "Open PyCharm project GhostLine"), NOT
+                    # action names. Passing them directly as `action` would make
+                    # ActionDispatcher.execute() return "Couldn't Open PyCharm
+                    # project GhostLine". Map each step to a real action name
+                    # via the command router's simple-command patterns.
+                    actions = await self._map_plan_steps_to_actions(plan_steps)
+
                     return Decision(
                         path=DecisionPath.REUSED_PLAN,
                         needs_llm=False,
-                        actions=[
-                            {
-                                "action": step,
-                                "params": {},
-                            }
-                            for step in plan_steps
-                        ],
+                        actions=actions,
                         response=(
                             "I know how to do this. "
                             "Running the plan."
@@ -1014,6 +1031,40 @@ class DecisionEngine:
             )
 
         return None
+
+    # ──────────────────────────────────────────────────────────
+    # Plan-step → action mapping
+    # ──────────────────────────────────────────────────────────
+
+    async def _map_plan_steps_to_actions(
+        self,
+        plan_steps: List[str],
+    ) -> List[Dict[str, Any]]:
+        """Map natural-language plan steps to executable action dicts.
+
+        Each step is routed through the CommandRouter's simple-command
+        patterns. If a step matches a known action (e.g. "open firefox"),
+        it becomes a real action dict. Otherwise it is skipped — the
+        Brain's LLM path will handle it instead.
+        """
+        actions: List[Dict[str, Any]] = []
+        if self._command_router is None:
+            return actions
+
+        for step in plan_steps:
+            try:
+                route = await self._command_router.route(step)
+                from core.command_router import RouteKind
+                if route.kind == RouteKind.SIMPLE_DESKTOP and route.action:
+                    actions.append(route.action)
+                elif route.kind == RouteKind.KNOWN_WORKFLOW and route.actions:
+                    actions.extend(route.actions)
+            except Exception as e:
+                logger.debug(
+                    "[DECIDE:L5] Plan step mapping failed for '%s': %s",
+                    step, e,
+                )
+        return actions
 
     # ──────────────────────────────────────────────────────────
     # Vision heuristic
@@ -1136,6 +1187,7 @@ class DecisionEngine:
     def _keyword_match(
         query: str,
         text: str,
+        min_overlap: int = 2,
     ) -> bool:
         """Check whether meaningful keywords overlap."""
 
@@ -1170,7 +1222,7 @@ class DecisionEngine:
 
         overlap = query_words & text_words
 
-        return len(overlap) >= 2
+        return len(overlap) >= min_overlap
 
     # ──────────────────────────────────────────────────────────
     # Statistics

@@ -241,7 +241,7 @@ class ActionDispatcher:
 
         # ── Browser ───────────────────────────────────────
         if name == "browser_navigate":
-            url = params.get("url", "")
+            url = params.get("url") or ""
             if not url.startswith(("http://", "https://")):
                 url = "https://" + url
             if ex:

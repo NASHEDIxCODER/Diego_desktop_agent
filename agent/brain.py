@@ -742,8 +742,12 @@ class AgentBrain:
                     # added unnecessary latency to every app-open command.
                     settle_deadline = time.time() + 1.5
                     while time.time() < settle_deadline:
+                        # CRITICAL FIX (2026-08-29): Use `pgrep -x` (exact
+                        # process name) instead of `pgrep -f` (full command
+                        # line). `pgrep -f` can match Diego's own process tree
+                        # or wrapper shells, falsely verifying success.
                         chk = subprocess.run(
-                            ["pgrep", "-f", proc],
+                            ["pgrep", "-x", proc],
                             capture_output=True, text=True, timeout=3,
                         )
                         if chk.returncode == 0:
@@ -754,7 +758,7 @@ class AgentBrain:
                         # Also try alternate binaries
                         for alt in (proc.replace("-", ""), f"{proc}-esr", f"{proc}-stable"):
                             chk2 = subprocess.run(
-                                ["pgrep", "-f", alt],
+                                ["pgrep", "-x", alt],
                                 capture_output=True, text=True, timeout=3,
                             )
                             if chk2.returncode == 0:
@@ -1007,8 +1011,12 @@ class AgentBrain:
                 "notion-app": "notion", "pycharm": "pycharm",
             }
             proc = proc_map.get(app, app)
+            # CRITICAL FIX (2026-08-29): Use `pgrep -x` (exact process name)
+            # instead of `pgrep -f` (full command line). `pgrep -f` can match
+            # Diego's own process tree or wrapper shells whose cmdline contains
+            # the app name, falsely reporting the app as already running.
             chk = subprocess.run(
-                ["pgrep", "-f", proc],
+                ["pgrep", "-x", proc],
                 capture_output=True, text=True, timeout=2,
             )
             if chk.returncode == 0:

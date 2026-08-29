@@ -103,7 +103,7 @@ async def authenticate_on_wake() -> Optional[str]:
 # Conversational runtime
 # ═══════════════════════════════════════════════════════════════
 
-async def run_Diego(no_auth: bool = False) -> None:
+async def run_Diego(no_auth: bool = False, no_wake: bool = False) -> None:
     """
     BOOT → LOAD MODELS → INIT AUDIO → WAIT_WAKE.
 
@@ -173,7 +173,7 @@ async def run_Diego(no_auth: bool = False) -> None:
     await background_learner.start()
 
     # ── Run engine + watchdog concurrently ────────────────
-    engine_task = asyncio.create_task(conversation_engine.run())
+    engine_task = asyncio.create_task(conversation_engine.run(no_wake=no_wake))
 
     logger.info("Listening for wake word...")
 
@@ -243,7 +243,7 @@ async def shutdown() -> None:
     logger.info("[DIEGO] Shutdown complete.")
 
 
-async def _main_async(no_auth: bool, record_session: bool = False) -> None:
+async def _main_async(no_auth: bool, no_wake: bool = False, record_session: bool = False) -> None:
     loop = asyncio.get_running_loop()
     stop = asyncio.Event()
 
@@ -261,7 +261,7 @@ async def _main_async(no_auth: bool, record_session: bool = False) -> None:
         from core.manual_session_recorder import session_recorder
         session_recorder.enable()
 
-    run_task = asyncio.create_task(run_Diego(no_auth=no_auth))
+    run_task = asyncio.create_task(run_Diego(no_auth=no_auth, no_wake=no_wake))
     stop_task = asyncio.create_task(stop.wait())
 
     done, pending = await asyncio.wait(
@@ -455,14 +455,14 @@ async def cmd_inspect_screen() -> None:
     await screen_capture_service._stop()
 
 
-def run(no_auth: bool = False, record_session: bool = False) -> None:
+def run(no_auth: bool = False, no_wake: bool = False, record_session: bool = False) -> None:
     """Canonical blocking entry point — boots Diego and runs until Ctrl+C.
 
     Used by BOTH `python Diego.py` and `python main.py` so there is exactly
     ONE runtime entry path.
     """
     try:
-        asyncio.run(_main_async(no_auth=no_auth, record_session=record_session))
+        asyncio.run(_main_async(no_auth=no_auth, no_wake=no_wake, record_session=record_session))
     except KeyboardInterrupt:
         pass
 
@@ -483,6 +483,8 @@ def main() -> None:
 
     parser.add_argument("--no-auth", action="store_true",
                         help="Skip face authentication (development only)")
+    parser.add_argument("--no-wake", action="store_true",
+                        help="Bypass wake detection and face auth — enter LISTEN directly (development only)")
     parser.add_argument("--status", action="store_true",
                         help="Show subsystem status and exit")
     args = parser.parse_args()
@@ -499,7 +501,7 @@ def main() -> None:
         asyncio.run(cmd_inspect_screen())
         return
 
-    run(no_auth=args.no_auth)
+    run(no_auth=args.no_auth, no_wake=args.no_wake)
 
 
 if __name__ == "__main__":

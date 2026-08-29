@@ -245,6 +245,8 @@ def main() -> None:
                         help="Record 100 wake phrases + train custom verifier")
     parser.add_argument("--no-auth", action="store_true",
                         help="Skip face authentication (development only)")
+    parser.add_argument("--no-wake", action="store_true",
+                        help="Bypass wake detection and face auth — enter LISTEN directly (development only)")
     parser.add_argument("--record-session", action="store_true",
                         help="Record every conversation turn to logs/manual_voice_session.json")
 
@@ -290,7 +292,7 @@ def main() -> None:
 
     # ── Default: the conversational runtime (boots once, waits forever
     # for the wake word, never exits unless the user quits). ──
-    Diego.run(no_auth=args.no_auth, record_session=args.record_session)
+    Diego.run(no_auth=args.no_auth, no_wake=args.no_wake, record_session=args.record_session)
 
 
 if __name__ == "__main__":

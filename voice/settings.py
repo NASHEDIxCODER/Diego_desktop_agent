@@ -165,3 +165,7 @@ class VoiceSettings:
 
 # Global singleton
 voice_settings = VoiceSettings()
+# CRITICAL FIX (2026-08-29): update_from_env() was never called, so
+# environment variables like TTS_ENGINE, WAKE_WORD, LANG_CODE were
+# silently ignored. Call it once at import time.
+voice_settings.update_from_env()
