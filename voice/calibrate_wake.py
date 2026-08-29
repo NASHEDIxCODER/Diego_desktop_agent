@@ -419,11 +419,18 @@ def train() -> bool:
     base_stem = Path(base_model_path).stem
     print(f"  Base model: {base_stem}")
 
-    # NOTE: `inference_framework` is NOT passed here. The installed
-    # openwakeword version forwards **kwargs to AudioFeatures.__init__,
-    # which only accepts melspec/embedding paths, sr, and ncpu. Passing
-    # inference_framework raises TypeError and breaks wake detection.
-    oww = OWWModel(wakeword_model_paths=[str(base_model_path)])
+    # Select the inference framework based on the model file extension.
+    # The openwakeword Model defaults to inference_framework="tflite",
+    # which raises ValueError when an ONNX model is provided. We must
+    # explicitly select "onnx" for .onnx models. `inference_framework`
+    # is an explicit named parameter of Model.__init__ (forwarded to
+    # AudioFeatures.__init__), NOT part of **kwargs, so it does not
+    # cause a TypeError.
+    inference_framework = "onnx" if base_model_path.suffix == ".onnx" else "tflite"
+    oww = OWWModel(
+        wakeword_models=[str(base_model_path)],
+        inference_framework=inference_framework,
+    )
     feats_ndx = oww.model_inputs[base_stem]
 
     def harvest(dat: np.ndarray):

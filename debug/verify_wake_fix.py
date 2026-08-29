@@ -1,7 +1,7 @@
 import logging
 import sys
 
-sys.path.insert(0, "/home/nashedi_x_coder/PycharmProjects/Diego_desktop_agent")
+sys.path.insert(0, "/home/nashedi_x_coder/Workspace/PycharmProjects/Diego_desktop_agent")
 logging.basicConfig(level=logging.INFO)
 
 from voice.calibrate_wake import _select_base_model
@@ -17,9 +17,14 @@ print("  PASS: base model =", r)
 
 # Test 2: OWWModel can be constructed with onnx inference framework
 print("\nTEST 2: Constructing OWWModel with inference_framework='onnx'...")
-# inference_framework is NOT passed: the installed openwakeword forwards
-# **kwargs to AudioFeatures.__init__ which rejects it (TypeError).
-oww = OWWModel(wakeword_model_paths=[str(r)])
+# inference_framework is an explicit named parameter of Model.__init__
+# (forwarded to AudioFeatures.__init__), NOT part of **kwargs, so it does
+# not cause a TypeError. We must pass it explicitly for .onnx models.
+inference_framework = "onnx" if r.suffix == ".onnx" else "tflite"
+oww = OWWModel(
+    wakeword_models=[str(r)],
+    inference_framework=inference_framework,
+)
 base_stem = r.stem
 feats_ndx = oww.model_inputs[base_stem]
 print("  PASS: model constructed, feats_ndx =", feats_ndx)
