@@ -52,6 +52,12 @@ os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 if "DISPLAY" not in os.environ or not os.environ["DISPLAY"]:
     os.environ["DISPLAY"] = ":0"
+# Tesseract language data: prefer the copy bundled with Diego
+# (data/tessdata/eng.traineddata) when the system tessdata is missing.
+_TESSDATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "data", "tessdata")
+if os.path.exists(os.path.join(_TESSDATA_DIR, "eng.traineddata")):
+    os.environ.setdefault("TESSDATA_PREFIX", _TESSDATA_DIR)
 try:
     subprocess.run(["xhost", "+local:"], check=False,
                    stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
@@ -103,6 +109,37 @@ async def authenticate_on_wake() -> Optional[str]:
 # Conversational runtime
 # ═══════════════════════════════════════════════════════════════
 
+async def _warm_llm() -> None:
+    """Asynchronously warm the local LLM BEFORE the first user command.
+
+    Scheduled as a background task at startup (never per wake). Fully
+    fail-safe: if Ollama is unavailable or slow, Diego still boots and
+    the LLM simply loads on first use. Configurable via settings:
+      LLM_WARMUP_ENABLED / LLM_WARMUP_TIMEOUT_S / LLM_WARMUP_VISION
+    """
+    from config.settings import settings
+    if not settings.LLM_WARMUP_ENABLED:
+        logger.info("[LLM-WARMUP] Disabled by configuration")
+        return
+    try:
+        from agent.streaming_llm import streaming_llm
+        t0 = time.time()
+        ok = await asyncio.wait_for(
+            streaming_llm.warm_up(), timeout=settings.LLM_WARMUP_TIMEOUT_S)
+        if ok:
+            logger.info("[LLM-WARMUP] Model ready before first command "
+                        "(%.1fs, keep_alive=%s)",
+                        time.time() - t0, settings.OLLAMA_KEEP_ALIVE)
+        else:
+            logger.info("[LLM-WARMUP] Skipped (Ollama unavailable) — "
+                        "model will load on first use")
+    except asyncio.TimeoutError:
+        logger.warning("[LLM-WARMUP] Timed out after %.0fs (non-fatal)",
+                       settings.LLM_WARMUP_TIMEOUT_S)
+    except Exception as e:
+        logger.warning("[LLM-WARMUP] Failed (non-fatal): %s", e)
+
+
 async def run_Diego(no_auth: bool = False, no_wake: bool = False) -> None:
     """
     BOOT → LOAD MODELS → INIT AUDIO → WAIT_WAKE.
@@ -127,6 +164,12 @@ async def run_Diego(no_auth: bool = False, no_wake: bool = False) -> None:
     # Brain — the single orchestrator
     from agent.brain import agent_brain
     await agent_brain.initialize()
+
+    # ── LLM warm-up (async, non-blocking, fail-safe) ──
+    # Loads the Ollama model in the background so it is resident BEFORE
+    # the user's first command. Never blocks critical startup and never
+    # runs per wake — scheduled exactly once here.
+    asyncio.create_task(_warm_llm())
 
     # Wire the command router (classifies only — Brain dispatches)
     from core.command_router import command_router

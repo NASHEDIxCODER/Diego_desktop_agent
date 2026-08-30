@@ -385,10 +385,18 @@ _SIMPLE_COMMANDS = [
     # it opens the YouTube results page visibly and must NOT start playback
     # (that is what "play X on youtube" is for).
     (r"^search\s+youtube\s+(?:for\s+)?(.+)$", "youtube_search", {}),
-    (r"^search\s+(?:the\s+web\s+)?(?:for\s+)?(.+)$", "browser_search", {}),
-    (r"^google\s+(.+)$", "browser_search", {}),
-    (r"^look\s+up\s+(.+)$", "browser_search", {}),
-    (r"^find\s+(.+)$", "browser_search", {}),
+    # ── REAL web research (2026-08-30 hardening) ──
+    # "search for X" must NOT stop at opening the browser. The flow is:
+    # request → search → obtain real results → extract content → answer.
+    # Site-scoped and open-best variants must come BEFORE the generic one.
+    (r"^search\s+(?:for\s+)?(.+?)\s+and\s+open\s+(?:the\s+)?best\s+result$",
+     "web_search_open_best", {}),
+    (r"^search\s+github\s+(?:for\s+)?(.+)$", "web_search", {"site": "github.com"}),
+    (r"^search\s+(?:the\s+)?web\s+(?:for\s+)?(.+)$", "web_search", {}),
+    (r"^search\s+(?:for\s+)?(.+)$", "web_search", {}),
+    (r"^google\s+(.+)$", "web_search", {}),
+    (r"^look\s+up\s+(.+)$", "web_search", {}),
+    (r"^find\s+(.+)$", "web_search", {}),
     (r"^open\s+(?:a\s+|an\s+)?(?:video|song|music)\s+(?:on\s+)?youtube\s+(?:for\s+)?(.+)$", "play_media", {}),
 
     # Close apps
@@ -408,6 +416,12 @@ _SIMPLE_COMMANDS = [
     (r"^brightness\s*(up|increase|brighter)$", "brightness_up", {}),
     (r"^brightness\s*(down|decrease|lower|dimmer)$", "brightness_down", {}),
     (r"^brightness\s*(?:set\s+)?(?:to\s+)?(\d+)(?:\s*%| percent)?$", "brightness_set", {}),
+
+    # ── Wi-Fi / Bluetooth (2026-08-30 hardening) ──
+    (r"^(?:turn\s+)?(?:wi-?fi|wifi)\s+(on|off)$", "wifi_toggle", {}),
+    (r"^(?:turn|switch)\s+(on|off)\s+(?:the\s+)?(?:wi-?fi|wifi)$", "wifi_toggle", {}),
+    (r"^(?:turn\s+)?bluetooth\s+(on|off)$", "bluetooth_toggle", {}),
+    (r"^(?:turn|switch)\s+(on|off)\s+(?:the\s+)?bluetooth$", "bluetooth_toggle", {}),
 
     # Music control
     (r"^(?:pause|stop)\s*(?:the\s+)?(?:music|song|track|playback)$", "music_pause", {}),
@@ -439,9 +453,18 @@ _SIMPLE_COMMANDS = [
     (r"^what(?:'s| is|)(?: the)? date(?:\s+today)?\??$", "get_date", {}),
     (r"^what(?:'s| is|)(?: the)? day(?:\s+today)?\??$", "get_date", {}),
 
+    # ── Desktop awareness (2026-08-30 hardening) ──
+    (r"^what\s+apps?\s+are\s+running\??$", "list_windows", {}),
+    (r"^what\s+windows?\s+are\s+open\??$", "list_windows", {}),
+    (r"^which\s+(?:apps|windows|programs)\s+are\s+(?:running|open)\??$", "list_windows", {}),
+    (r"^what(?:'s| is)\s+(?:currently\s+)?open\??$", "list_windows", {}),
+    (r"^(?:list|show)\s+(?:running\s+)?(?:apps|windows|applications)\??$", "list_windows", {}),
+
     # Window management
-    (r"^(?:minimize|hide)(?:\s+the)?(?:\s+window)?$", "minimize_window", {}),
-    (r"^(?:maximize|restore)(?:\s+the)?(?:\s+window)?$", "maximize_window", {}),
+    # "minimize this" / "maximize this" / "minimize the window" all valid.
+    (r"^(?:minimize|hide)(?:\s+(?:the|this))?(?:\s+window)?$", "minimize_window", {}),
+    (r"^(?:maximize|restore)(?:\s+(?:the|this))?(?:\s+window)?$", "maximize_window", {}),
+    (r"^(?:close|quit)\s+(?:this\s+)?window$", "close_window", {}),
     (r"^(?:switch|change|move)\s+(?:to\s+)?(?:the\s+)?(?:next\s+)?workspace$", "switch_workspace", {}),
     (r"^(?:switch|change|move)\s+(?:to\s+)?(?:the\s+)?(?:previous|prev)\s+workspace$", "switch_workspace_prev", {}),
     (r"^(?:switch|change|move)\s+(?:to\s+)?(?:the\s+)?(?:next\s+)?desktop$", "switch_workspace", {}),
@@ -458,6 +481,15 @@ _SIMPLE_COMMANDS = [
     (r"^(?:switch|change|move)\s+(?:to\s+)?(?:the\s+)?(?:previous|prev)\s+tab$", "switch_tab_prev", {}),
     (r"^(?:switch|change|move)\s+(?:to\s+)?(?:the\s+)?(?:next\s+)?browser\s+tab$", "switch_tab", {}),
     (r"^(?:switch|change|move)\s+(?:to\s+)?(?:the\s+)?(?:previous|prev)\s+browser\s+tab$", "switch_tab_prev", {}),
+    # "switch to github.com" — website navigation must win over focus_app.
+    (r"^(?:switch|go|navigate|take\s+me)\s+(?:to\s+)?(?:the\s+)?"
+     r"([a-z0-9-]+\.(?:com|org|net|io|dev|ai|me|co|app))$", "browser_navigate", {}),
+    # "switch to Firefox" / "switch to VS Code" — focus a NAMED app window.
+    # MUST come after the specific switch patterns above. Non-app objects
+    # ("change the volume") are rejected in _match_simple via blocklist —
+    # a pure regex lookahead is defeated by backtracking of the optional
+    # "the " group.
+    (r"^(?:switch|change|move)\s+(?:to\s+)?(?:the\s+)?(.+)$", "focus_app", {}),
 
     # Scroll
     (r"^scroll\s*(down|up)$", "scroll", {}),
@@ -673,10 +705,23 @@ class CommandRouter:
     @staticmethod
     def _match_simple(text: str) -> Optional[Tuple[Dict, Optional[str]]]:
         """Try to match a simple desktop command."""
+        # Objects that must NEVER be treated as an app to focus.
+        _FOCUS_BLOCKLIST = {
+            "volume", "brightness", "music", "song", "track", "playback",
+            "channel", "it", "that", "this", "window", "tab", "workspace",
+            "screen", "light", "dark",
+        }
         for pattern, action_name, base_params in _COMPILED_SIMPLE:
             m = pattern.match(text)
             if not m:
                 continue
+            # focus_app guard: reject non-app objects (regex lookaheads
+            # are defeated by backtracking of the optional "the" group).
+            if action_name == "focus_app":
+                candidate = re.sub(
+                    r"^(?:the|to)\s+", "", (m.group(1) or "").lower().strip())
+                if not candidate or candidate.split()[0] in _FOCUS_BLOCKLIST:
+                    continue
             # Build params
             params = dict(base_params)
             groups = m.groups()
@@ -737,6 +782,28 @@ class CommandRouter:
                                 "terminal": "gnome-terminal",
                             }
                             params["app"] = app_canon.get(g.lower(), g.lower())
+                        elif action_name == "focus_app":
+                            # "switch to vscode" → focus the app's window
+                            focus_canon = {
+                                "vs code": "code", "vscode": "code",
+                                "google chrome": "google-chrome", "chrome": "google-chrome",
+                                "files": "nautilus", "file manager": "nautilus",
+                                "terminal": "gnome-terminal",
+                                "settings": "gnome-control-center",
+                                "calculator": "gnome-calculator",
+                                "telegram": "telegram-desktop",
+                                "text editor": "gedit",
+                            }
+                            params["app"] = focus_canon.get(g.lower().strip(), g.lower().strip())
+                        elif action_name == "wifi_toggle":
+                            # group is "on"/"off"
+                            action_name = "wifi_on" if g.lower() == "on" else "wifi_off"
+                            params = {}
+                        elif action_name == "bluetooth_toggle":
+                            action_name = "bluetooth_on" if g.lower() == "on" else "bluetooth_off"
+                            params = {}
+                        elif action_name in ("web_search", "web_search_open_best"):
+                            params["query"] = g
                         elif action_name == "desktop_open":
                             # Already set in base_params
                             pass
@@ -768,6 +835,15 @@ class CommandRouter:
                 "youtube_search": "Searching YouTube.",
                 "play_media": "Playing.",
                 "close_app": "Closed.",
+                "close_window": "Closed.",
+                "focus_app": "",
+                "list_windows": "",
+                "wifi_on": "Wi-Fi on.",
+                "wifi_off": "Wi-Fi off.",
+                "bluetooth_on": "Bluetooth on.",
+                "bluetooth_off": "Bluetooth off.",
+                "web_search": "",
+                "web_search_open_best": "",
             }
             conf = confirmations.get(action_name, "")
             return (action, conf)

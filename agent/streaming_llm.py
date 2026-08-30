@@ -143,6 +143,11 @@ class StreamingLLM:
         self._available = False
         self._checked = False
         self._model_names: list = []
+        self._warmed = False
+        # Measured latencies (ms) for cold vs warm first requests —
+        # used by the warm-up benchmark and startup logging.
+        self.last_cold_latency_ms: Optional[float] = None
+        self.last_warm_latency_ms: Optional[float] = None
 
     async def ensure_initialized(self) -> bool:
         """Check if Ollama is reachable and auto-detect models."""
@@ -324,11 +329,83 @@ class StreamingLLM:
             sentences.append(stripped)
         return sentences, rest
 
+    @staticmethod
+    def _is_live_request(user_text: str) -> bool:
+        """True when the utterance asks about the CURRENT desktop, screen,
+        or web — these must be answered by live tools, never by stale
+        semantic memory."""
+        t = user_text.lower().strip()
+        live_markers = (
+            "screen", "display", "window", "windows", "tab",
+            "running", "open right now", "currently open",
+            "what apps", "which apps", "what windows", "which windows",
+            "search", "look up", "google", "browse",
+            "wifi", "wi-fi", "bluetooth", "volume", "brightness",
+            "battery", "clipboard", "cpu", "ram",
+        )
+        return any(m in t for m in live_markers)
+
+    async def warm_up(self, include_vision: Optional[bool] = None) -> bool:
+        """Pre-load the LLM into Ollama's memory BEFORE the first command.
+
+        Called ONCE at startup (never per wake). Non-blocking by design:
+        the caller schedules it as a background task. Fully fail-safe —
+        if Ollama is unavailable this returns False without raising.
+
+        Also measures first-request latency so cold vs warm behaviour
+        can be compared (see debug/benchmark_llm_warmup.py).
+        """
+        try:
+            if not await self.ensure_initialized():
+                logger.info("[STREAM-LLM] Warm-up skipped: Ollama unavailable")
+                return False
+            if self._warmed:
+                return True
+
+            model = self._model or "llama3.2"
+            payload = {
+                "model": model,
+                "prompt": "hi",
+                "stream": False,
+                "keep_alive": settings.OLLAMA_KEEP_ALIVE,
+                "options": {"num_predict": 1},
+            }
+            t0 = time.time()
+            async with httpx.AsyncClient(timeout=settings.LLM_WARMUP_TIMEOUT_S) as client:
+                resp = await client.post(f"{self._base_url}/api/generate", json=payload)
+                resp.raise_for_status()
+            latency_ms = (time.time() - t0) * 1000
+            self.last_cold_latency_ms = latency_ms
+            self._warmed = True
+            logger.info("[STREAM-LLM] Warm-up complete: model=%s first-request=%.0fms "
+                        "(keep_alive=%s)", model, latency_ms, settings.OLLAMA_KEEP_ALIVE)
+
+            if include_vision if include_vision is not None else settings.LLM_WARMUP_VISION:
+                if self._vision_model:
+                    vt0 = time.time()
+                    async with httpx.AsyncClient(timeout=settings.LLM_WARMUP_TIMEOUT_S) as client:
+                        vresp = await client.post(f"{self._base_url}/api/generate", json={
+                            "model": self._vision_model,
+                            "prompt": "hi",
+                            "stream": False,
+                            "keep_alive": settings.OLLAMA_KEEP_ALIVE,
+                            "options": {"num_predict": 1},
+                        })
+                        vresp.raise_for_status()
+                    logger.info("[STREAM-LLM] Vision warm-up complete: model=%s %.0fms",
+                                self._vision_model, (time.time() - vt0) * 1000)
+            return True
+        except Exception as e:
+            # NEVER crash Diego because warm-up failed.
+            logger.warning("[STREAM-LLM] Warm-up failed (non-fatal): %s", e)
+            return False
+
     async def generate(
         self,
         user_text: str,
         cancel_event: Optional[asyncio.Event] = None,
         screen_context: Optional[str] = None,
+        web_context: Optional[str] = None,
     ) -> AsyncIterator[str]:
         """
         Stream a response as complete sentences.
@@ -339,6 +416,8 @@ class StreamingLLM:
             screen_context: Optional description of what's currently on screen.
                 Injected into the prompt so Diego can answer "what is going on"
                 or act on "click here" requests.
+            web_context: Optional extracted web-search content, injected so
+                the LLM answers from REAL results instead of stale knowledge.
 
         Yields:
             Complete sentences as soon as they're available.
@@ -356,14 +435,18 @@ class StreamingLLM:
             yield quick
             return
 
-        # Try answering directly from long-term memory (instant)
-        mem_answer = conv_memory.query_facts(user_text)
-        if mem_answer and ("what" in user_text.lower() or "who" in user_text.lower()):
-            answer = self._format_memory_answer(user_text, mem_answer)
-            conv_memory.add_user(user_text)
-            conv_memory.add_assistant(answer)
-            yield answer
-            return
+        # CRITICAL FIX (memory-override guard): semantic memory must NEVER
+        # answer an explicit CURRENT desktop / screen / web request. Old
+        # facts like "my project is Diego" must not swallow "what apps are
+        # running?" or "search the web for X". Those need live tools.
+        if not self._is_live_request(user_text):
+            mem_answer = conv_memory.query_facts(user_text)
+            if mem_answer and ("what" in user_text.lower() or "who" in user_text.lower()):
+                answer = self._format_memory_answer(user_text, mem_answer)
+                conv_memory.add_user(user_text)
+                conv_memory.add_assistant(answer)
+                yield answer
+                return
 
         conv_memory.add_user(user_text)
         context = conv_memory.build_context()
@@ -371,6 +454,10 @@ class StreamingLLM:
         prompt_parts = [DIEGO_SYSTEM_PROMPT]
         if screen_context:
             prompt_parts.append(f"\nScreen context:\n{screen_context}")
+        if web_context:
+            prompt_parts.append(
+                f"\nWeb search results (use these REAL facts; do not rely on "
+                f"your own possibly outdated knowledge):\n{web_context}")
         if context:
             prompt_parts.append(f"\nContext:\n{context}")
         prompt_parts.append(f"\nUser: {user_text}\nDiego:")
@@ -380,7 +467,10 @@ class StreamingLLM:
             "model": self._model,
             "prompt": prompt,
             "stream": True,
-            "keep_alive": 0,
+            # CRITICAL FIX: keep_alive=0 unloaded the model after EVERY
+            # request, forcing a full model reload (cold start) on every
+            # turn. The residency window is now configurable.
+            "keep_alive": settings.OLLAMA_KEEP_ALIVE,
             "options": {
                 "num_predict": 300,
                 "temperature": 0.7,
@@ -517,6 +607,7 @@ class StreamingLLM:
             "prompt": prompt,
             "images": [image_b64],
             "stream": False,
+            "keep_alive": settings.OLLAMA_KEEP_ALIVE,
             "options": {
                 "temperature": 0.1,
                 "num_predict": 220,

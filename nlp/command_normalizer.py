@@ -138,7 +138,10 @@ _VERB_ALIASES: Dict[str, str] = {
     "bring up": "open",
     "pull up": "open",
     "load": "open",
-    "switch to": "open",
+    # CRITICAL FIX (2026-08-30): "switch to" was mapped to "open", which
+    # turned "switch to Firefox" into a FRESH LAUNCH instead of focusing
+    # the existing window. "switch to X" is now preserved so the
+    # CommandRouter can route it to the focus_app action.
     "go to": "open",
     "navigate to": "open",
     "take me to": "open",
@@ -335,6 +338,21 @@ _SEARCH_PATTERNS = [
 ]
 
 
+# ── Radio / device power patterns (must run BEFORE verb aliases) ──
+# The generic "turn off" → "shutdown" verb alias would otherwise corrupt
+# "turn off wifi" into "shutdown wifi". These are resolved first and
+# returned as canonical commands the CommandRouter understands.
+_RADIO_PATTERNS = [
+    (r"^(?:turn|switch)\s+(on|off)\s+(?:the\s+)?(?:wi-?fi|wifi)$", "wifi"),
+    (r"^(?:wi-?fi|wifi)\s+(on|off)$", "wifi"),
+    (r"^(?:turn|switch)\s+(on|off)\s+(?:the\s+)?bluetooth$", "bluetooth"),
+    (r"^bluetooth\s+(on|off)$", "bluetooth"),
+    # "turn off the music" must pause, never "shutdown the music"
+    (r"^turn\s+off\s+(?:the\s+)?(?:music|song|track|playback)$", "pause music"),
+    (r"^turn\s+on\s+(?:the\s+)?(?:music|song|track|playback)$", "resume music"),
+]
+
+
 class CommandNormalizer:
     """Normalizes spoken commands into canonical form."""
 
@@ -348,6 +366,7 @@ class CommandNormalizer:
             "music": 0,
             "search": 0,
             "screen": 0,
+            "radio": 0,
         }
 
     def normalize(self, text: str) -> str:
@@ -467,6 +486,13 @@ class CommandNormalizer:
             self._stats["search"] += 1
             return search
 
+        # 6b. Radio / device power phrases (BEFORE the "turn off" →
+        # "shutdown" verb alias corrupts them).
+        radio = self._detect_radio(text_lower)
+        if radio:
+            self._stats["radio"] += 1
+            return radio
+
         # 7. Normalize verbs
         for wrong, correct in sorted(_VERB_ALIASES.items(), key=lambda x: -len(x[0])):
             if text_lower.startswith(wrong):
@@ -550,6 +576,19 @@ class CommandNormalizer:
             if re.match(pattern, text):
                 return True
         return False
+
+    def _detect_radio(self, text: str) -> Optional[str]:
+        """Detect Wi-Fi / Bluetooth / media power phrases and return a
+        canonical command (e.g. 'wifi off', 'pause music')."""
+        for pattern, device in _RADIO_PATTERNS:
+            m = re.match(pattern, text)
+            if not m:
+                continue
+            if device in ("wifi", "bluetooth"):
+                return f"{device} {m.group(1).lower()}"
+            # Media phrases carry the full canonical command
+            return device
+        return None
 
     def _detect_search(self, text: str) -> Optional[str]:
         """Detect web search commands."""

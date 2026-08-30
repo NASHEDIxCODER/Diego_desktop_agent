@@ -20,6 +20,18 @@ class Settings(BaseSettings):
     OLLAMA_BASE_URL: str = "http://localhost:11434"
     OLLAMA_MODEL: Optional[str] = None  # Auto-detected if not set
 
+    # ── LLM residency & warm-up ────────────────────────────────────
+    # How long Ollama keeps the model in memory after the last request.
+    # "0" unloads after EVERY request (cold start every turn — very slow).
+    # "-1" keeps it forever. A duration like "10m" is the sane default.
+    OLLAMA_KEEP_ALIVE: str = "10m"
+    # Warm the LLM at startup (async, non-blocking, fail-safe) so the
+    # model is loaded BEFORE the first user command.
+    LLM_WARMUP_ENABLED: bool = True
+    LLM_WARMUP_TIMEOUT_S: float = 120.0
+    # Also pre-load the (heavy) vision model at startup. Off by default.
+    LLM_WARMUP_VISION: bool = False
+
     # ── Telegram ───────────────────────────────────────────────────
     TELEGRAM_BOT_TOKEN: Optional[str] = None
     TELEGRAM_CHAT_ID: Optional[str] = None

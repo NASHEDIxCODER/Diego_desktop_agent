@@ -394,11 +394,38 @@ class AgentBrain:
         #   - Vision path (read_screen action runs perception internally)
         # Simple desktop commands (open app, volume, brightness, etc.)
         # do NOT need screen context — skip the expensive pipeline.
+        # ── Web research context (2026-08-30 hardening) ──
+        # When the LLM path is taken AND the request needs current web
+        # information, fetch REAL search results and inject them so the
+        # LLM answers from facts, not stale training knowledge.
+        web_ctx = ""
+        if decision.needs_llm:
+            try:
+                from core.decision_engine import decision_engine as _de
+                if _de._needs_search(text):
+                    from services.search_service import search_service
+                    try:
+                        if not search_service.is_ready:
+                            await search_service.start()
+                    except Exception:
+                        pass
+                    web_ctx = await asyncio.wait_for(
+                        search_service.context_for_llm(text, max_results=3),
+                        timeout=20.0,
+                    )
+                    if web_ctx:
+                        logger.info("[Brain] Web context fetched (%d chars)", len(web_ctx))
+            except Exception as e:
+                logger.debug("[Brain] Web context fetch skipped: %s", e)
+            web_ctx = web_ctx or None
+            # Stored for _generate_response() to inject into the LLM prompt.
+            self._last_web_context = web_ctx
+
         if decision.needs_llm:
             perception_ctx = await self._perceive()
             # Re-decide with perception context now available (enables
             # L6 vision-context reuse and L7 search-context paths).
-            decision = await self._decide(text, perception_ctx)
+            decision = await self._decide(text, perception_ctx, search_context=web_ctx)
 
         if decision.resolved:
             # ── Simple path: no LLM needed ──────────────────
@@ -436,7 +463,10 @@ class AgentBrain:
                 # returns the actual screen content ("On screen: ..."). Use
                 # that as the response so the user hears what's on screen
                 # instead of a generic confirmation.
-                if ok and decision.action.get("action") == "read_screen" and action_result:
+                # 2026-08-30: extended to ALL informational actions whose
+                # dispatch result IS the answer (web research, window list).
+                if (ok and action_result
+                        and decision.action.get("action") in self._RESULT_AS_RESPONSE_ACTIONS):
                     result.response = action_result
                     result.speak_immediately = False
 
@@ -462,8 +492,9 @@ class AgentBrain:
                     # CRITICAL FIX (2026-08-23): If read_screen already set
                     # the response to the actual screen content, do NOT
                     # overwrite it with a generic confirmation.
-                    if result.response and decision.action and decision.action.get("action") == "read_screen":
-                        pass  # Keep the read_screen content as the response
+                    if (result.response and decision.action
+                            and decision.action.get("action") in self._RESULT_AS_RESPONSE_ACTIONS):
+                        pass  # Keep the informational content as the response
                     else:
                         detail = self._action_detail(decision)
                         confirmation = personality.task_confirmation(detail) if detail else personality.acknowledgment()
@@ -537,7 +568,18 @@ class AgentBrain:
             logger.debug("[Brain] Perception failed: %s", e)
             return None
 
-    async def _decide(self, text: str, perception_ctx: Optional[Any]) -> Any:
+    # Actions whose dispatch result IS the user-facing answer
+    # (not just a confirmation). The Brain speaks the result verbatim.
+    _RESULT_AS_RESPONSE_ACTIONS = {
+        "read_screen",
+        "web_search",
+        "web_search_open_best",
+        "list_windows",
+        "music_status",
+    }
+
+    async def _decide(self, text: str, perception_ctx: Optional[Any],
+                      search_context: Optional[str] = None) -> Any:
         """Step 2: Decide how to handle the command."""
         if not self._decision_engine:
             # Fallback: always use LLM
@@ -552,7 +594,7 @@ class AgentBrain:
             return await self._decision_engine.decide(
                 text,
                 vision_context=desktop_ctx or None,
-                search_context=None,
+                search_context=search_context,
                 desktop_context=desktop_ctx,
             )
         except Exception as e:
@@ -973,8 +1015,12 @@ class AgentBrain:
                     screen_ctx = perception_ctx.compact_summary
                 except Exception:
                     screen_ctx = ""
+            # 2026-08-30: web_context is passed via the `web_context`
+            # attribute set during process_command (search grounding).
+            web_ctx = getattr(self, "_last_web_context", None)
             sentences = []
-            async for sentence in streaming_llm.generate(text, screen_context=screen_ctx):
+            async for sentence in streaming_llm.generate(
+                    text, screen_context=screen_ctx, web_context=web_ctx):
                 sentences.append(sentence)
             return " ".join(sentences) if sentences else "I'm not sure how to help with that."
         except Exception as e:

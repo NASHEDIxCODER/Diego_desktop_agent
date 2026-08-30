@@ -510,6 +510,17 @@ class DecisionEngine:
 
         text_lower = text.lower().strip()
 
+        # ── CRITICAL GUARD (2026-08-30): memory must never override an
+        # explicit CURRENT desktop / screen / web request. A stale fact
+        # like "my project is Diego" must not swallow "what apps are
+        # running?" or "search the web for X". Those need live tools.
+        if (
+            self._needs_vision(text)
+            or self._needs_search(text)
+            or self._is_live_desktop_query(text_lower)
+        ):
+            return None
+
         # Pronoun resolution
         resolved = self._conv_memory._resolve_pronouns(
             text
@@ -1122,6 +1133,21 @@ class DecisionEngine:
             "what error is on my screen",
             "what error is shown",
             "what error do you see",
+            # 2026-08-30 hardening: error / button / page reading
+            "read this error",
+            "read the error",
+            "read this message",
+            "read this dialog",
+            "what does the error say",
+            "what error",
+            "what button should i",
+            "which button should i",
+            "what button can i",
+            "which button can i",
+            "what should i click",
+            "where is the button",
+            "find the button",
+            "find this button",
         )
 
         return any(
@@ -1130,7 +1156,29 @@ class DecisionEngine:
         )
 
     # ──────────────────────────────────────────────────────────
-    # Search heuristic
+    # Live desktop-query heuristic
+    # ──────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _is_live_desktop_query(text_lower: str) -> bool:
+        """True when the utterance asks about the CURRENT desktop state.
+
+        These must be answered from live OS data (windows, processes,
+        radios), never from semantic memory.
+        """
+        live_phrases = (
+            "what apps are running", "which apps are running",
+            "what windows are open", "which windows are open",
+            "what programs are running", "running apps",
+            "open windows", "open apps", "what is running",
+            "what's running", "whats running",
+            "wifi", "wi-fi", "bluetooth", "battery",
+            "volume", "brightness", "clipboard",
+        )
+        return any(p in text_lower for p in live_phrases)
+
+    # ──────────────────────────────────────────────────────────
+    # L2 — Session memory
     # ──────────────────────────────────────────────────────────
 
     @staticmethod
