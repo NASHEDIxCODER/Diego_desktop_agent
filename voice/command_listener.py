@@ -451,14 +451,22 @@ def _validate_transcript(
         return False, FAILURE_LOW_CONFIDENCE
 
     # 6b. CRITICAL FIX (2026-08-29): Reject fragmented utterances that
-    #     begin with a conjunction ONLY when they are short fragments.
-    #     Whisper often splits a longer sentence and the listener only
-    #     captures the tail ("and you're doing", "but I was thinking").
-    #     However, "and open Chrome" is a VALID command — the user may
-    #     naturally start with "and". Only reject when the transcript is
-    #     short (<= 4 words) AND starts with a conjunction, which is the
-    #     classic fragment signature.
-    if re.match(r'^(and|but|or|so|because|then|if|when|while)\b', t) and word_count <= 4:
+    #     begin with a conjunction ONLY when they are short fragments
+    #     WITHOUT an action verb. Whisper often splits a longer sentence
+    #     and the listener only captures the tail ("and you're doing",
+    #     "but I was thinking"). However, "and open Chrome" is a VALID
+    #     command — the user may naturally start with "and". Only reject
+    #     when the transcript is short (<= 4 words), starts with a
+    #     conjunction, AND does NOT contain an action verb.
+    _ACTION_VERBS = ("open", "close", "play", "search", "find", "look",
+                     "set", "change", "switch", "scroll", "click", "type",
+                     "press", "lock", "shutdown", "restart", "volume",
+                     "brightness", "mute", "pause", "resume", "next",
+                     "previous", "skip", "stop", "start", "run", "create",
+                     "write", "send", "read", "show", "tell", "what")
+    if (re.match(r'^(and|but|or|so|because|then|if|when|while)\b', t)
+            and word_count <= 4
+            and not any(v in t for v in _ACTION_VERBS)):
         return False, FAILURE_GARBAGE
 
     # Accepted.

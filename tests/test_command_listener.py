@@ -17,6 +17,7 @@ These tests use fakes; no physical microphone or GPU is required.
 import asyncio
 import os
 import sys
+import time
 from pathlib import Path
 
 from voice.vad import unified_vad
@@ -725,6 +726,65 @@ def test_max_duration_never_used_with_silence(monkeypatch):
             "max_duration must NEVER be the endpoint when silence is available")
 
     asyncio.run(impl())
+
+
+# ═══════════════════════════════════════════════════════════════
+# REGRESSION TESTS (2026-08-29 fixes)
+# ═══════════════════════════════════════════════════════════════
+
+# ── K. _finalize() empty-frame crash ──────────────────────────
+def test_finalize_empty_frames_no_crash(monkeypatch):
+    """_finalize() must not crash when frames is empty (np.concatenate ValueError)."""
+    async def impl():
+        cl = _make_listener(FakeWhisper())
+        # Call _finalize with empty frames — must return a failure event, not raise.
+        ev = await cl._finalize([], time.time(), endpoint_reason="silence")
+        assert ev is not None
+        assert ev.kind == "failure"
+        assert ev.failure_reason == CL.FAILURE_TRANSCRIPTION_FAILED
+
+    asyncio.run(impl())
+
+
+# ── L. _frames_to_bytes empty frames ──────────────────────────
+def test_frames_to_bytes_empty_no_crash():
+    """_frames_to_bytes([]) must return b'' not raise ValueError."""
+    cl = CL.CommandListener()
+    assert cl._frames_to_bytes([]) == b""
+
+
+# ── M. Valid command starting with conjunction is accepted ────
+def test_conjunction_command_accepted():
+    """'and open Chrome' is a valid command — must NOT be rejected as garbage."""
+    accepted, reason = CL._validate_transcript(
+        "and open Chrome", confidence=-0.5, speech_dur_ms=1500)
+    assert accepted, f"valid command rejected: {reason}"
+
+
+# ── N. Short conjunction fragment is rejected ─────────────────
+def test_short_conjunction_fragment_rejected():
+    """'and you're doing' (short fragment) IS garbage — must be rejected."""
+    accepted, reason = CL._validate_transcript(
+        "and you're doing", confidence=-0.5, speech_dur_ms=800)
+    assert not accepted, "short conjunction fragment should be rejected"
+    assert reason == CL.FAILURE_GARBAGE
+
+
+# ── O. Valid 2-word command with healthy audio is accepted ────
+def test_two_word_command_with_healthy_audio_accepted():
+    """'open Chrome' with 1.5s audio and confidence -0.7 must be accepted."""
+    accepted, reason = CL._validate_transcript(
+        "open Chrome", confidence=-0.7, speech_dur_ms=1500)
+    assert accepted, f"valid 2-word command rejected: {reason}"
+
+
+# ── P. Short 2-word command with low confidence is rejected ───
+def test_short_low_confidence_two_word_rejected():
+    """'I do' with 300ms audio and confidence -0.7 must be rejected."""
+    accepted, reason = CL._validate_transcript(
+        "I do", confidence=-0.7, speech_dur_ms=300)
+    assert not accepted, "short low-confidence blip should be rejected"
+    assert reason == CL.FAILURE_LOW_CONFIDENCE
 
 
 if __name__ == "__main__":
