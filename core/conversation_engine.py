@@ -561,7 +561,16 @@ class ConversationEngine:
                 result_holder: dict = {}
 
                 async def _process() -> Any:
-                    r = await agent_brain.process_command(text)
+                    # BLOCKER 1 FIX (2026-08-30): forward the STT
+                    # confidence + utterance audio duration so the Brain's
+                    # intent sanity gate can combine transcript quality,
+                    # speech evidence, and intent confidence before any
+                    # tool execution.
+                    r = await agent_brain.process_command(
+                        text,
+                        stt_confidence=getattr(ev, "confidence", None),
+                        audio_duration_ms=getattr(ev, "audio_duration_ms", None),
+                    )
                     result_holder["result"] = r
                     return r
 

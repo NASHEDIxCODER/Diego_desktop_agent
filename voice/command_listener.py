@@ -230,6 +230,13 @@ command_config = CommandListenerConfig()
 WHISPER_FINAL_TIMEOUT_S = 30.0
 WHISPER_PARTIAL_TIMEOUT_S = 5.0
 
+# BLOCKER 2 FIX (2026-08-30): the listen gate (TTS guard) must never be
+# held closed forever. This backstop is safely above the 120s TTS hard
+# timeout + 0.5s echo decay, so a legitimate long response is never
+# interrupted, but a wedged gate is always released. Tests may monkeypatch
+# this to a small value.
+GATE_MAX_HOLD_S = 150.0
+
 # ── Garbage transcript rejection ──────────────────────────────
 # Whisper sometimes hallucinates short, low-confidence fragments.
 # These patterns are unlikely to be real user commands.
@@ -798,6 +805,13 @@ class CommandListener:
         self._cancel = asyncio.Event()
         self._drain_requested = False
 
+        # BLOCKER 2 FIX (2026-08-30): track WHEN the listen gate was
+        # closed so the streaming loop can (a) consume-and-discard audio
+        # while gated (no unbounded ring-buffer backlog) and (b)
+        # force-resume if any path holds the gate closed for too long
+        # (TTS can never permanently hold the listening gate).
+        self._gate_closed_at: Optional[float] = None
+
         # TASK 4: single-inflight partial inference guard.
         self._partial_inflight = False
         self._partial_task: Optional[asyncio.Task] = None
@@ -841,6 +855,8 @@ class CommandListener:
     def pause_listening(self) -> None:
         """Mute STT during TTS playback (TASK 8)."""
         self._listen_enabled.clear()
+        if self._gate_closed_at is None:
+            self._gate_closed_at = time.monotonic()
         logger.info("[CMD-LISTEN] Listening PAUSED (TTS guard)")
 
     def resume_listening(self) -> None:
@@ -850,9 +866,24 @@ class CommandListener:
         classified as user speech. The actual drain/reset happens inside the
         streaming loop where the audio cursor and VAD state are owned.
         """
+        self._gate_closed_at = None
         self._drain_requested = True
         self._listen_enabled.set()
         logger.info("[CMD-LISTEN] Listening RESUMED — drain + VAD reset requested")
+
+    def _gate_hold_exceeded(self) -> bool:
+        """BLOCKER 2 FIX (2026-08-30): True when the listen gate has been
+        held closed longer than GATE_MAX_HOLD_S.
+
+        TTS can never permanently hold the listening gate: the streaming
+        loop force-resumes (with a drain) when this backstop trips. The
+        default (150s) is safely above the 120s TTS hard timeout + echo
+        decay, so a legitimate long response is never interrupted.
+        """
+        closed_at = self._gate_closed_at
+        if closed_at is None:
+            return False
+        return (time.monotonic() - closed_at) >= GATE_MAX_HOLD_S
 
     def cancel(self) -> None:
         self._cancel.set()
@@ -1005,17 +1036,46 @@ class CommandListener:
                     cfg.endpoint_silence_ms, cfg.min_context_ms,
                     cfg.pre_roll_ms, cfg.speech_start_threshold, cfg.speech_end_threshold)
 
+        # BLOCKER 2 FIX (2026-08-30): rate-limit the gate-closed warning
+        # and track how much stale audio was discarded while gated.
+        _last_gate_warn = 0.0
+
         while not self._cancel.is_set():
             # ── Diagnostic timeout on the listen gate ──
             try:
                 await asyncio.wait_for(
                     self._listen_enabled.wait(), timeout=1.0)
             except asyncio.TimeoutError:
-                if not self._cancel.is_set():
+                if self._cancel.is_set():
+                    break
+                # ── BACKLOG BOUND (BLOCKER 2 FIX) ──
+                # While the gate is closed (THINK / perception / TTS),
+                # CONSUME AND DISCARD the audio so the ring buffer never
+                # accumulates 10-20s of stale audio. On resume the cursor
+                # is already at the write head: no 10-20s drain, the
+                # listener resumes predictably in WAITING_FOR_SPEECH, and
+                # the next real command is captured cleanly.
+                try:
+                    _discarded, last_total = audio_manager.read_since(last_total)
+                except Exception:
+                    pass
+                now_gate = time.monotonic()
+                if now_gate - _last_gate_warn >= 5.0:
+                    _last_gate_warn = now_gate
                     logger.warning(
-                        "[CMD] listen gate CLOSED for >1s (TTS guard active?) "
-                        "— waiting; drain_requested=%s",
+                        "[CMD] listen gate CLOSED (%.0fs) — consuming & "
+                        "discarding audio (no backlog); drain_requested=%s",
+                        now_gate - (self._gate_closed_at or now_gate),
                         self._drain_requested)
+                # ── TTS cannot permanently hold the listening gate ──
+                if self._gate_hold_exceeded():
+                    logger.error(
+                        "[CMD] listen gate held >%.0fs — FORCE-RESUMING "
+                        "(backstop; TTS cannot hold the gate forever)",
+                        GATE_MAX_HOLD_S)
+                    self._gate_closed_at = None
+                    self._drain_requested = True
+                    self._listen_enabled.set()
                 continue
             if self._cancel.is_set():
                 break

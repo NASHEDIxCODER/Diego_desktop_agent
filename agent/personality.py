@@ -822,6 +822,26 @@ class DiegoPersonality:
         if text in ("hello", "hi", "hey", "yo", "sup", "what's up", "whats up"):
             return self.greeting()
 
+        # BLOCKER 1 FIX (2026-08-30): short greeting PHRASES ("hello dear",
+        # "hey there", "hi diego", "good morning man") are conversation,
+        # never commands. A greeting-lead with <= 3 words and NO action
+        # verb must get a conversational greeting response instead of
+        # falling through to the planner (the "Hello dear" -> get_time +
+        # type_text 29s-turn bug).
+        words = text.split()
+        if words and len(words) <= 3:
+            first = words[0].strip(",.!?")
+            if first in ("hello", "hi", "hey", "yo", "sup", "hiya", "hola"):
+                if not any(v in text for v in (
+                        "open", "close", "play", "pause", "resume", "stop",
+                        "start", "run", "search", "find", "set", "change",
+                        "switch", "scroll", "click", "type", "write", "press",
+                        "send", "create", "delete", "volume", "brightness",
+                        "mute", "lock", "shutdown", "restart", "next",
+                        "previous", "skip", "read", "show", "tell", "what",
+                        "who", "when", "where", "why", "how", "which")):
+                    return self.greeting()
+
         # How are you
         if any(phrase in text for phrase in ["how are you", "how's it going", "how are things"]):
             return self.how_are_you()

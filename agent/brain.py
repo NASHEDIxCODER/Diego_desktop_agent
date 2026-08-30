@@ -310,7 +310,9 @@ class AgentBrain:
         else:
             self._pipeline_timings[stage] += ms
 
-    async def process_command(self, text: str) -> CommandResult:
+    async def process_command(self, text: str,
+                              stt_confidence: Optional[float] = None,
+                              audio_duration_ms: Optional[float] = None) -> CommandResult:
         """
         Process a spoken command through the full execution pipeline.
 
@@ -319,7 +321,9 @@ class AgentBrain:
 
         Flow:
           0. Normalize: canonicalize the spoken command
-          1. Perceive: collect desktop context
+          0.2 Transcript-quality guard (cheap rejection)
+          0.25 Intent sanity gate (quality + speech evidence + confidence)
+          1. Perceive: collect desktop context (DEMAND-DRIVEN)
           2. Decide: route the command (LLM last resort)
           3. Plan: create a plan if needed
           4. Dispatch: execute actions
@@ -329,6 +333,9 @@ class AgentBrain:
 
         Args:
             text: The user's spoken command.
+            stt_confidence: Whisper avg_logprob for the transcript
+                (None for typed/internal input paths).
+            audio_duration_ms: Duration of the captured utterance audio.
 
         Returns:
             CommandResult with the response to speak.
@@ -384,6 +391,43 @@ class AgentBrain:
                 return result
         except ImportError:
             pass  # voice subsystem unavailable — never block command processing
+
+        # ── Step 0.25: Intent sanity gate (2026-08-30) ─────────
+        # BLOCKER 1 FIX: transcript quality + speech evidence + intent
+        # confidence must AGREE before any tool execution. Low-quality or
+        # implausible transcripts ("Hello dear" conf=-1.168) become a
+        # conversational response or a clarification — NEVER desktop
+        # actions (the get_time + type_text 29s-turn bug). This gate runs
+        # BEFORE perception, the decision engine, the planner, and the
+        # LLM, so a bad transcript can never pay for any of them.
+        try:
+            from nlp.intent_gate import evaluate_intent
+            verdict = evaluate_intent(
+                text,
+                stt_confidence=stt_confidence,
+                audio_duration_ms=audio_duration_ms,
+            )
+        except Exception:
+            verdict = None  # gate unavailable — never block the pipeline
+        if verdict is not None and not verdict.tool_execution_allowed:
+            from agent.personality import personality as _gate_personality
+            if verdict.mode == "conversational":
+                response = (_gate_personality.contextual_response(text)
+                            or _gate_personality.greeting())
+                result.path = "CONVERSATION"
+            else:
+                response = ("I'm not sure I heard you correctly. "
+                            "Could you say that again?")
+                result.path = "CLARIFICATION"
+            logger.info("[Brain] Intent gate: %s (%s) — no perception, no "
+                        "planner, no LLM, no tools: '%s'",
+                        verdict.mode, verdict.reason, text[:50])
+            result.used_llm = False
+            result.response = response
+            conv_memory.add_assistant(response)
+            result.latency_ms = (time.time() - t0) * 1000
+            return result
+        self._last_intent_verdict = verdict
 
         # ── Step 0.5: Conversation First (NEW) ────────────────
         # Before ANY planning or action, check if this is just
@@ -449,7 +493,17 @@ class AgentBrain:
             # conversational utterance that falls through to the LLM path
             # ("tell me a joke") must NOT pay the OCR cost (PaddleOCR can
             # take 16-21s when it fails).
-            perception_ctx = await self._perceive(text)
+            # BLOCKER 3 FIX (2026-08-30): perception is now FULLY
+            # demand-driven. Ordinary conversation and knowledge questions
+            # that fall through to the LLM path ("tell me a joke", "what
+            # is the capital of France") do NOT need screen context and
+            # must NOT pay the ~5s perception cost. Perception runs only
+            # for explicit vision requests and deixis/UI references.
+            if self._perception_needed(text):
+                perception_ctx = await self._perceive(text)
+            else:
+                logger.debug("[Brain] Perception skipped (no screen/deixis "
+                             "cues): '%s'", text[:50])
             # Re-decide with perception context now available (enables
             # L6 vision-context reuse and L7 search-context paths).
             decision = await self._decide(text, perception_ctx, search_context=web_ctx)
@@ -552,16 +606,25 @@ class AgentBrain:
             plan = await self._plan(text, perception_ctx)
 
             # Steps 4-6: Dispatch → Verify → Learn
+            # BLOCKER 1 FIX (2026-08-30): every planner-generated action is
+            # gated. A conversational/uncertain transcript must never
+            # become desktop actions, and a type_text action that merely
+            # echoes the transcript (planner hallucination, e.g.
+            # type_text("Hello dear")) is blocked.
             if plan:
                 for step in plan:
                     action = self._step_to_action(step)
-                    if action:
+                    if action and self._planner_action_allowed(text, action):
                         ok, _ = await self._dispatch_and_verify(action)
                         result.actions_executed += 1
                         if ok:
                             result.actions_succeeded += 1
                         else:
                             result.actions_failed += 1
+                    elif action:
+                        logger.info("[Brain] Planner action BLOCKED by intent "
+                                    "gate: %s (transcript='%s')",
+                                    action.get("action"), text[:50])
                 result.verified = result.actions_failed == 0
 
             # Step 7: Respond (LLM generates the response)
@@ -595,15 +658,61 @@ class AgentBrain:
         if include_ocr is None:
             include_ocr = self._ocr_required(text)
         try:
-            ctx = await self._perception.perceive(include_ocr=include_ocr)
+            # BLOCKER 3 FIX (2026-08-30): hard upper bound on the WHOLE
+            # perception stage. OCR is internally bounded (OCR_TIMEOUT_S),
+            # but capture / a11y / window enumeration can also stall. A
+            # perception stall must never block the turn for tens of
+            # seconds — on timeout we continue WITHOUT screen context.
+            ctx = await asyncio.wait_for(
+                self._perception.perceive(include_ocr=include_ocr),
+                timeout=self.PERCEPTION_TIMEOUT_S,
+            )
             logger.debug("[Brain] Perception: window='%s' a11y=%s ocr=%s",
                          getattr(ctx, 'window_title', '')[:40],
                          getattr(ctx, 'a11y_available', False),
                          getattr(ctx, 'ocr_used', False))
             return ctx
+        except asyncio.TimeoutError:
+            logger.warning("[Brain] Perception timed out after %.0fs — "
+                           "continuing without screen context",
+                           self.PERCEPTION_TIMEOUT_S)
+            return None
         except Exception as e:
             logger.debug("[Brain] Perception failed: %s", e)
             return None
+
+    # Perception hard budget (seconds). OCR itself is bounded at 10s
+    # inside the pipeline; this is the total per-turn ceiling so a
+    # stalled capture/a11y stage can never block the turn for tens of
+    # seconds.
+    PERCEPTION_TIMEOUT_S = 15.0
+
+    # Deixis / UI-reference cues: when the request refers to "this",
+    # "that", "here", the screen, or a UI element, the LLM needs to SEE
+    # the desktop. Pure conversation / knowledge questions do not.
+    _PERCEPTION_CUES = frozenset({
+        "this", "that", "these", "those", "here", "there", "it",
+        "screen", "display", "monitor", "window", "tab", "button",
+        "dialog", "page", "click", "select", "highlight", "current",
+        "visible", "active", "open", "close", "type", "write", "click",
+    })
+
+    @classmethod
+    def _perception_needed(cls, text: str) -> bool:
+        """True only when the request plausibly needs screen context.
+
+        Explicit vision requests always need perception. Otherwise,
+        perception runs only when the transcript references the screen
+        or uses deixis ("click this", "close it", "what is that?").
+        Ordinary conversation and knowledge questions skip perception.
+        """
+        if cls._ocr_required(text or ""):
+            return True
+        words = {
+            w.strip(".,!?;:'\"")
+            for w in (text or "").lower().split()
+        }
+        return bool(words & cls._PERCEPTION_CUES)
 
     @staticmethod
     def _ocr_required(text: str) -> bool:
@@ -1104,6 +1213,38 @@ class AgentBrain:
             "key_press": "key_press",
         }
         return mapping.get(action_name)
+
+    @staticmethod
+    def _planner_action_allowed(transcript: str,
+                                action: Dict[str, Any]) -> bool:
+        """BLOCKER 1 FIX (2026-08-30): gate a planner-generated action.
+
+        Two guards:
+          1. The transcript itself must pass the intent gate (a
+             conversational/uncertain transcript must never become
+             desktop actions).
+          2. A type_text action whose payload merely echoes the
+             transcript is a planner hallucination ("Hello dear" ->
+             type_text("Hello dear")) and is blocked unless the user
+             explicitly asked to type.
+        """
+        try:
+            from nlp.intent_gate import transcript_allows_tool_execution
+            if not transcript_allows_tool_execution(transcript):
+                return False
+        except Exception:
+            pass  # gate unavailable — never block the pipeline
+
+        name = action.get("action", "")
+        if name == "type_text":
+            payload = str((action.get("params") or {}).get("text", "")).strip()
+            tnorm = " ".join((transcript or "").lower().strip(" .!?").split())
+            pnorm = " ".join(payload.lower().split())
+            explicit = tnorm.startswith(("type ", "write ", "enter ", "input "))
+            if pnorm and not explicit and pnorm and (
+                    pnorm == tnorm or (len(pnorm) > 3 and pnorm in tnorm)):
+                return False
+        return True
 
     @staticmethod
     def _step_to_action(step: Dict[str, Any]) -> Optional[Dict[str, Any]]:
