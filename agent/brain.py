@@ -363,6 +363,28 @@ class AgentBrain:
                                               "start", "run", "create", "write")):
             conv_memory.track_goal(text)
 
+        # ── Step 0.2: Transcript-quality guard (2026-08-30) ────
+        # DEFENSE IN DEPTH: low-quality / hallucinated transcripts ("you",
+        # "too") must NEVER reach the decision engine, perception (OCR can
+        # take ~20s), the planner, or the LLM. The command listener already
+        # rejects them, but any transcript that slips through from another
+        # input path is rejected CHEAPLY here with a gentle recovery
+        # response — no perception, no planner, no LLM, no actions.
+        try:
+            from voice.command_listener import is_low_quality_transcript
+            if is_low_quality_transcript(text):
+                logger.info("[Brain] Transcript rejected as low-quality: '%s' — "
+                            "no perception, no planner, no LLM", text[:50])
+                result.path = "REJECTED_TRANSCRIPT"
+                result.used_llm = False
+                result.response = ("I'm not sure I heard you correctly. "
+                                   "Could you say that again?")
+                conv_memory.add_assistant(result.response)
+                result.latency_ms = (time.time() - t0) * 1000
+                return result
+        except ImportError:
+            pass  # voice subsystem unavailable — never block command processing
+
         # ── Step 0.5: Conversation First (NEW) ────────────────
         # Before ANY planning or action, check if this is just
         # conversation. Greetings, thanks, how-are-you, corrections,
@@ -422,7 +444,12 @@ class AgentBrain:
             self._last_web_context = web_ctx
 
         if decision.needs_llm:
-            perception_ctx = await self._perceive()
+            # DEMAND-DRIVEN PERCEPTION (2026-08-30): OCR is only invoked
+            # when the request actually needs to READ the screen. A
+            # conversational utterance that falls through to the LLM path
+            # ("tell me a joke") must NOT pay the OCR cost (PaddleOCR can
+            # take 16-21s when it fails).
+            perception_ctx = await self._perceive(text)
             # Re-decide with perception context now available (enables
             # L6 vision-context reuse and L7 search-context paths).
             decision = await self._decide(text, perception_ctx, search_context=web_ctx)
@@ -553,12 +580,22 @@ class AgentBrain:
 
     # ── Pipeline steps ─────────────────────────────────────────
 
-    async def _perceive(self) -> Optional[Any]:
-        """Step 1: Perceive desktop context."""
+    async def _perceive(self, text: str = "",
+                        include_ocr: Optional[bool] = None) -> Optional[Any]:
+        """Step 1: Perceive desktop context.
+
+        DEMAND-DRIVEN OCR (2026-08-30): OCR (PaddleOCR — up to ~20s when it
+        fails) runs ONLY when the request needs to READ the screen
+        ("what is on my screen?", "read this error"). Everything else —
+        "open firefox", "how are you?", "tell me a joke" — gets window /
+        accessibility context only and never invokes OCR.
+        """
         if not self._perception:
             return None
+        if include_ocr is None:
+            include_ocr = self._ocr_required(text)
         try:
-            ctx = await self._perception.perceive()
+            ctx = await self._perception.perceive(include_ocr=include_ocr)
             logger.debug("[Brain] Perception: window='%s' a11y=%s ocr=%s",
                          getattr(ctx, 'window_title', '')[:40],
                          getattr(ctx, 'a11y_available', False),
@@ -567,6 +604,27 @@ class AgentBrain:
         except Exception as e:
             logger.debug("[Brain] Perception failed: %s", e)
             return None
+
+    @staticmethod
+    def _ocr_required(text: str) -> bool:
+        """True only when the request needs to actually READ screen pixels.
+
+        Explicit vision phrases ("what is on my screen?", "read this
+        error") require OCR. Everything else — "open firefox", "how are
+        you?", "open chrome" — must NOT pay the OCR cost.
+        """
+        try:
+            from core.decision_engine import DecisionEngine
+            if DecisionEngine._needs_vision(text or ""):
+                return True
+        except Exception:
+            pass
+        t = " ".join((text or "").lower().split())
+        screen_mentions = (
+            "screen", "display", "monitor", "this error", "the error",
+            "this page", "this window", "this dialog", "what do you see",
+        )
+        return any(m in t for m in screen_mentions)
 
     # Actions whose dispatch result IS the user-facing answer
     # (not just a confirmation). The Brain speaks the result verbatim.

@@ -55,7 +55,13 @@ ROBUST_SPEECH_PROB = 0.35         # Silero prob floor to consider speech
 ROBUST_ENERGY_RMS = 2500.0        # int16-scale RMS floor for voiced audio
 ROBUST_ENTER_SCORE = 0.55         # combined score to ENTER speech
 ROBUST_EXIT_SCORE = 0.35          # combined score to EXIT speech (hysteresis)
-ROBUST_MIN_SPEECH_FRAMES = 3      # min consecutive speech frames (≈96ms)
+# SUSTAINED-SPEECH ONSET (2026-08-30): raised 3→5 frames (≈160ms).
+# Root-cause fix for "command listener false speech": a transient VAD
+# spike (door slam, click, cough — a few loud frames) must NOT be able to
+# open a speech window. 96ms was inside the transient-spike duration band;
+# 160ms requires SUSTAINED voiced evidence before the gate can open.
+# Real speech onsets comfortably exceed 160ms.
+ROBUST_MIN_SPEECH_FRAMES = 5      # min consecutive speech frames (≈160ms)
 ROBUST_SMOOTH_ALPHA = 0.4         # EMA smoothing for Silero prob
 
 

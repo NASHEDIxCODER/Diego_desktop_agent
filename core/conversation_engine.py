@@ -585,6 +585,20 @@ class ConversationEngine:
 
                 result = result_holder.get("result")
 
+                # ── LISTENING GUARD FIX (2026-08-30) ──
+                # The TTS guard pauses the command listener for the whole
+                # Brain turn (which can include perception/planner work —
+                # hence the repeated "listen gate CLOSED for >1s" logs).
+                # If ANY path left the listener paused (e.g. the Brain turn
+                # completed without TTS, or TTS failed), the microphone
+                # would never accept the NEXT real command. Explicitly
+                # resume (idempotent) before returning to LISTEN. This also
+                # requests a drain + VAD reset so stale audio from the turn
+                # is discarded before the next command is captured. TTS
+                # protection is NOT removed — _think_and_speak still pauses
+                # during playback and resumes after the echo decay.
+                command_listener.resume_listening()
+
                 # ── Record decision ──
                 if result is not None:
                     session_recorder.record_decision(

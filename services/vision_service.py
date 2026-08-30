@@ -87,6 +87,12 @@ from services.ui_tree import (
 
 logger = logging.getLogger(__name__)
 
+# ── OCR FAILURE LATENCY GUARD (2026-08-30) ────────────────────────
+# A failing/hung OCR backend (e.g. PaddleOCR "string index out of range"
+# with 16-21s of self-healing retries) must never block the voice turn.
+# Hard timeout with a graceful fallback (pipeline continues without OCR).
+OCR_TIMEOUT_S = 10.0
+
 # ── Optional dependencies ─────────────────────────────────────────
 
 _HAS_CV2 = False
@@ -440,10 +446,17 @@ class VisionService(BaseService):
         if include_ocr and self.use_ocr and enhanced_ocr.ready and cap.image is not None:
             t_ocr = time.perf_counter_ns()
             try:
-                ctx.ocr_result = await asyncio.get_event_loop().run_in_executor(
-                    None,
-                    lambda: enhanced_ocr.ocr(
-                        cap.image, preprocess=self.preprocess_for_ocr)
+                # OCR FAILURE LATENCY GUARD (2026-08-30): a failing/hung OCR
+                # backend (e.g. PaddleOCR "string index out of range" with
+                # 16-21s of self-healing retries) must never block the voice
+                # turn. Hard timeout with a graceful fallback.
+                ctx.ocr_result = await asyncio.wait_for(
+                    asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda: enhanced_ocr.ocr(
+                            cap.image, preprocess=self.preprocess_for_ocr)
+                    ),
+                    timeout=OCR_TIMEOUT_S,
                 )
                 ctx.ocr_text = ctx.ocr_result.text
                 ctx.raw_ocr_boxes = ctx.ocr_result.boxes
@@ -454,6 +467,11 @@ class VisionService(BaseService):
                              ctx.ocr_result.avg_confidence,
                              ctx.ocr_result.backend,
                              ctx.ocr_time_ms)
+            except asyncio.TimeoutError:
+                logger.warning("[VISION] Stage 6 — OCR timed out after %.0fs — "
+                               "continuing without OCR", OCR_TIMEOUT_S)
+                ctx.ocr_result = None
+                ctx.ocr_text = ""
             except Exception as e:
                 logger.warning("[VISION] Stage 6 — OCR FAILED: %s", e)
                 ctx.ocr_result = None

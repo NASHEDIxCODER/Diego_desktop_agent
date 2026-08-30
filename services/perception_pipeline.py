@@ -57,6 +57,13 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
+# ── OCR FAILURE LATENCY GUARD (2026-08-30) ─────────────────────
+# PaddleOCR can fail ("string index out of range") and self-heal with
+# retries for 16-21 seconds, blocking the whole voice turn. OCR must
+# NEVER block normal voice interaction for tens of seconds — a hard
+# timeout with a graceful fallback (perception continues without OCR).
+OCR_TIMEOUT_S = 10.0
+
 
 # ═══════════════════════════════════════════════════════════════
 # Data types
@@ -557,12 +564,19 @@ class PerceptionPipeline:
 
             if should_ocr or force_ocr:
                 try:
-                    ocr_ctx = await self.vision.analyze(
-                        force=True,
-                        source="fullscreen",
-                        include_tree=False,
-                        include_layout=False,
-                        include_reasoning=False,
+                    # OCR FAILURE LATENCY GUARD (2026-08-30): hard timeout so
+                    # a failing/hung OCR backend can never block the voice
+                    # turn for tens of seconds. On timeout, perception
+                    # continues WITHOUT OCR (existing fallback path).
+                    ocr_ctx = await asyncio.wait_for(
+                        self.vision.analyze(
+                            force=True,
+                            source="fullscreen",
+                            include_tree=False,
+                            include_layout=False,
+                            include_reasoning=False,
+                        ),
+                        timeout=OCR_TIMEOUT_S,
                     )
                     ctx.ocr_text = ocr_ctx.ocr_text
                     ctx.ocr_box_count = ocr_ctx.ocr_result.box_count_final if ocr_ctx.ocr_result else 0
@@ -573,6 +587,11 @@ class PerceptionPipeline:
                     ctx.stages_run.append("ocr")
                     logger.info("[PERCEPTION] Stage 6 — OCR: %d boxes, conf=%.2f in %.1fms",
                                  ctx.ocr_box_count, ctx.ocr_confidence, ctx.ocr_latency_ms)
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "[PERCEPTION] Stage 6 — OCR timed out after %.0fs — "
+                        "continuing without OCR", OCR_TIMEOUT_S)
+                    ocr_skip_reason = f"OCR timeout after {OCR_TIMEOUT_S:.0f}s"
                 except Exception as e:
                     logger.warning("[PERCEPTION] Stage 6 — OCR error: %s", e)
                     ocr_skip_reason = f"OCR failed: {e}"

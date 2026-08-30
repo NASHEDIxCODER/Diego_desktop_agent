@@ -78,7 +78,13 @@ class CommandListenerConfig:
     # speech_end_threshold for endpoint_silence_ms of sustained silence.
     speech_start_threshold: float = 0.55
     speech_end_threshold: float = 0.35
-    speech_start_confirm_frames: int = 3   # ≈96ms confirmation window
+    # SUSTAINED-SPEECH ONSET (2026-08-30): raised 3→5 frames (≈160ms).
+    # Root-cause fix for "command listener false speech": a transient VAD
+    # spike (door slam, click, cough) lasts < 160ms and must NOT open a
+    # capture window. The old 3-frame (96ms) window let weak/transient
+    # spikes start a full utterance that ended in a ~2s Whisper decode of
+    # hallucinated fragments ("you" conf -1.35, "too" conf -0.657).
+    speech_start_confirm_frames: int = 5   # ≈160ms confirmation window
 
     # Endpoint detection (milliseconds of audio, sample-accurate).
     # OPTIMIZATION: Reduced min_context_ms from 800→500 to cut latency.
@@ -160,8 +166,31 @@ class CommandListenerConfig:
     #   background room tone → RMS ~300-600
     # We use 900 as the floor: clearly above room tone, comfortably below
     # real speech, so only voiced frames trigger the boost.
-    energy_speech_rms: float = 900.0    # int16 RMS floor for the boost
+    energy_speech_rms: float = 900.0    # int16 RMS floor for evidence counting
     energy_boost_ceiling: float = 0.95  # max boosted probability
+
+    # ── SUSTAINED-SPEECH EVIDENCE GATE (2026-08-30) ──
+    # Root-cause fix for "command listener false speech": background noise
+    # (RMS ~1200-2300 on this system) tripped the OLD energy-fallback floor
+    # (900), opened a capture window, and produced a ~2s utterance that
+    # Whisper decoded into hallucinated fragments ("you" conf -1.35, "too"
+    # conf -0.657) which then triggered a full THINK→PERCEIVE→OCR turn
+    # (~45s). Two fixes:
+    #
+    #   1. The energy-fallback boost now requires CREDIBLE voiced energy:
+    #      energy_fallback_rms=2500 (== strong_speech_rms). Real speech on
+    #      this system measures RMS ~3500-6500; background noise ~300-2300.
+    #      The old 900 floor sat INSIDE the noise band.
+    #
+    #   2. _finalize() requires SUSTAINED evidence before committing an
+    #      utterance to Whisper: a minimum duration of voiced/strong frames
+    #      AND a minimum FRACTION of the utterance that is voiced. A
+    #      transient spike captured into a ~2s buffer has a voiced ratio
+    #      far below min_voiced_ratio and is discarded SILENTLY (no
+    #      Whisper decode, no failure response) — the existing
+    #      silent-discard behaviour is preserved and strengthened.
+    energy_fallback_rms: float = 2500.0  # int16 RMS floor for the boost
+    min_voiced_ratio: float = 0.12      # min voiced fraction of the utterance
 
     # ── NO-SPEECH vs STT-FAILURE discrimination (2026-08-30) ──
     # A spoken recovery response ("Sorry, I missed that") must ONLY be
@@ -176,7 +205,10 @@ class CommandListenerConfig:
     # strong_speech_rms=2500 matches vad.ROBUST_ENERGY_RMS: real speech
     # on this system measures RMS ~3500-6500; background noise ~300-2300.
     strong_speech_rms: float = 2500.0
-    min_speech_evidence_ms: int = 150  # ms of voiced/strong frames required
+    # SUSTAINED-SPEECH EVIDENCE (2026-08-30): raised 150→250ms. A real
+    # command has at least ~250ms of voiced/strong frames; a transient
+    # spike contributes < 200ms even when it trips the capture window.
+    min_speech_evidence_ms: int = 250  # ms of voiced/strong frames required
 
     # TASK 6: failure responses — never silently return to wake mode.
     failure_response_ms: int = 0
@@ -375,6 +407,54 @@ FAILURE_GARBAGE = "GARBAGE"
 _REPEATED_WORD_RE = re.compile(r"\b(\w+)\b(?:\s+\1\b){2,}", re.IGNORECASE)
 
 
+# ── SUSTAINED-SPEECH transcript guard (2026-08-30) ─────────────
+# A SINGLE-word transcript is only credible if the word can stand alone
+# as a command or conversational reply. Whisper hallucinating "you" or
+# "too" from weak/noisy audio must be rejected CHEAPLY here — before it
+# can reach the Brain and trigger perception (OCR ~20s), planner, or LLM.
+STANDALONE_WORDS = frozenset({
+    # Command verbs / actions
+    "open", "close", "stop", "start", "run", "play", "pause", "resume",
+    "next", "previous", "skip", "search", "find", "show", "read", "tell",
+    "set", "change", "switch", "scroll", "click", "type", "press", "send",
+    "write", "create", "mute", "unmute", "lock", "shutdown", "restart",
+    "volume", "brightness", "louder", "quieter", "help",
+    # Conversational replies
+    "yes", "no", "okay", "ok", "sure", "please", "thanks", "thank",
+    "hello", "hey", "hi", "bye", "goodbye", "diego", "continue",
+    "repeat", "again", "cancel", "done", "nevermind",
+    # Common app/media nouns users say alone
+    "firefox", "chrome", "spotify", "youtube", "terminal", "calculator",
+    "settings", "code", "vscode", "pycharm", "telegram", "whatsapp",
+    "discord", "slack", "notion", "files", "music", "weather", "time",
+    "date", "email", "mail",
+})
+
+
+def is_low_quality_transcript(text: str) -> bool:
+    """Cheap transcript-quality guard for downstream consumers (Brain).
+
+    True when the transcript is unlikely to be a real command:
+      - empty text
+      - filler-only ("um", "wait")
+      - garbage patterns ("I'm sorry", "you", "it")
+      - a single word that cannot stand alone as a command or
+        conversational phrase (Whisper hallucinations like "too")
+
+    Multi-word transcripts are NEVER rejected here — the Brain's decision
+    engine handles routing for them.
+    """
+    t = (text or "").strip()
+    if not t:
+        return True
+    if is_filler(t) or is_garbage(t):
+        return True
+    words = t.split()
+    if len(words) == 1 and not _is_conversational_exempt(t):
+        return t.lower().strip(" .!?") not in STANDALONE_WORDS
+    return False
+
+
 def _is_repeated_hallucination(text: str) -> bool:
     """True if the transcript is a repeated/hallucinated fragment.
 
@@ -445,6 +525,18 @@ def _validate_transcript(
     #     unambiguous phrases must never be rejected on confidence alone.
     if _is_conversational_exempt(t):
         return True, ""
+
+    # 5c. SUSTAINED-SPEECH transcript guard (2026-08-30): a SINGLE-word
+    #     transcript is only credible when the word can stand alone as a
+    #     command/conversation ("stop", "yes", "open") OR the confidence
+    #     is decent with adequate audio. This is the cheap STT guard that
+    #     stops hallucinated fragments like "you" (conf -1.35) and "too"
+    #     (conf -0.657) from triggering expensive downstream reasoning.
+    if word_count == 1 and not _is_conversational_exempt(t):
+        w = t.lower().strip(" .!?")
+        if w not in STANDALONE_WORDS:
+            if confidence < -0.45 or speech_dur_ms < 600:
+                return False, FAILURE_LOW_CONFIDENCE
 
     # 6. Confidence is now a soft signal. We combine it with word count and
     #    speech duration. Real speech on this system scores -0.2 to -0.9;
@@ -795,6 +887,14 @@ class CommandListener:
         state["strong_ms"] = 0.0          # frames with RMS >= strong_speech_rms
         state["loud_ms"] = 0.0            # frames with RMS >= energy_speech_rms
         state["peak_rms"] = 0.0           # loudest frame RMS (diagnostic)
+        # SUSTAINED-SPEECH evidence (2026-08-30): total captured duration
+        # and VAD probability over time — lets _finalize() require a
+        # minimum voiced FRACTION of the utterance, not just an absolute
+        # voiced duration. A transient spike inside a ~2s buffer has a
+        # tiny ratio and is discarded before Whisper runs.
+        state["total_ms"] = 0.0           # total captured utterance duration
+        state["prob_sum"] = 0.0           # sum of VAD probs (avg diagnostic)
+        state["prob_frames"] = 0          # number of VAD frames counted
 
     # ── Main streaming loop ─────────────────────────────────
 
@@ -1089,15 +1189,21 @@ class CommandListener:
                 # low RMS, so the boost never applies). The boost is capped at
                 # energy_boost_ceiling so it can never exceed the Silero
                 # threshold by a huge margin and cause flapping.
+                # SUSTAINED-SPEECH FIX (2026-08-30): the boost floor moved
+                # from energy_speech_rms (900 — INSIDE the background-noise
+                # band ~1200-2300) to energy_fallback_rms (2500 — above the
+                # noise band, inside the real-speech band ~3500-6500).
+                # Background noise can no longer open a capture window via
+                # the energy fallback; only clearly voiced frames can.
                 if (state["state"] == STATE_WAITING
                         and prob < cfg.speech_start_threshold
-                        and raw_rms >= cfg.energy_speech_rms):
+                        and raw_rms >= cfg.energy_fallback_rms):
                     # Strong energy + Silero uncertain → treat as speech.
                     # Scale the boost so louder frames get a higher score.
                     boost = min(
                         cfg.energy_boost_ceiling,
                         cfg.speech_start_threshold
-                        + (raw_rms - cfg.energy_speech_rms) / 10000.0,
+                        + (raw_rms - cfg.energy_fallback_rms) / 10000.0,
                     )
                     prob = max(prob, boost)
                     if AUDIO_TRACE_ENABLED:
@@ -1136,6 +1242,9 @@ class CommandListener:
                 # per-frame signals (Silero probability + frame energy).
                 # Only frames captured while speech is active count.
                 if cur_state in (STATE_SPEECH, STATE_SILENCE):
+                    state["total_ms"] += frame_duration_ms
+                    state["prob_sum"] += prob
+                    state["prob_frames"] += 1
                     if raw_rms >= cfg.strong_speech_rms:
                         state["strong_ms"] += frame_duration_ms
                     if raw_rms >= cfg.energy_speech_rms:
@@ -1244,6 +1353,9 @@ class CommandListener:
                                     "strong_ms": state["strong_ms"],
                                     "loud_ms": state["loud_ms"],
                                     "peak_rms": state["peak_rms"],
+                                    "total_ms": state["total_ms"],
+                                    "avg_prob": (state["prob_sum"] / state["prob_frames"]
+                                                 if state["prob_frames"] else 0.0),
                                 })
 
                             # Clear utterance state → WAITING_FOR_SPEECH.
@@ -1309,6 +1421,9 @@ class CommandListener:
                             "strong_ms": state["strong_ms"],
                             "loud_ms": state["loud_ms"],
                             "peak_rms": state["peak_rms"],
+                            "total_ms": state["total_ms"],
+                            "avg_prob": (state["prob_sum"] / state["prob_frames"]
+                                         if state["prob_frames"] else 0.0),
                         })
                     self._reset_utterance_state(state)
                     if final is not None:
@@ -1405,22 +1520,47 @@ class CommandListener:
             if rms >= cfg.energy_speech_rms:
                 loud_ms += frame_ms
         return {"silero_voiced_ms": 0.0, "strong_ms": strong_ms,
-                "loud_ms": loud_ms, "peak_rms": peak_rms}
+                "loud_ms": loud_ms, "peak_rms": peak_rms,
+                "total_ms": len(frames) * frame_ms, "avg_prob": 0.0}
 
     @staticmethod
     def _has_speech_evidence(evidence: dict) -> bool:
-        """True ONLY when the utterance contains real speech evidence.
+        """True ONLY when the utterance contains SUSTAINED speech evidence.
+
+        STT GUARD (2026-08-30): this is the cheap pre-Whisper gate. It
+        combines MULTIPLE signals — voiced-frame duration, strong-energy
+        duration, the voiced FRACTION of the utterance, and the average
+        VAD probability over time — so a transient VAD spike captured
+        into a ~2s buffer can never trigger a full Whisper decode.
 
         This is what distinguishes:
-          A. NO SPEECH (true silence / background noise that tripped the
-             energy fallback)  → discard silently, NO spoken error.
+          A. NO SPEECH (true silence / background noise / a transient
+             spike that tripped the capture window) → discard silently,
+             NO spoken error, NO Whisper decode.
           B/C. SPEECH CAPTURED BUT STT FAILED / low confidence → a
              recovery response IS appropriate.
         """
         cfg = command_config
-        if evidence.get("silero_voiced_ms", 0.0) >= cfg.min_speech_evidence_ms:
+        total_ms = evidence.get("total_ms", 0.0) or 1.0
+        voiced_ms = evidence.get("silero_voiced_ms", 0.0)
+        strong_ms = evidence.get("strong_ms", 0.0)
+        avg_prob = evidence.get("avg_prob", 0.0)
+
+        voiced_ratio = voiced_ms / total_ms
+        strong_ratio = strong_ms / total_ms
+
+        # Signal 1+2: enough voiced/strong frames AND they make up a
+        # credible fraction of the utterance (not one spike in silence).
+        if (voiced_ms >= cfg.min_speech_evidence_ms
+                and voiced_ratio >= cfg.min_voiced_ratio):
             return True
-        if evidence.get("strong_ms", 0.0) >= cfg.min_speech_evidence_ms:
+        if (strong_ms >= cfg.min_speech_evidence_ms
+                and strong_ratio >= cfg.min_voiced_ratio):
+            return True
+        # Signal 3: sustained high VAD probability over the utterance is
+        # credible speech evidence even when the energy floors were not
+        # crossed (quiet but clearly voiced speech).
+        if avg_prob >= 0.55 and voiced_ms >= cfg.min_speech_evidence_ms:
             return True
         return False
 

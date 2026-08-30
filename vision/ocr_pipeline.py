@@ -222,6 +222,12 @@ class EnhancedOCREngine:
         self._easyocr_reader: Optional[Any] = None
         self._active: str = "none"
         self._retry_count: int = 0
+        # OCR FAILURE LATENCY GUARD (2026-08-30): when the backend RAISES
+        # (e.g. PaddleOCR "string index out of range"), the self-healing
+        # retry loop must NOT run — it re-runs the failing backend 2 more
+        # times (16-21s total) for a guaranteed-failing call. Retries are
+        # only for genuine "no boxes found" results.
+        self._last_backend_error: Optional[str] = None
 
     def initialize(self) -> bool:
         """Try to initialise the best available OCR backend."""
@@ -409,13 +415,21 @@ class EnhancedOCREngine:
         result.box_count_raw = len(raw_boxes)
         result.backend = self._active
 
+        # OCR FAILURE LATENCY GUARD (2026-08-30): if the backend RAISED,
+        # do NOT self-heal-retry — the retry would re-run the failing
+        # backend 2 more times (16-21s total) for a guaranteed-failing
+        # call. Surface the error immediately instead.
+        backend_error = self._last_backend_error
+        self._last_backend_error = None
+
         # Offset boxes back to full image coordinates
         for box in raw_boxes:
             ox, oy, ow, oh = box.bbox
             box.bbox = (ox + region_offset[0], oy + region_offset[1], ow, oh)
 
         # ── Self-healing: retry with different preprocessing ──
-        if len(raw_boxes) == 0 and retry_on_failure:
+        # (SKIPPED when the backend raised an exception — see above.)
+        if len(raw_boxes) == 0 and retry_on_failure and not backend_error:
             logger.info("[OCR] No boxes found — retrying with alternative preprocessing")
             self._retry_count += 1
             result.retry_count = 1
@@ -504,8 +518,18 @@ class EnhancedOCREngine:
             if results and results[0]:
                 for line in results[0]:
                     bbox_points = line[0]
-                    text = line[1][0] if isinstance(line[1], (list, tuple)) else str(line[1])
-                    conf = line[1][1] if isinstance(line[1], (list, tuple)) and len(line[1]) > 1 else 1.0
+                    # CRITICAL FIX (2026-08-30): newer PaddleOCR builds can
+                    # return an EMPTY result tuple for a detected box.
+                    # Indexing line[1][0] unconditionally raised
+                    # "string index out of range", which aborted the whole
+                    # pass and forced the 16-21s self-healing retry loop.
+                    # Guard every index access.
+                    if isinstance(line[1], (list, tuple)):
+                        text = str(line[1][0]) if len(line[1]) > 0 else ""
+                        conf = float(line[1][1]) if len(line[1]) > 1 else 0.0
+                    else:
+                        text = str(line[1])
+                        conf = 1.0
 
                     if text:
                         xs = [p[0] for p in bbox_points]
@@ -519,6 +543,7 @@ class EnhancedOCREngine:
             return boxes
         except Exception as e:
             logger.warning("[OCR] PaddleOCR error: %s", e)
+            self._last_backend_error = str(e)
             return []
 
     def _ocr_easyocr(self, image: np.ndarray) -> List[OCRBox]:
@@ -538,6 +563,7 @@ class EnhancedOCREngine:
             return boxes
         except Exception as e:
             logger.warning("[OCR] EasyOCR error: %s", e)
+            self._last_backend_error = str(e)
             return []
 
     def _ocr_tesseract(self, image: np.ndarray) -> List[OCRBox]:
@@ -563,6 +589,7 @@ class EnhancedOCREngine:
             return boxes
         except Exception as e:
             logger.warning("[OCR] Tesseract error: %s", e)
+            self._last_backend_error = str(e)
             return []
 
     # ── Box merging ───────────────────────────────────
@@ -785,6 +812,7 @@ class EnhancedOCREngine:
         self._paddle = None
         self._easyocr_reader = None
         self._active = "none"
+        self._last_backend_error = None
 
     def report(self) -> Dict[str, Any]:
         return {
