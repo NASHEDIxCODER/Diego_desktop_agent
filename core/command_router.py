@@ -380,8 +380,11 @@ _SIMPLE_COMMANDS = [
     (r"^open\s+(?:the\s+)?(stackoverflow|stackoverflow\.com)$", "browser_navigate", {"url": "https://stackoverflow.com"}),
     (r"^open\s+(?:the\s+)?([a-z0-9-]+\.(?:com|org|net|io|dev|ai|me|co|app))$", "browser_navigate", {}),
 
-    # Web search — YouTube-specific must come BEFORE generic search
-    (r"^search\s+youtube\s+(?:for\s+)?(.+)$", "play_media", {}),
+    # Web search — YouTube-specific must come BEFORE generic search.
+    # UX FIX (2026-08-30): "search youtube for X" is a SEARCH-ONLY request —
+    # it opens the YouTube results page visibly and must NOT start playback
+    # (that is what "play X on youtube" is for).
+    (r"^search\s+youtube\s+(?:for\s+)?(.+)$", "youtube_search", {}),
     (r"^search\s+(?:the\s+web\s+)?(?:for\s+)?(.+)$", "browser_search", {}),
     (r"^google\s+(.+)$", "browser_search", {}),
     (r"^look\s+up\s+(.+)$", "browser_search", {}),
@@ -461,8 +464,23 @@ _SIMPLE_COMMANDS = [
     (r"^(?:scroll\s+)?(up)$", "scroll", {"direction": "up"}),
     (r"^(?:scroll\s+)?(down)$", "scroll", {"direction": "down"}),
 
+    # ── Explicit YouTube playback (2026-08-30 UX fix) ──
+    # "play <song> on youtube" / "play <song> from youtube" /
+    # "play the song <song> on youtube" → VISIBLE browser playback on
+    # YouTube. Must come BEFORE the generic play pattern so the provider
+    # suffix is stripped from the query and the VISIBLE YouTube flow is
+    # used (never hidden mpv playback).
+    (r"^play\s+(?:the\s+)?(?:song|track|video|music)\s+(.+?)\s+(?:on|from|in)\s+youtube$",
+     "play_media", {"youtube": True}),
+    (r"^play\s+(.+?)\s+(?:on|from|in)\s+youtube$", "play_media", {"youtube": True}),
+
     # Music play (simple patterns)
     (r"^play\s+(?:some\s+)?(.+)$", "play_media", {}),
+
+    # Bare pause/resume (2026-08-30 UX fix): "pause" / "resume" with no
+    # object must control the active player directly.
+    (r"^pause$", "music_pause", {}),
+    (r"^resume$", "music_resume", {}),
 ]
 
 # Compile patterns
@@ -682,10 +700,22 @@ class CommandRouter:
                             # (e.g. "lo-fi hip hop"). The "youtube" keyword is in the ORIGINAL
                             # text, not in `g`. Check the full text instead.
                             if g:
-                                params["query"] = g
+                                q = g
+                                # UX FIX (2026-08-30): strip a trailing
+                                # "on/from/in youtube" provider suffix and
+                                # force the VISIBLE YouTube playback path.
+                                m_yt = re.search(r"\s+(?:on|from|in)\s+youtube$", q, re.IGNORECASE)
+                                if m_yt:
+                                    q = q[:m_yt.start()].strip()
+                                    params["youtube"] = True
+                                params["query"] = q
                                 # Force YouTube when the original text mentioned "youtube"
                                 if "youtube" in text.lower():
                                     params["youtube"] = True
+                        elif action_name == "youtube_search":
+                            # "search youtube for X" → SEARCH ONLY (open the
+                            # results page visibly; never start playback).
+                            params["query"] = g
                         elif action_name == "browser_search":
                             params["query"] = g
                         elif action_name == "browser_navigate":
@@ -735,6 +765,7 @@ class CommandRouter:
                 "scroll": "",
                 "desktop_open": "Opening.",
                 "browser_search": "Searching.",
+                "youtube_search": "Searching YouTube.",
                 "play_media": "Playing.",
                 "close_app": "Closed.",
             }

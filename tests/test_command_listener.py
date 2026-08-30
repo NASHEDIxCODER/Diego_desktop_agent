@@ -734,14 +734,20 @@ def test_max_duration_never_used_with_silence(monkeypatch):
 
 # ── K. _finalize() empty-frame crash ──────────────────────────
 def test_finalize_empty_frames_no_crash(monkeypatch):
-    """_finalize() must not crash when frames is empty (np.concatenate ValueError)."""
+    """_finalize() must not crash when frames is empty (np.concatenate ValueError).
+
+    UPDATED (2026-08-30): empty frames carry NO speech evidence, so
+    _finalize() now discards them SILENTLY (returns None) instead of
+    emitting a spoken "say again" failure response. Silence / no-speech
+    audio must never produce a spoken error.
+    """
     async def impl():
         cl = _make_listener(FakeWhisper())
-        # Call _finalize with empty frames — must return a failure event, not raise.
+        # Call _finalize with empty frames — must return None (silent
+        # discard), not raise and not emit a failure event.
         ev = await cl._finalize([], time.time(), endpoint_reason="silence")
-        assert ev is not None
-        assert ev.kind == "failure"
-        assert ev.failure_reason == CL.FAILURE_TRANSCRIPTION_FAILED
+        assert ev is None, (
+            "no-evidence audio must be discarded silently (no 'say again')")
 
     asyncio.run(impl())
 

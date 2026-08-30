@@ -132,6 +132,28 @@ class MusicAgent:
 
     # ── Main API ───────────────────────────────────────────────
 
+    @staticmethod
+    def _playerctl(*args: str) -> bool:
+        """Run a playerctl command; True ONLY if playerctl exists AND exits 0.
+
+        CRITICAL FIX (audit B3): previous implementations fired
+        `playerctl <cmd>` and returned a success string unconditionally,
+        regardless of the exit status. With no MPRIS player running,
+        playerctl exits non-zero — yet Diego reported "Music paused." /
+        "Resumed." and verification trusted the string, producing false
+        success. Now the exit status is authoritative.
+        """
+        if not shutil.which("playerctl"):
+            return False
+        try:
+            result = subprocess.run(
+                ["playerctl", *args],
+                capture_output=True, timeout=2,
+            )
+            return result.returncode == 0
+        except Exception:
+            return False
+
     async def play(self, query: str, provider: Optional[str] = None) -> str:
         """
         Play music matching the query.
@@ -196,16 +218,14 @@ class MusicAgent:
             except Exception:
                 pass
 
-        # Try playerctl (controls mpv, vlc, spotify, any MPRIS player)
-        try:
-            subprocess.run(["playerctl", "pause"],
-                           capture_output=True, timeout=2)
+        # playerctl (controls mpv, vlc, spotify, any MPRIS player).
+        # CRITICAL FIX (audit B3): only report success when playerctl
+        # actually exited 0 (a player responded).
+        if self._playerctl("pause"):
             self._current.state = PlaybackState.PAUSED
             return "Music paused."
-        except Exception:
-            pass
 
-        return "Couldn't pause — nothing appears to be playing."
+        return "Couldn't pause — no player responded."
 
     async def resume(self) -> str:
         """Resume playback."""
@@ -218,13 +238,10 @@ class MusicAgent:
             except Exception:
                 pass
 
-        try:
-            subprocess.run(["playerctl", "play"],
-                           capture_output=True, timeout=2)
+        # CRITICAL FIX (audit B3): "Resumed." only when playerctl exited 0.
+        if self._playerctl("play"):
             self._current.state = PlaybackState.PLAYING
             return "Resumed."
-        except Exception:
-            pass
 
         return "Nothing to resume."
 
@@ -238,14 +255,11 @@ class MusicAgent:
             except Exception:
                 pass
 
-        try:
-            subprocess.run(["playerctl", "next"],
-                           capture_output=True, timeout=2)
+        # CRITICAL FIX (audit B3): success only when playerctl exited 0.
+        if self._playerctl("next"):
             return "Next track."
-        except Exception:
-            pass
 
-        return "Skipping tracks isn't available right now."
+        return "Couldn't skip — no player responded."
 
     async def previous(self) -> str:
         """Go to previous track."""
@@ -257,14 +271,11 @@ class MusicAgent:
             except Exception:
                 pass
 
-        try:
-            subprocess.run(["playerctl", "previous"],
-                           capture_output=True, timeout=2)
+        # CRITICAL FIX (audit B3): success only when playerctl exited 0.
+        if self._playerctl("previous"):
             return "Previous track."
-        except Exception:
-            pass
 
-        return "Can't go back right now."
+        return "Couldn't go back — no player responded."
 
     async def stop(self) -> str:
         """Stop playback entirely."""
@@ -281,13 +292,10 @@ class MusicAgent:
             self._current.state = PlaybackState.STOPPED
             return "Music stopped."
 
-        try:
-            subprocess.run(["playerctl", "stop"],
-                           capture_output=True, timeout=2)
+        # CRITICAL FIX (audit B3): success only when playerctl exited 0.
+        if self._playerctl("stop"):
             self._current.state = PlaybackState.STOPPED
             return "Music stopped."
-        except Exception:
-            pass
 
         return "Nothing to stop."
 
@@ -295,14 +303,10 @@ class MusicAgent:
         """Set volume for the active music player."""
         percent = max(0, min(100, percent))
 
-        # Try playerctl first
-        try:
-            subprocess.run(["playerctl", "volume", str(percent / 100)],
-                           capture_output=True, timeout=2)
+        # Try playerctl first — success only when it exits 0 (audit B3)
+        if self._playerctl("volume", str(percent / 100)):
             self._current.volume = percent
             return f"Volume: {percent}%."
-        except Exception:
-            pass
 
         # Fallback: system volume
         if shutil.which("pactl"):
@@ -326,22 +330,16 @@ class MusicAgent:
 
     async def shuffle(self) -> str:
         """Toggle shuffle mode."""
-        try:
-            subprocess.run(["playerctl", "shuffle", "toggle"],
-                           capture_output=True, timeout=2)
+        # CRITICAL FIX (audit B3): success only when playerctl exited 0.
+        if self._playerctl("shuffle", "toggle"):
             return "Shuffle toggled."
-        except Exception:
-            pass
         return "Shuffle not available."
 
     async def repeat(self) -> str:
         """Toggle repeat mode."""
-        try:
-            subprocess.run(["playerctl", "loop", "toggle"],
-                           capture_output=True, timeout=2)
+        # CRITICAL FIX (audit B3): success only when playerctl exited 0.
+        if self._playerctl("loop", "toggle"):
             return "Repeat toggled."
-        except Exception:
-            pass
         return "Repeat not available."
 
     async def status(self) -> str:

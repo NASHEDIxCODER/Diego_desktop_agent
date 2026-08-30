@@ -2,7 +2,16 @@
 Runtime audit harness — End-to-end execution pipeline tracer.
 
 Traces every command through:
-  Normalize → Perceive → Decide → Plan → Dispatch → Verify → Respond
+  Normalize → Perceive → Decide → Plan → Dispatch+Verify → Respond
+
+CRITICAL FIX (audit B4): dispatch now goes through
+Brain._dispatch_and_verify() — the SAME production path used by
+Brain.process_command() — so the trace includes pre-action capture,
+post-action verification, and the retry-with-adjusted-params logic.
+Previously the harness called ActionDispatcher.execute() +
+Brain._verify() directly, bypassing retries, which made the trace
+diverge from production (e.g. "open terminal" failed without the
+gnome-terminal → xterm retry ever being attempted).
 
 For EVERY stage logs: INPUT, OUTPUT, latency, return value.
 Stops immediately if any stage returns None or an empty action list.
@@ -228,46 +237,30 @@ async def run_single_command(brain, cmd: str) -> None:
         aparams = action.get("params", {})
         print(f"\n  ── DISPATCH[{i}/{len(actions)}] {aname} {aparams}")
 
-        # Pre-action capture
-        if brain._verifier:
-            try:
-                brain._verifier.capture_pre_action()
-                print(f"  [PRE] verifier.capture_pre_action() OK")
-            except Exception as e:
-                print(f"  [PRE] verifier.capture_pre_action() EXC: {e}")
-
-        # Dispatch
+        # ── Production path (audit B4) ──
+        # Brain._dispatch_and_verify() is the ONLY place production
+        # dispatches actions: it captures pre-action state, executes,
+        # verifies AFTER execution, and retries with adjusted params
+        # (up to MAX_ACTION_RETRIES) on verification failure. Using it
+        # here keeps the audit trace faithful to the live pipeline
+        # without duplicating any business logic.
         t0 = time.time()
         try:
-            dispatch_result = await brain._dispatcher.execute(action)
+            ok, action_result = await brain._dispatch_and_verify(action)
             tracer.stage(
-                f"DISPATCH {aname}", action, dispatch_result,
+                f"DISPATCH_VERIFY {aname}", action,
+                action_result if action_result else ("OK" if ok else "FAILED"),
                 (time.time() - t0) * 1000,
-                "ActionDispatcher.execute()",
+                f"Brain._dispatch_and_verify() ok={ok} "
+                f"(dispatch → verify → retry, production path)",
             )
+            verifications.append(ok)
         except Exception as e:
-            tracer.stage(f"DISPATCH {aname}", action, f"EXC: {e}",
+            tracer.stage(f"DISPATCH_VERIFY {aname}", action, f"EXC: {e}",
                          (time.time() - t0) * 1000)
             raise PipelineStop(
-                f"[STOP] DISPATCH {aname} raised {e} — "
+                f"[STOP] DISPATCH_VERIFY {aname} raised {e} — "
                 f"action did not execute."
-            )
-
-        # Verify (AFTER execution)
-        t0 = time.time()
-        try:
-            verified = await brain._verify(aname, aparams, dispatch_result)
-            tracer.stage(
-                f"VERIFY {aname}", dispatch_result, verified,
-                (time.time() - t0) * 1000,
-                "verification runs AFTER dispatch",
-            )
-            verifications.append(verified)
-        except Exception as e:
-            tracer.stage(f"VERIFY {aname}", dispatch_result, f"EXC: {e}",
-                         (time.time() - t0) * 1000)
-            raise PipelineStop(
-                f"[STOP] VERIFY {aname} raised {e} — verification failed."
             )
 
     # ── Stage 5: Response (generated AFTER execution, from traced result) ──

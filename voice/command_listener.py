@@ -163,6 +163,21 @@ class CommandListenerConfig:
     energy_speech_rms: float = 900.0    # int16 RMS floor for the boost
     energy_boost_ceiling: float = 0.95  # max boosted probability
 
+    # ── NO-SPEECH vs STT-FAILURE discrimination (2026-08-30) ──
+    # A spoken recovery response ("Sorry, I missed that") must ONLY be
+    # produced when there is REAL evidence the user actually spoke.
+    # Background noise (RMS ~1200-2300 on this system) can trigger the
+    # energy fallback and a silence endpoint, but it is NOT speech —
+    # saying "I didn't catch that" for it is wrong UX. _finalize() now
+    # requires per-frame speech evidence before it will transcribe or
+    # emit ANY failure event:
+    #   - Silero probability >= 0.5 (voiced frames), OR
+    #   - frame RMS >= strong_speech_rms (clearly voiced energy).
+    # strong_speech_rms=2500 matches vad.ROBUST_ENERGY_RMS: real speech
+    # on this system measures RMS ~3500-6500; background noise ~300-2300.
+    strong_speech_rms: float = 2500.0
+    min_speech_evidence_ms: int = 150  # ms of voiced/strong frames required
+
     # TASK 6: failure responses — never silently return to wake mode.
     failure_response_ms: int = 0
 
@@ -772,6 +787,14 @@ class CommandListener:
         state["last_partial_text"] = ""
         state["last_partial_confidence"] = 0.0
         state["stable_count"] = 0
+        # NO-SPEECH evidence tracking (2026-08-30): per-utterance speech
+        # evidence accumulated from RAW per-frame signals. Lets _finalize()
+        # distinguish "user said nothing (noise tripped capture)" from
+        # "user spoke but STT failed".
+        state["silero_voiced_ms"] = 0.0   # frames with Silero prob >= 0.5
+        state["strong_ms"] = 0.0          # frames with RMS >= strong_speech_rms
+        state["loud_ms"] = 0.0            # frames with RMS >= energy_speech_rms
+        state["peak_rms"] = 0.0           # loudest frame RMS (diagnostic)
 
     # ── Main streaming loop ─────────────────────────────────
 
@@ -1108,6 +1131,20 @@ class CommandListener:
                 # ── TASK 2: explicit speech state machine ──────────
                 cur_state = state["state"]
 
+                # ── NO-SPEECH evidence tracking (2026-08-30) ──
+                # Accumulate per-utterance speech evidence from the RAW
+                # per-frame signals (Silero probability + frame energy).
+                # Only frames captured while speech is active count.
+                if cur_state in (STATE_SPEECH, STATE_SILENCE):
+                    if raw_rms >= cfg.strong_speech_rms:
+                        state["strong_ms"] += frame_duration_ms
+                    if raw_rms >= cfg.energy_speech_rms:
+                        state["loud_ms"] += frame_duration_ms
+                    if raw_rms > state["peak_rms"]:
+                        state["peak_rms"] = raw_rms
+                    if silero_prob >= 0.5:
+                        state["silero_voiced_ms"] += frame_duration_ms
+
                 if cur_state == STATE_WAITING:
                     # Speech start requires a short confirmation window:
                     # VAD >= start threshold for N consecutive frames.
@@ -1201,7 +1238,13 @@ class CommandListener:
 
                             final = await self._finalize(
                                 frozen_frames, frozen_start,
-                                endpoint_reason="silence")
+                                endpoint_reason="silence",
+                                evidence={
+                                    "silero_voiced_ms": state["silero_voiced_ms"],
+                                    "strong_ms": state["strong_ms"],
+                                    "loud_ms": state["loud_ms"],
+                                    "peak_rms": state["peak_rms"],
+                                })
 
                             # Clear utterance state → WAITING_FOR_SPEECH.
                             self._reset_utterance_state(state)
@@ -1260,7 +1303,13 @@ class CommandListener:
                     frozen_start = state["speech_start_time"]
                     await self._cancel_inflight_partial()
                     final = await self._finalize(
-                        frozen_frames, frozen_start, endpoint_reason="max_duration")
+                        frozen_frames, frozen_start, endpoint_reason="max_duration",
+                        evidence={
+                            "silero_voiced_ms": state["silero_voiced_ms"],
+                            "strong_ms": state["strong_ms"],
+                            "loud_ms": state["loud_ms"],
+                            "peak_rms": state["peak_rms"],
+                        })
                     self._reset_utterance_state(state)
                     if final is not None:
                         # Critical fix: failure events must never be swallowed.
@@ -1333,6 +1382,48 @@ class CommandListener:
         self._partial_inflight = False
         self._partial_task = None
 
+    # ── NO-SPEECH vs STT-FAILURE discrimination (2026-08-30) ──
+
+    @staticmethod
+    def _measure_speech_evidence(frames: List[np.ndarray]) -> dict:
+        """Measure per-frame speech evidence from the frozen utterance audio.
+
+        Used when live evidence was not supplied (e.g. direct _finalize
+        calls from tests/diagnostics). Energy-only: no VAD state mutation.
+        """
+        cfg = command_config
+        frame_ms = FRAME_SAMPLES / SAMPLE_RATE * 1000.0
+        strong_ms = 0.0
+        loud_ms = 0.0
+        peak_rms = 0.0
+        for frame in frames:
+            rms = float(np.sqrt(np.mean(frame.astype(np.float64) ** 2))) * 32768.0
+            if rms > peak_rms:
+                peak_rms = rms
+            if rms >= cfg.strong_speech_rms:
+                strong_ms += frame_ms
+            if rms >= cfg.energy_speech_rms:
+                loud_ms += frame_ms
+        return {"silero_voiced_ms": 0.0, "strong_ms": strong_ms,
+                "loud_ms": loud_ms, "peak_rms": peak_rms}
+
+    @staticmethod
+    def _has_speech_evidence(evidence: dict) -> bool:
+        """True ONLY when the utterance contains real speech evidence.
+
+        This is what distinguishes:
+          A. NO SPEECH (true silence / background noise that tripped the
+             energy fallback)  → discard silently, NO spoken error.
+          B/C. SPEECH CAPTURED BUT STT FAILED / low confidence → a
+             recovery response IS appropriate.
+        """
+        cfg = command_config
+        if evidence.get("silero_voiced_ms", 0.0) >= cfg.min_speech_evidence_ms:
+            return True
+        if evidence.get("strong_ms", 0.0) >= cfg.min_speech_evidence_ms:
+            return True
+        return False
+
     # ── TASK 6: final transcription ─────────────────────────
 
     async def _finalize(
@@ -1340,6 +1431,7 @@ class CommandListener:
         frames: List[np.ndarray],
         start: float,
         endpoint_reason: str = "",
+        evidence: Optional[dict] = None,
     ) -> Optional[UtteranceEvent]:
         """TASK 5/6: final command flow — transcribe + validate + yield.
 
@@ -1353,15 +1445,40 @@ class CommandListener:
 
         TASK 6: every failure path now yields a "failure" event with an
         explicit reason so the ConversationEngine can speak a response.
+
+        NO-SPEECH GATE (2026-08-30): returns None (silent discard — no
+        TTS, no failure event, no THINK state) when the audio shows NO
+        evidence of real speech. A "failure" event is only emitted when
+        the user actually spoke but STT failed / the transcript was
+        invalid. Returns None when the utterance is discarded silently.
         """
         cfg = command_config
         pcm = self._frames_to_bytes(frames)
         dur_ms = len(frames) * (FRAME_SAMPLES / SAMPLE_RATE * 1000)
         num_samples = len(pcm) // 2
 
+        # ── NO-SPEECH gate ──
+        # True silence / background noise must NEVER produce a spoken
+        # "say again" response. Only continue to transcription (and any
+        # failure response) when the audio shows real speech evidence.
+        if evidence is None:
+            evidence = self._measure_speech_evidence(frames)
+        if not self._has_speech_evidence(evidence):
+            logger.info(
+                "[CMD-LISTEN] NO SPEECH evidence (silero_voiced=%.0fms, "
+                "strong=%.0fms, loud=%.0fms, peak_rms=%.0f) — discarding "
+                "silently (no failure response)",
+                evidence.get("silero_voiced_ms", 0.0),
+                evidence.get("strong_ms", 0.0),
+                evidence.get("loud_ms", 0.0),
+                evidence.get("peak_rms", 0.0))
+            return None
+
         # CRITICAL FIX: never crash on empty frames. If the audio buffer
         # was reset between endpoint detection and _finalize(), return a
         # failure event instead of raising ValueError from np.concatenate.
+        # (Only reachable WITH speech evidence — no-evidence audio is
+        # discarded silently above.)
         if not frames or len(pcm) < 512:
             logger.info("[CMD-LISTEN] Utterance DISCARDED (empty_frames: %d frames, %d bytes)",
                         len(frames), len(pcm))

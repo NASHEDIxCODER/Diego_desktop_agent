@@ -709,9 +709,17 @@ class AgentBrain:
           4. Trust dispatch result on verification subsystem failure
         """
         # ── Fail fast if the dispatcher itself reported failure ──
-        if result is not None and "Couldn't" in str(result):
-            logger.debug("[Brain] Verify FAIL (dispatcher reported): %s", result[:80])
-            return False
+        # CRITICAL FIX (audit B3): music/media actions have no OS or
+        # vision verifier — the dispatch result string is the ONLY
+        # evidence. Failure strings like "Nothing to resume." (playerctl
+        # exited non-zero, no player responded) must fail verification,
+        # not be trusted as success.
+        if result is not None:
+            result_str = str(result)
+            if "Couldn't" in result_str or self._is_dispatch_failure(result_str):
+                logger.debug("[Brain] Verify FAIL (dispatcher reported): %s",
+                             result_str[:80])
+                return False
 
         # ── OS-level process verification (authoritative for apps/browsers) ──
         try:
@@ -856,7 +864,7 @@ class AgentBrain:
                         logger.warning("[Brain] Verify ERROR (vision subsystem) — "
                                        "trusting dispatch result for %s: %s",
                                        action_name, vresult.explanation[:100])
-                        return result is not None and "Couldn't" not in str(result)
+                        return self._trust_dispatch_result(result)
 
                     if vresult.success:
                         logger.info("[Brain] Verify OK: %s (%s)", action_name, vresult.status.value)
@@ -878,12 +886,46 @@ class AgentBrain:
                     return False
                 else:
                     # No verification type mapped — trust the dispatch result
-                    return result is not None and "Couldn't" not in str(result)
+                    # (but only if it does not report a failure — audit B3)
+                    return self._trust_dispatch_result(result)
             except Exception as e:
                 logger.debug("[Brain] Vision verify failed: %s", e)
 
         # ── Fallback: trust a clean dispatch result ──
-        return result is not None and "Couldn't" not in str(result)
+        return self._trust_dispatch_result(result)
+
+    @staticmethod
+    def _is_dispatch_failure(result: str) -> bool:
+        """True if a dispatch result string reports a real failure.
+
+        CRITICAL FIX (audit B3): media/music actions have no OS-level or
+        vision verifier, so the dispatch string is the only evidence of
+        what happened. MusicAgent now reports honest failure strings when
+        playerctl exits non-zero (no player responded). Those strings —
+        and other known no-op results — must NOT be treated as success.
+        """
+        if not result:
+            return False
+        markers = (
+            "Nothing to resume",
+            "Nothing to stop",
+            "Nothing is playing",
+            "no player responded",
+            "isn't available right now",
+            "not available",
+            "MPV is not installed",
+            "No local music found",
+        )
+        return any(marker in result for marker in markers)
+
+    @staticmethod
+    def _trust_dispatch_result(result: Optional[str]) -> bool:
+        """Trust a dispatch result ONLY if it does not report failure."""
+        if result is None:
+            return False
+        result_str = str(result)
+        return ("Couldn't" not in result_str
+                and not AgentBrain._is_dispatch_failure(result_str))
 
     async def _learn(self, action_name: str, params: Dict[str, Any],
                      success: bool, error: str = "") -> None:

@@ -124,24 +124,52 @@ class ActionDispatcher:
             return await self._music_mute()
 
         # ── Primary execution ─────────────────────────────
+        # CRITICAL FIX (audit B2): _execute_sync reports failures as
+        # human-readable strings (e.g. "Couldn't find gnome-terminal").
+        # Those strings are truthy, so the old code returned them as if
+        # the action had succeeded — and the fallback path (gtk-launch /
+        # xdg-open / alternate browsers) was NEVER attempted. Now a
+        # failure result is remembered and the fallback still runs; the
+        # original failure string is only returned if the fallback also
+        # fails, so Brain's verification and retry logic keep working.
+        primary_failure: Optional[str] = None
         try:
             result = await loop.run_in_executor(None, self._execute_sync, name, params)
-            if result:
+            if result and not self._is_failure_result(result):
                 return result
+            if result:
+                primary_failure = result
         except Exception as e:
             logger.warning("[ACTIONS] execute failed (%s): %s", name, e)
 
         # ── Fallback alternative ──────────────────────────
         try:
             fallback_result = await self._execute_fallback(name, params)
-            if fallback_result:
+            if fallback_result and not self._is_failure_result(fallback_result):
                 return fallback_result
         except Exception as e:
             logger.warning("[ACTIONS] Fallback failed (%s): %s", name, e)
 
         # Track entity for pronoun resolution
         self._track_entity_for_memory(name, params)
+        if primary_failure:
+            return primary_failure
         return f"Couldn't {name.replace('_', ' ')}"
+
+    @staticmethod
+    def _is_failure_result(result: Any) -> bool:
+        """True if a dispatch result string represents a FAILURE, not success.
+
+        CRITICAL FIX (audit B2): _execute_sync / _open_url_fallback report
+        failures as human-readable strings ("Couldn't find X", "Volume
+        control unavailable"). Those strings are truthy, so callers must
+        not treat them as a successful execution — otherwise the fallback
+        path is never attempted and Brain's retry logic sees a "success".
+        """
+        if not result:
+            return False
+        text = str(result)
+        return "Couldn't" in text or "unavailable" in text
 
     # ── Entity tracking for pronoun resolution ────────────
 

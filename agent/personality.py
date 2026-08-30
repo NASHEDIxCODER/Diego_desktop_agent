@@ -257,6 +257,30 @@ class DiegoPersonality:
             "{detail} — that's it.",
         ]
 
+        # ── Standalone confirmations (no detail available) ──
+        # CRITICAL FIX (audit B1): when `detail` is empty, rendering a
+        # detail-template with "{detail}" stripped produced malformed
+        # fragments that were spoken by TTS verbatim:
+        #   "{detail}. Easy."        → ". Easy."
+        #   "{detail} — all set."    → "— all set."
+        #   "Alright, {detail}"      → "Alright,"
+        # Empty-detail confirmations must therefore come from a pool of
+        # templates that are complete sentences on their own.
+        self._standalone_confirmations = [
+            "Done.",
+            "That's done.",
+            "It's done.",
+            "Finished.",
+            "Sorted.",
+            "All set.",
+            "All good.",
+            "Handled.",
+            "Got it.",
+            "There you go.",
+            "Done and dusted.",
+            "Easy.",
+        ]
+
         # ── Status observations ──────────────────────────
         self._observations = [
             "Looks like you're working on {detail}.",
@@ -745,14 +769,41 @@ class DiegoPersonality:
 
         return choice
 
+    @staticmethod
+    def _clean_fragment(text: str) -> str:
+        """Safety net: normalize a rendered confirmation into a clean sentence.
+
+        Strips dangling leading/trailing punctuation left over from a
+        template whose {detail} placeholder was removed, so fragments
+        like ". Easy." / "— all set." / "Alright," can never reach TTS.
+        """
+        cleaned = text.strip()
+        # Strip leading orphan punctuation/whitespace (". Easy." → "Easy.")
+        cleaned = cleaned.lstrip(".,;:—–- ")
+        # Strip trailing dangling comma (no sentence ends in a comma)
+        cleaned = cleaned.rstrip(",")
+        if cleaned and not cleaned.endswith((".", "!", "?")):
+            cleaned += "."
+        return cleaned
+
     def task_confirmation(self, detail: str = "") -> str:
         """
         Generate a natural task confirmation.
 
         NEVER "Task completed." or "Done." — always includes detail naturally.
+
+        CRITICAL FIX (audit B1): with no detail, pick from the standalone
+        confirmation pool instead of stripping "{detail}" from a
+        detail-template (which produced ". Easy." / "— all set." /
+        "Alright," fragments). A sanitizer is applied as a final safety
+        net so no malformed fragment can ever be returned.
         """
-        template = self._pick_varied(self._task_confirmations, self._recent_results)
-        return template.format(detail=detail) if detail else template.replace("{detail}", "").strip()
+        if detail:
+            template = self._pick_varied(self._task_confirmations, self._recent_results)
+            return self._clean_fragment(template.format(detail=detail))
+        standalone = self._pick_varied(
+            self._standalone_confirmations, self._recent_results)
+        return self._clean_fragment(standalone)
 
     def observation(self, detail: str) -> str:
         """Generate a natural observation about the user's desktop state."""
