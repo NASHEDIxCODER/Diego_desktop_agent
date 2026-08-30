@@ -112,7 +112,11 @@ class ActionDispatcher:
 
         # ── Music actions must run in the event loop, not a thread ──
         if name == "play_media":
-            return await self._play_media_async(params.get("query", ""))
+            return await self._play_media_async(params)
+        if name == "youtube_search":
+            # UX FIX (2026-08-30): "search youtube for X" is SEARCH-ONLY —
+            # open the results page visibly, never start playback.
+            return await self._youtube_search(params.get("query", ""))
         if name in ("music_pause", "music_resume", "music_next",
                      "music_previous", "music_stop", "music_shuffle",
                      "music_repeat", "music_status"):
@@ -1009,11 +1013,21 @@ class ActionDispatcher:
                 return box.center
         return None
 
-    async def _play_media_async(self, query: str) -> str:
-        """Play media through the MusicAgent."""
+    async def _play_media_async(self, params: Any) -> str:
+        """Play media through the MusicAgent.
+
+        UX FIX (2026-08-30): accepts the full params dict so an explicit
+        "play X on youtube" request (params["youtube"]=True) is routed to
+        the VISIBLE YouTube playback flow instead of hidden mpv playback.
+        """
+        if isinstance(params, str):  # backward compatibility
+            params = {"query": params}
+        query = params.get("query", "")
         try:
             from services.music_agent import music_agent
             await music_agent.initialize()
+            if params.get("youtube"):
+                return await music_agent.play(query, youtube=True)
             return await music_agent.play(query)
         except Exception as e:
             logger.warning("[ACTIONS] MusicAgent failed: %s — falling back", e)
@@ -1024,6 +1038,17 @@ class ActionDispatcher:
                 ok, msg = ex.browser_navigate(url)
                 if ok:
                     return f"Playing {query}"
+            return self._open_url_fallback(url)
+
+    async def _youtube_search(self, query: str) -> str:
+        """SEARCH-ONLY YouTube request — open results visibly, no playback."""
+        try:
+            from services.music_agent import music_agent
+            await music_agent.initialize()
+            return await music_agent.search_youtube(query)
+        except Exception as e:
+            logger.warning("[ACTIONS] YouTube search failed: %s — falling back", e)
+            url = "https://www.youtube.com/results?search_query=" + query.replace(" ", "+")
             return self._open_url_fallback(url)
 
     async def _music_action(self, name: str, params: Dict[str, Any]) -> str:

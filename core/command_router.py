@@ -826,8 +826,12 @@ class CommandRouter:
                         return "Alright, never mind then."
                 return None
 
-            # ── Continuation ("continue", "go on", "keep going") ──
-            if text_lower in ("continue", "go on", "keep going", "carry on", "resume", "proceed"):
+            # UX FIX (2026-08-30): "resume" was REMOVED from this list —
+            # a bare "resume" in a voice assistant means "resume playback"
+            # and must reach the music_resume action, not the continuation
+            # handler (which previously swallowed it and broke the
+            # pause/resume player UX).
+            if text_lower in ("continue", "go on", "keep going", "carry on", "proceed"):
                 if conv_memory._last_goal:
                     return f"Continuing with {conv_memory._last_goal}."
                 return "What should I continue with?"

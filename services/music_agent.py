@@ -30,9 +30,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import shutil
 import subprocess
 import time
+from urllib.parse import quote
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -154,18 +156,30 @@ class MusicAgent:
         except Exception:
             return False
 
-    async def play(self, query: str, provider: Optional[str] = None) -> str:
+    async def play(self, query: str, provider: Optional[str] = None,
+                   youtube: bool = False) -> str:
         """
         Play music matching the query.
 
         Args:
             query: What to play (artist, song, playlist, genre, etc.)
             provider: Optional specific provider, else auto-detect.
+            youtube: True for an EXPLICIT "play X on youtube" request —
+                forces the VISIBLE browser/YouTube flow (never hidden mpv).
 
         Returns:
             Human-readable status message.
         """
         query_lower = query.lower().strip()
+
+        # ── Explicit YouTube request (2026-08-30 UX fix) ──
+        # "play <song> on/from youtube" must open the browser VISIBLY,
+        # search, select a result, start playback and verify it. It must
+        # NEVER fall through to hidden mpv playback.
+        if youtube or "youtube" in query_lower:
+            clean = re.sub(r"\s+(?:on|from|in)\s+youtube\s*$", "",
+                           query, flags=re.IGNORECASE).strip()
+            return await self._play_youtube_visible(clean or query)
 
         # ── Handle special queries ─────────────────────────
         if any(w in query_lower for w in ("coding music", "coding playlist",
@@ -391,52 +405,159 @@ class MusicAgent:
             logger.warning("[Music] MPV error: %s", e)
             return await self._play_browser(query)
 
-    async def _play_browser(self, query: str) -> str:
-        """Play via browser (YouTube web)."""
-        encoded = query.replace(" ", "+")
-        url = f"https://www.youtube.com/results?search_query={encoded}"
+    # ── Visible YouTube playback (2026-08-30 UX fix) ───────────
 
+    async def _play_youtube_visible(self, query: str) -> str:
+        """EXPLICIT 'play X on YouTube' — VISIBLE browser playback.
+
+        1. Open the YouTube search results page visibly.
+        2. Select/click the first result via browser automation.
+        3. Verify the player state where possible (watch URL / MPRIS).
+        4. Report HONESTLY — never claim playback started if it could
+           not be verified.
+        """
+        search_url = ("https://www.youtube.com/results?search_query="
+                      + quote(query))
+
+        opened = await asyncio.get_event_loop().run_in_executor(
+            None, self._open_url_visible, search_url)
+        if not opened:
+            return f"I couldn't open YouTube to play {query}."
+
+        # Try to select the first result and start playback.
+        clicked = await asyncio.get_event_loop().run_in_executor(
+            None, self._click_first_youtube_result)
+        if clicked:
+            verified = await asyncio.get_event_loop().run_in_executor(
+                None, self._verify_youtube_playing)
+            if verified:
+                self._current.provider = MusicProvider.BROWSER
+                self._current.state = PlaybackState.PLAYING
+                self._current.title = query
+                logger.info("[Music] YouTube playback verified: %s", query)
+                return f"Playing {query} on YouTube."
+            # Clicked but could not verify — be honest.
+            logger.info("[Music] YouTube playback NOT verified: %s", query)
+            return (f"I opened YouTube and selected a result for {query}, "
+                    "but I couldn't verify that playback actually started.")
+
+        # Automation unavailable — results are on screen; do NOT claim playback.
+        return (f"I searched YouTube for {query} and the results are open "
+                "in your browser, but I couldn't start playback "
+                "automatically. Pick a result to play it.")
+
+    async def search_youtube(self, query: str) -> str:
+        """SEARCH-ONLY YouTube request — open the results page visibly.
+
+        Never starts playback. Used for 'search youtube for X'.
+        """
+        url = ("https://www.youtube.com/results?search_query=" + quote(query))
+        opened = await asyncio.get_event_loop().run_in_executor(
+            None, self._open_url_visible, url)
+        if opened:
+            return f"Here are the YouTube results for {query}."
+        return f"I couldn't open YouTube to search for {query}."
+
+    def _open_url_visible(self, url: str) -> bool:
+        """Open a URL in the user's VISIBLE browser. True on success."""
+        # Preferred: the shared browser controller (real, visible browser).
         try:
-            # Try browser controller first
             from agent.executor import agent_executor
             ex = agent_executor
             if not ex.is_available:
                 ex.initialize()
             if ex.is_available:
-                ok, msg = ex.browser_navigate(url)
+                ok, _msg = ex.browser_navigate(url)
                 if ok:
-                    self._current.provider = MusicProvider.BROWSER
-                    self._current.state = PlaybackState.PLAYING
-                    self._current.title = query
-                    return f"Playing {query} on YouTube."
+                    return True
         except Exception as e:
             logger.debug("[Music] Browser navigate failed: %s", e)
 
-        # Fallback: xdg-open
+        # Fallback: default browser via xdg-open / gio (still visible).
         import subprocess
         for opener in ("xdg-open", "gio"):
             exe = shutil.which(opener)
             if exe:
                 try:
-                    if opener == "gio":
-                        subprocess.Popen(
-                            [exe, "open", url],
-                            stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL,
-                            start_new_session=True)
-                    else:
-                        subprocess.Popen(
-                            [exe, url],
-                            stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL,
-                            start_new_session=True)
-                    self._current.provider = MusicProvider.BROWSER
-                    self._current.state = PlaybackState.PLAYING
-                    return f"Playing {query} on YouTube."
+                    argv = [exe, "open", url] if opener == "gio" else [exe, url]
+                    subprocess.Popen(
+                        argv,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        start_new_session=True)
+                    return True
                 except Exception:
                     continue
+        return False
 
-        return f"Couldn't open YouTube for {query}."
+    def _click_first_youtube_result(self) -> bool:
+        """Click the first video result on the open YouTube search page.
+
+        Uses the shared browser controller (visible browser). Returns
+        True only if the click succeeded.
+        """
+        try:
+            from agent.browser import browser_controller
+            if not browser_controller.is_available:
+                return False
+            # Wait for results to render, then click the first video link.
+            if not browser_controller.wait_for_selector("a#video-title", timeout=10):
+                logger.debug("[Music] No YouTube results rendered")
+                return False
+            if browser_controller.click("a#video-title"):
+                browser_controller.wait_for_load()
+                return True
+            return False
+        except Exception as e:
+            logger.debug("[Music] Click first result failed: %s", e)
+            return False
+
+    def _current_browser_url(self) -> Optional[str]:
+        """Current URL of the visible browser tab, or None."""
+        try:
+            from agent.browser import browser_controller
+            return browser_controller.get_current_url()
+        except Exception:
+            return None
+
+    def _verify_youtube_playing(self) -> bool:
+        """Best-effort verification that YouTube playback actually started.
+
+        Evidence used (in order):
+          1. The browser tab URL is a YouTube /watch URL.
+          2. An MPRIS browser player reports 'Playing' via playerctl.
+        """
+        url = self._current_browser_url()
+        if url and "/watch" in url:
+            return True
+
+        if shutil.which("playerctl"):
+            try:
+                r = subprocess.run(
+                    ["playerctl", "--list-all"],
+                    capture_output=True, text=True, timeout=2)
+                players = [p.strip() for p in r.stdout.split() if p.strip()]
+                browser_players = [
+                    p for p in players
+                    if any(b in p.lower() for b in
+                           ("chrome", "chromium", "firefox", "brave",
+                            "edge", "epiphany"))
+                ]
+                for p in browser_players:
+                    r2 = subprocess.run(
+                        ["playerctl", "-p", p, "status"],
+                        capture_output=True, text=True, timeout=2)
+                    if r2.returncode == 0 and "Playing" in r2.stdout:
+                        return True
+            except Exception:
+                pass
+        return False
+
+    async def _play_browser(self, query: str) -> str:
+        """Play via browser (YouTube web) — delegates to the VISIBLE
+        playback flow so the response is always honest about whether
+        playback actually started."""
+        return await self._play_youtube_visible(query)
 
     async def _play_spotify(self, query: str) -> str:
         """Play via Spotify."""
@@ -535,6 +656,11 @@ class MusicAgent:
                 return MusicProvider(provider.lower())
             except ValueError:
                 pass
+
+        # UX FIX (2026-08-30): explicit YouTube requests must use the
+        # VISIBLE browser path — never hidden mpv playback.
+        if "youtube" in query.lower():
+            return MusicProvider.BROWSER
 
         # Use preferred provider if available
         if self._preferred_provider:
