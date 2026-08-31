@@ -392,42 +392,101 @@ class AgentBrain:
         except ImportError:
             pass  # voice subsystem unavailable — never block command processing
 
-        # ── Step 0.25: Intent sanity gate (2026-08-30) ─────────
-        # BLOCKER 1 FIX: transcript quality + speech evidence + intent
-        # confidence must AGREE before any tool execution. Low-quality or
-        # implausible transcripts ("Hello dear" conf=-1.168) become a
-        # conversational response or a clarification — NEVER desktop
-        # actions (the get_time + type_text 29s-turn bug). This gate runs
-        # BEFORE perception, the decision engine, the planner, and the
-        # LLM, so a bad transcript can never pay for any of them.
+        # ── Step 0.25: FINAL INTENT AUTHORIZATION BOUNDARY (2026-08-30) ──
+        # The transcript must be classified into one of the eight
+        # authorized intent categories BEFORE any expensive work:
+        #   DETERMINISTIC_COMMAND / VISION_COMMAND / SEARCH_REQUEST /
+        #   CONVERSATIONAL / KNOWLEDGE_QUESTION / FOLLOW_UP /
+        #   MULTI_STEP_TASK / UNCERTAIN
+        # ONLY actionable categories may reach the dispatcher/planner.
+        # UNCERTAIN pays for NOTHING (no perception, no search, no
+        # planner, no LLM, no tools) — it gets a clarification.
+        # CONVERSATIONAL / KNOWLEDGE_QUESTION may reach the LLM for a
+        # spoken answer but NEVER desktop actions.
+        raw_transcript = text
         try:
-            from nlp.intent_gate import evaluate_intent
-            verdict = evaluate_intent(
+            from nlp.intent_authorizer import (
+                authorize_intent, IntentCategory,
+            )
+            auth = authorize_intent(
                 text,
                 stt_confidence=stt_confidence,
                 audio_duration_ms=audio_duration_ms,
             )
         except Exception:
-            verdict = None  # gate unavailable — never block the pipeline
-        if verdict is not None and not verdict.tool_execution_allowed:
-            from agent.personality import personality as _gate_personality
-            if verdict.mode == "conversational":
-                response = (_gate_personality.contextual_response(text)
-                            or _gate_personality.greeting())
-                result.path = "CONVERSATION"
-            else:
+            auth = None  # authorizer unavailable — never block the pipeline
+
+        tool_execution_allowed = True
+        if auth is not None:
+            logger.info(
+                "[Brain] INTENT-AUTH raw=%r normalized=%r category=%s "
+                "intent_conf=%.2f actionable=%s llm=%s route=%s (%s)",
+                raw_transcript[:60], text[:60], auth.category.value,
+                auth.confidence, auth.actionable, auth.llm_allowed,
+                auth.route, auth.reason)
+            if auth.category == IntentCategory.UNCERTAIN:
+                # Requirement 6: rejected/uncertain transcripts must not
+                # invoke perception, planner, search, LLM, or tools.
                 response = ("I'm not sure I heard you correctly. "
                             "Could you say that again?")
                 result.path = "CLARIFICATION"
-            logger.info("[Brain] Intent gate: %s (%s) — no perception, no "
-                        "planner, no LLM, no tools: '%s'",
-                        verdict.mode, verdict.reason, text[:50])
-            result.used_llm = False
-            result.response = response
-            conv_memory.add_assistant(response)
-            result.latency_ms = (time.time() - t0) * 1000
-            return result
-        self._last_intent_verdict = verdict
+                result.used_llm = False
+                result.response = response
+                conv_memory.add_assistant(response)
+                result.latency_ms = (time.time() - t0) * 1000
+                return result
+            if auth.category == IntentCategory.CONVERSATIONAL:
+                from agent.personality import personality as _auth_personality
+                response = (_auth_personality.contextual_response(text)
+                            or _auth_personality.greeting())
+                if response:
+                    result.path = "CONVERSATION"
+                    result.used_llm = False
+                    result.response = response
+                    conv_memory.add_assistant(response)
+                    result.latency_ms = (time.time() - t0) * 1000
+                    return result
+                # No canned response — fall through to the LLM path,
+                # but the transcript is NOT actionable (no planner, no
+                # dispatcher, no tools).
+                tool_execution_allowed = False
+            elif auth.category == IntentCategory.KNOWLEDGE_QUESTION:
+                # Factual questions reach the LLM for an answer —
+                # never desktop actions.
+                tool_execution_allowed = False
+
+        if tool_execution_allowed:
+            # Defense in depth: the original intent gate still applies
+            # to anything that proceeds (cheap, pure-Python).
+            try:
+                from nlp.intent_gate import evaluate_intent
+                verdict = evaluate_intent(
+                    text,
+                    stt_confidence=stt_confidence,
+                    audio_duration_ms=audio_duration_ms,
+                )
+            except Exception:
+                verdict = None  # gate unavailable — never block the pipeline
+            if verdict is not None and not verdict.tool_execution_allowed:
+                from agent.personality import personality as _gate_personality
+                if verdict.mode == "conversational":
+                    response = (_gate_personality.contextual_response(text)
+                                or _gate_personality.greeting())
+                    result.path = "CONVERSATION"
+                else:
+                    response = ("I'm not sure I heard you correctly. "
+                                "Could you say that again?")
+                    result.path = "CLARIFICATION"
+                logger.info("[Brain] Intent gate: %s (%s) — no perception, no "
+                            "planner, no LLM, no tools: '%s'",
+                            verdict.mode, verdict.reason, text[:50])
+                result.used_llm = False
+                result.response = response
+                conv_memory.add_assistant(response)
+                result.latency_ms = (time.time() - t0) * 1000
+                return result
+            self._last_intent_verdict = verdict
+        self._last_intent_authorization = auth
 
         # ── Step 0.5: Conversation First (NEW) ────────────────
         # Before ANY planning or action, check if this is just
@@ -602,8 +661,13 @@ class AgentBrain:
             result.path = "LLM"
             result.used_llm = True
 
-            # Step 3: Plan (if needed)
-            plan = await self._plan(text, perception_ctx)
+            # Step 3: Plan (ONLY for actionable intents — requirement 6:
+            # non-actionable transcripts must never invoke the planner).
+            plan = (await self._plan(text, perception_ctx)
+                    if tool_execution_allowed else None)
+            if plan is None and not tool_execution_allowed:
+                logger.info("[Brain] Planner SKIPPED — intent is not "
+                            "actionable (LLM-only answer): '%s'", text[:50])
 
             # Steps 4-6: Dispatch → Verify → Learn
             # BLOCKER 1 FIX (2026-08-30): every planner-generated action is
@@ -1214,12 +1278,84 @@ class AgentBrain:
         }
         return mapping.get(action_name)
 
+    # ── Planner action schema (2026-08-30) ────────────────────────────
+    # Every planner-generated action must be in this schema AND the
+    # transcript must contain explicit verb evidence for it. This kills
+    # hallucinated actions like "Diego opened the tomb" -> close_app
+    # (no "close" evidence in the transcript) and "Hello dear" ->
+    # type_text + get_time.
+    _PLANNER_ACTION_SCHEMA = {
+        "desktop_open": ("open", "launch", "start", "run", "bring up",
+                         "pull up", "load", "switch to"),
+        "close_app": ("close", "quit", "exit", "kill", "shut down",
+                      "shut", "turn off"),
+        "browser_navigate": ("open", "go to", "navigate", "visit",
+                             "browse", "switch to", "take me to"),
+        "browser_search": ("search", "google", "look up", "find"),
+        "web_search": ("search", "google", "look up", "find",
+                       "what is", "who is", "how to", "tell me about",
+                       "weather", "news"),
+        "web_search_open_best": ("search", "google", "look up", "find",
+                                 "open"),
+        "youtube_search": ("search", "find", "youtube", "play"),
+        "play_media": ("play", "put on", "start playing", "resume",
+                       "music", "song", "track"),
+        "click_text": ("click", "press", "tap", "select"),
+        "scroll": ("scroll",),
+        "key_press": ("press", "hit", "type", "enter"),
+        "type_text": ("type", "write", "enter", "input"),
+        "open_folder": ("open", "show", "folder", "files"),
+        "volume_up": ("volume", "louder", "increase", "turn up"),
+        "volume_down": ("volume", "quieter", "decrease", "lower",
+                        "turn down"),
+        "volume_set": ("volume", "set"),
+        "volume_mute": ("mute", "volume"),
+        "brightness_up": ("brightness", "brighter", "increase"),
+        "brightness_down": ("brightness", "dimmer", "decrease", "lower"),
+        "brightness_set": ("brightness", "set"),
+        "lock_screen": ("lock",),
+        "shutdown": ("shut down", "shutdown", "turn off", "power off"),
+        "restart": ("restart", "reboot"),
+        "get_time": ("time",),
+        "get_date": ("date", "day", "today"),
+        "minimize_window": ("minimize",),
+        "maximize_window": ("maximize",),
+        "switch_workspace": ("switch", "workspace"),
+        "switch_workspace_prev": ("switch", "workspace", "previous",
+                                  "back"),
+        "switch_window": ("switch", "window"),
+        "switch_window_prev": ("switch", "window", "previous", "back"),
+        "switch_tab": ("switch", "tab"),
+        "switch_tab_prev": ("switch", "tab", "previous", "back"),
+        "read_screen": ("screen", "see", "read", "display", "monitor",
+                        "looking at", "error", "button", "click"),
+        "list_windows": ("what", "running", "open", "windows", "apps",
+                         "list"),
+        "music_status": ("music", "playing", "song", "track", "status"),
+        "music_pause": ("pause", "stop", "music", "song", "track"),
+        "music_resume": ("resume", "continue", "music", "play"),
+        "music_next": ("next", "skip", "track", "song"),
+        "music_previous": ("previous", "back", "track", "song"),
+        "music_stop": ("stop", "music", "song", "track"),
+        "music_shuffle": ("shuffle", "music"),
+        "music_repeat": ("repeat", "music"),
+        "music_volume": ("volume", "music"),
+        "music_mute": ("mute", "music"),
+        "screenshot": ("screenshot", "capture", "picture of the screen"),
+    }
+
     @staticmethod
     def _planner_action_allowed(transcript: str,
                                 action: Dict[str, Any]) -> bool:
-        """BLOCKER 1 FIX (2026-08-30): gate a planner-generated action.
+        """BLOCKER 1 FIX (2026-08-30, hardened): gate a planner-generated
+        action against the requested intent, the allowed action schema,
+        the extracted entities, and the explicit user request.
 
-        Two guards:
+        Guards:
+          0. The action name must be in the allowed action schema AND
+             the transcript must contain explicit verb evidence for it
+             ("Diego opened the tomb" -> close_app is blocked: no
+             "close" evidence in the transcript).
           1. The transcript itself must pass the intent gate (a
              conversational/uncertain transcript must never become
              desktop actions).
@@ -1228,6 +1364,21 @@ class AgentBrain:
              type_text("Hello dear")) and is blocked unless the user
              explicitly asked to type.
         """
+        name = action.get("action", "")
+
+        # Guard 0: action schema + verb evidence.
+        evidence = AgentBrain._PLANNER_ACTION_SCHEMA.get(name)
+        if evidence is None:
+            logger.info("[Brain] Planner action BLOCKED: '%s' is not in "
+                        "the allowed action schema", name)
+            return False
+        tnorm = " ".join((transcript or "").lower().strip(" .!?").split())
+        if not any(ev in tnorm for ev in evidence):
+            logger.info("[Brain] Planner action BLOCKED: '%s' has no verb "
+                        "evidence in transcript '%s'", name, tnorm[:60])
+            return False
+
+        # Guard 1: intent gate.
         try:
             from nlp.intent_gate import transcript_allows_tool_execution
             if not transcript_allows_tool_execution(transcript):
@@ -1235,13 +1386,12 @@ class AgentBrain:
         except Exception:
             pass  # gate unavailable — never block the pipeline
 
-        name = action.get("action", "")
+        # Guard 2: type_text echo of the transcript.
         if name == "type_text":
             payload = str((action.get("params") or {}).get("text", "")).strip()
-            tnorm = " ".join((transcript or "").lower().strip(" .!?").split())
             pnorm = " ".join(payload.lower().split())
             explicit = tnorm.startswith(("type ", "write ", "enter ", "input "))
-            if pnorm and not explicit and pnorm and (
+            if pnorm and not explicit and (
                     pnorm == tnorm or (len(pnorm) > 3 and pnorm in tnorm)):
                 return False
         return True

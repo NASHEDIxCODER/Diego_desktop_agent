@@ -317,9 +317,19 @@ _MUSIC_PATTERNS = [
 _SCREEN_PATTERNS = [
     r"^what\s+is\s+(?:on|being\s+shown|displayed)\s+(?:my\s+|the\s+)?(?:screen|display|monitor|window|page|tab|browser|editor|terminal)",
     r"^what's\s+(?:on|being\s+shown|displayed)\s+(?:my\s+|the\s+)?(?:screen|display|monitor|window|page|tab|browser|editor|terminal)",
-    r"^read\s+(?:the\s+)?(?:screen|display|monitor|window|page|tab|browser|editor|terminal)",
+    r"^read\s+(?:the\s+|my\s+|this\s+)?(?:screen|display|monitor|window|page|tab|browser|editor|terminal)",
     r"^what\s+do\s+you\s+see",
     r"^what\s+are\s+you\s+looking\s+at",
+    # Vision phrasings (2026-08-30): "can you see my screen" and friends
+    # are VISION intents and must never be degraded to "see my".
+    r"^(?:can|could|will|would)\s+you\s+see\s+(?:my\s+|the\s+|this\s+)?(?:screen|display|monitor)",
+    r"^are\s+you\s+able\s+to\s+see\s+(?:my\s+|the\s+|this\s+)?(?:screen|display|monitor)",
+    r"^see\s+(?:my\s+|the\s+|this\s+)?(?:screen|display|monitor)",
+    r"^what\s+can\s+you\s+see",
+    r"^what\s+am\s+i\s+looking\s+at",
+    r"^describe\s+(?:my\s+|the\s+|this\s+)?(?:screen|display|monitor)",
+    r"^look\s+at\s+(?:my\s+|the\s+|this\s+)?(?:screen|display|monitor)",
+    r"^what\s+do\s+you\s+see\s+on\s+(?:my\s+|the\s+)?(?:screen|display|monitor)",
 ]
 
 # ── Search patterns ────────────────────────────────────────────
@@ -407,9 +417,25 @@ class CommandNormalizer:
                 text = re.sub(r'\b' + re.escape(wrong) + r'\b', correct, text, flags=re.IGNORECASE)
                 text_lower = text.lower()
 
+        # 2b. Detect screen/vision patterns BEFORE noise removal.
+        # CRITICAL FIX (2026-08-30): noise-word removal ("can you",
+        # "please") plus the redundant-object rule ("\\s+screen$")
+        # corrupted "Can you see my screen?" into "see my". Vision
+        # requests are detected on the CLEANED text (contractions
+        # expanded, whitespace normalized) and returned with their
+        # full request structure preserved.
+        if self._detect_screen(text_lower):
+            self._stats["screen"] += 1
+            return text
+
         # 3. Remove noise words
         for noise in sorted(_NOISE_WORDS, key=len, reverse=True):
-            if noise in text_lower:
+            # CRITICAL FIX (2026-08-30): the check was case-sensitive
+            # against text_lower, so capitalized noise words ("Diego",
+            # "hey Diego") NEVER matched and wake-word prefixes leaked
+            # into the command ("Diego Open YouTube" stayed "Diego Open
+            # youtube"). Compare lowercased.
+            if noise.lower() in text_lower:
                 text = re.sub(r'\b' + re.escape(noise) + r'\b', '', text, flags=re.IGNORECASE)
                 text = re.sub(r'\s+', ' ', text).strip()
                 text_lower = text.lower()
@@ -511,7 +537,13 @@ class CommandNormalizer:
             r"\s+the\s+computer$", r"\s+computer$",
             r"\s+the\s+pc$", r"\s+pc$",
             r"\s+the\s+laptop$", r"\s+laptop$",
-            r"\s+the\s+screen$", r"\s+screen$",
+            # CRITICAL FIX (2026-08-30): the bare "\\s+screen$" rule
+            # corrupted vision requests ("see my screen" -> "see my").
+            # Only "the screen" after a verb is redundant ("lock the
+            # screen" -> "lock screen"); a possessive screen reference
+            # ("my screen") is meaningful request structure and must be
+            # preserved.
+            r"\s+the\s+screen$",
             r"\s+the\s+page$", r"\s+page$",
             # CRITICAL FIX: "music", "song", "track", "playback" are NOT
             # redundant — they are the OBJECT of music-control commands.

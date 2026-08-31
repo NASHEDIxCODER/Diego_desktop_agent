@@ -262,12 +262,11 @@ def test_llm_path_conversation_skips_perception(monkeypatch):
 
     assert perception.calls == [], (
         "ordinary conversation must not invoke perception")
-    assert result.used_llm is True
-
-
-# ================================================================
-# BLOCKER 2: listen gate / stale audio backlog
-# ================================================================
+    # 2026-08-30: "tell me a joke" is now recognized as small talk by
+    # the intent authorizer and answered conversationally (cheaper and
+    # more natural than the LLM path). Either way it must NOT invoke
+    # perception and must NOT execute tools.
+    assert result.used_llm is True or result.path == "CONVERSATION"
 
 def test_no_stale_backlog_after_long_tts_pause(monkeypatch):
     """After a long TTS/THINK pause (20s of audio while the gate is

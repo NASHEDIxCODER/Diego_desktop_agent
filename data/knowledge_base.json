@@ -7,7 +7,7 @@
       "source": "/usr/share/doc/gef/api.md",
       "summary": "Yes, that's it! Check out [the complete API](api/gef.md) to see what else GEF offers.",
       "created_at": 1788078681.6135886,
-      "access_count": 0,
+      "access_count": 4,
       "confidence": 1.0
     },
     {
@@ -27,7 +27,7 @@
       "source": "/usr/share/doc/gef/api.md",
       "summary": "*  a `_cmdline_` attribute (the command to type on the GDB prompt). *  a `_syntax_` attribute, which GEF will use to auto-generate the help menu.",
       "created_at": 1788078681.613607,
-      "access_count": 2,
+      "access_count": 4,
       "confidence": 1.0
     },
     {
@@ -77,7 +77,7 @@
       "source": "/usr/share/doc/gef/api.md",
       "summary": "Sometimes you want something similar to a command to run on each break-like event and display itself\nas a part of the GEF context. This can be achieved using the following\nfunction `register_external_context_pane()`.",
       "created_at": 1788078681.6136394,
-      "access_count": 0,
+      "access_count": 2,
       "confidence": 1.0
     },
     {
@@ -147,7 +147,7 @@
       "source": "/usr/share/doc/gef/api.md",
       "summary": "It can even be included in the same file as a Command. Now on each break you will notice a new pane\nnear the bottom of the context.",
       "created_at": 1788078681.6136847,
-      "access_count": 0,
+      "access_count": 2,
       "confidence": 1.0
     },
     {
@@ -237,7 +237,7 @@
       "source": "/usr/share/doc/gef/api.md",
       "summary": "Some of the most important parts of the API for creating new commands are mentioned (but not limited\nto) below. To see the full help of a function, open GDB and GEF, and use the embedded Python\ninterpreter's `help` command.",
       "created_at": 1788078681.6137586,
-      "access_count": 0,
+      "access_count": 7,
       "confidence": 1.0
     },
     {
@@ -357,7 +357,7 @@
       "source": "/usr/share/doc/gef/api.md",
       "summary": "Values given for the parameters also allow list of arguments being past. This can be useful in the\ncase where the number of exact option values is known in advance.",
       "created_at": 1788078681.6138694,
-      "access_count": 0,
+      "access_count": 1,
       "confidence": 1.0
     },
     {
@@ -907,7 +907,7 @@
       "source": "/usr/share/doc/gef/commands/vmmap.md",
       "summary": "Interestingly, it helps finding secret gems: as an aware reader might have seen, memory mapping\ndiffers from one architecture to another (this is one of the main reasons I started `GEF` in a first\nplace). For example, you can learn that ELF running on SPARC architectures always have their `.data`\nan",
       "created_at": 1788078681.6171455,
-      "access_count": 0,
+      "access_count": 2,
       "confidence": 1.0
     },
     {
@@ -1027,7 +1027,7 @@
       "source": "/usr/share/doc/gef/commands/pcustom.md",
       "summary": "`gef` provides a way to create and apply to the currently debugged environment, any new structure\n(in the C-struct way). On top of simply displaying known and user-defined structures, it also allows\nto apply those structures to the current context.",
       "created_at": 1788078681.6177545,
-      "access_count": 0,
+      "access_count": 2,
       "confidence": 1.0
     },
     {
@@ -1167,7 +1167,7 @@
       "source": "/usr/share/doc/gef/commands/pcustom.md",
       "summary": "If the structure already exists, GEF will open the text editor to edit the known structure. This is\nequivalent to:",
       "created_at": 1788078681.617855,
-      "access_count": 0,
+      "access_count": 3,
       "confidence": 1.0
     },
     {
@@ -1697,7 +1697,7 @@
       "source": "/usr/share/doc/gef/commands/hijack-fd.md",
       "summary": "Check out the tutorial on GEF's YouTube channel:",
       "created_at": 1788078681.6190014,
-      "access_count": 1,
+      "access_count": 2,
       "confidence": 1.0
     },
     {
@@ -3797,7 +3797,7 @@
       "source": "/usr/share/doc/lua54/readme.html",
       "summary": "<P>\n  On the other hand, if you need to customize some Lua features,\n  edit <TT>src/luaconf.h</TT> before building and installing Lua. The edited file will be the one installed, and\n  it will be used by any Lua clients that you build, to ensure consistency.",
       "created_at": 1788078681.628916,
-      "access_count": 0,
+      "access_count": 2,
       "confidence": 1.0
     },
     {
@@ -4777,7 +4777,7 @@
       "source": "/usr/share/doc/donut/CHANGELOG.md",
       "summary": "* The -y switch now uses the value provided as an offset from the base address of the process's executable module. So, for example, if you have injected donut into an infected, legitimate PE file, then once donut completes it will create a thread at the provided offset of that legitimate PE, allowin",
       "created_at": 1788078681.6310563,
-      "access_count": 0,
+      "access_count": 2,
       "confidence": 1.0
     },
     {
@@ -5877,7 +5877,7 @@
       "source": "/usr/share/doc/osert/FAQ.md",
       "summary": "## How do I know what Markdown formatting is supported (there are so many different version)?",
       "created_at": 1788078681.637005,
-      "access_count": 0,
+      "access_count": 2,
       "confidence": 1.0
     },
     {
@@ -6937,7 +6937,7 @@
       "source": "/usr/share/doc/pwdlyser/README.md",
       "summary": "Organisation names often appear within passwords, at least from my experience during internal penetration tests. To check for this, a similar search to the 'basic' search is run, although the only difference is that the 'Description' will state 'Organisation name: [name]' on screen instead.",
       "created_at": 1788078681.6405327,
-      "access_count": 0,
+      "access_count": 1,
       "confidence": 1.0
     },
     {
@@ -11667,7 +11667,7 @@
       "source": "/usr/share/doc/damm/README.md",
       "summary": "# DAMM\nAn open source memory analysis tool built on top of Volatility. It is meant as a proving ground for interesting new techniques to be made available to the community.",
       "created_at": 1788078681.665643,
-      "access_count": 0,
+      "access_count": 2,
       "confidence": 1.0
     },
     {
@@ -14457,7 +14457,7 @@
       "source": "/usr/share/doc/expat/README.md",
       "summary": "There are many options which you may provide to configure (which you\ncan discover by running configure with the `--help` option). But the\none of most interest is the one that sets the installation directory.",
       "created_at": 1788078681.6741185,
-      "access_count": 0,
+      "access_count": 2,
       "confidence": 1.0
     },
     {
@@ -47397,7 +47397,7 @@
       "source": "/usr/share/doc/libao-1.2.2/overview.html",
       "summary": "<p>\nLibao is designed to make it easy to do simple audio output using\nvarious audio devices and libraries. For this reason, complex audio\ncontrol features are missing and will probably never be added.",
       "created_at": 1788078681.7816575,
-      "access_count": 2,
+      "access_count": 3,
       "confidence": 1.0
     },
     {
@@ -49317,7 +49317,7 @@
       "source": "/usr/share/doc/davscan/README.md",
       "summary": "## Contributing:\nDid you know that you can help fix my bad code for me? It could be like your day job but with no pay and a smidge more recognition since I gain almost nothing from your hard work here.",
       "created_at": 1788078681.791059,
-      "access_count": 1,
+      "access_count": 3,
       "confidence": 1.0
     },
     {
@@ -49452,19 +49452,19 @@
     }
   ],
   "crawled_sources": [
-    "https://docs.docker.com/",
     "https://doc.rust-lang.org/book/",
+    "https://kubernetes.io/docs/",
+    "https://docs.github.com/en",
     "https://docs.python.org/3/",
+    "https://git-scm.com/docs",
+    "https://docs.docker.com/",
     "https://nodejs.org/docs/latest/api/",
     "https://archlinux.org/packages/",
-    "https://docs.github.com/en",
-    "https://kubernetes.io/docs/",
-    "https://developer.mozilla.org/en-US/docs/Web/",
-    "https://git-scm.com/docs"
+    "https://developer.mozilla.org/en-US/docs/Web/"
   ],
   "action_successes": {},
   "action_failures": {},
   "workflow_patterns": {},
   "learn_count": 495,
-  "updated_at": 1788085355.5437508
+  "updated_at": 1788097837.747724
 }

@@ -46,3 +46,34 @@ The full pipeline: WAKE → LISTEN (STT) → THINK (LLM) → SPEAK (TTS)
 - [ ] Fix 5: Reduce settle wait in verification (3s→1.5s)
 - [ ] Fix 6: Optimize VAD per-frame executor overhead
 - [ ] Verify changes are syntactically correct
+
+## 2026-08-30 — Transcript→Intent→Action Authorization Boundary (COMPLETE)
+
+Status: DONE. compileall clean; pytest 277 passed / 5 skipped; live mic run validated.
+
+Changes:
+- NEW nlp/intent_authorizer.py — final authorization boundary; 8 intent categories
+  (DETERMINISTIC_COMMAND, VISION_COMMAND, SEARCH_REQUEST, CONVERSATIONAL,
+  KNOWLEDGE_QUESTION, FOLLOW_UP, MULTI_STEP_TASK, UNCERTAIN); only actionable
+  categories reach dispatcher/planner; UNCERTAIN pays for nothing.
+- nlp/command_normalizer.py — vision requests detected BEFORE noise removal
+  ("Can you see my screen?" never becomes "see my"); bare "\s+screen$" rule
+  removed; vision phrasings added; case-sensitive noise-word bug fixed
+  ("Diego" prefix now stripped).
+- core/decision_engine.py — _needs_vision recognizes "can you see my screen" etc.
+- agent/brain.py — authorization boundary wired into process_command with full
+  per-turn logging (raw STT, validation, normalized, intent, intent confidence,
+  route, planner/tool, execution, verification, response); planner skipped for
+  non-actionable intents; _planner_action_allowed hardened with action-schema
+  whitelist + verb evidence ("Diego opened the tomb" can never become close_app).
+- tests/test_intent_authorization.py — 37 new tests covering all 10 required
+  phrases, normalization regressions, planner schema validation, expensive-work
+  gating, silence-fix preservation.
+
+Verification:
+- python -m compileall . — clean
+- python -m pytest -q — 277 passed, 5 skipped
+- python Diego.py --no-wake --no-auth (90s live): hallucinated "you" transcripts
+  (conf -1.5) rejected at STT with zero INTENT-AUTH lines and zero
+  perception/planner/LLM/tool invocations. Boundary held live.
+- Wake detection, VAD thresholds, silence fix, RAG, LLM warm-up: NOT modified.

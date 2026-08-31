@@ -1148,6 +1148,26 @@ class DecisionEngine:
             "where is the button",
             "find the button",
             "find this button",
+            # 2026-08-30 vision phrasings: "Can you see my screen?" and
+            # friends are VISION intents. They were previously corrupted
+            # by normalization ("see my") and executed unrelated actions.
+            "can you see my screen",
+            "can you see the screen",
+            "can you see my display",
+            "can you see the display",
+            "could you see my screen",
+            "are you able to see my screen",
+            "are you able to see the screen",
+            "see my screen",
+            "see the screen",
+            "see my display",
+            "what can you see",
+            "what do you see on my screen",
+            "what do you see on the screen",
+            "what am i looking at",
+            "describe my screen",
+            "look at my screen",
+            "look at the screen",
         )
 
         return any(
