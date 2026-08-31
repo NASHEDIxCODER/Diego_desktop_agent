@@ -118,6 +118,7 @@ class CommandResult:
     error: str = ""
     speak_immediately: bool = False     # Speak now, verify in background
     followup_response: str = ""         # Spoken after verification completes
+    task_status: str = ""               # Closed-loop final status (SUCCESS/FAILED/...)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -392,6 +393,39 @@ class AgentBrain:
         except ImportError:
             pass  # voice subsystem unavailable — never block command processing
 
+        # ── Step 0.22: Task follow-up continuation (CLOSED LOOP) ──────
+        # "continue", "open the first result", "do the same for Chrome",
+        # "close that", "try another one" must operate on the PREVIOUS
+        # task's real state — never start from zero.
+        try:
+            from agent.task_state import task_state_store as _tss
+            _continuation = _tss.build_continuation(text)
+            if (_continuation and _continuation[0] == "cancel"
+                    and _tss.active is None):
+                _continuation = None  # nothing to cancel — normal processing
+        except Exception:
+            _continuation = None
+        if _continuation is not None:
+            fu_request, fu_plan, fu_inherited = _continuation
+            if not fu_plan:
+                result.path = "TASK_CANCELLED"
+                result.response = "Task cancelled."
+                conv_memory.add_assistant(result.response)
+                result.latency_ms = (time.time() - t0) * 1000
+                return result
+            logger.info("[Brain] Follow-up continuation: '%s' (inherits task %s)",
+                        text[:50], fu_inherited.task_id)
+            fu_state = await self._run_task_loop(fu_request, fu_plan,
+                                                 inherited=fu_inherited)
+            self._fill_result_from_state(result, fu_state)
+            result.path = "TASK_FOLLOWUP"
+            if result.response:
+                conv_memory.add_assistant(result.response)
+            result.latency_ms = (time.time() - t0) * 1000
+            logger.info("[Brain] Follow-up task finished: status=%s latency=%.0fms",
+                        result.task_status, result.latency_ms)
+            return result
+
         # ── Step 0.25: FINAL INTENT AUTHORIZATION BOUNDARY (2026-08-30) ──
         # The transcript must be classified into one of the eight
         # authorized intent categories BEFORE any expensive work:
@@ -573,6 +607,7 @@ class AgentBrain:
             result.used_llm = False
 
             from agent.personality import personality
+            task_summary = ""   # honest closed-loop outcome (set by the runner)
 
             # ── Speak immediately for actions (NEW) ───────────
             # Generate the immediate response BEFORE dispatching so the
@@ -610,22 +645,28 @@ class AgentBrain:
                     result.response = action_result
                     result.speak_immediately = False
 
-            # Execute multi-step workflow
+            # Execute multi-step workflow through the CLOSED-LOOP task
+            # runner: execute → observe → verify → replan → repeat until
+            # the goal is actually satisfied (never stop after one plan
+            # or one failed action).
             if decision.actions:
-                for action in decision.actions:
-                    ok, action_result = await self._dispatch_and_verify(action)
-                    result.actions_executed += 1
-                    if ok:
-                        result.actions_succeeded += 1
-                    else:
-                        result.actions_failed += 1
-                result.verified = result.actions_failed == 0
+                task_state = await self._run_task_loop(text, decision.actions)
+                self._fill_result_from_state(result, task_state)
+                task_summary = task_state.summary()
 
             # ── Response (CRITICAL FIX): generated AFTER execution ──
             # Never use the decision's canned response when actions FAILED.
             # The user must hear the actual outcome, not a promise to act.
             if result.actions_executed > 0:
-                if result.actions_failed == 0:
+                if task_summary:
+                    # CLOSED LOOP: the honest task summary (built from
+                    # verified evidence) is the response — never a blind
+                    # "Done." after merely opening Firefox.
+                    if result.speak_immediately:
+                        result.followup_response = task_summary
+                    else:
+                        result.response = task_summary
+                elif result.actions_failed == 0:
                     # All succeeded — use a natural confirmation.
                     # CRITICAL FIX: Use personality for variety instead of
                     # always "Done." — Diego should sound alive, not robotic.
@@ -669,30 +710,25 @@ class AgentBrain:
                 logger.info("[Brain] Planner SKIPPED — intent is not "
                             "actionable (LLM-only answer): '%s'", text[:50])
 
-            # Steps 4-6: Dispatch → Verify → Learn
-            # BLOCKER 1 FIX (2026-08-30): every planner-generated action is
-            # gated. A conversational/uncertain transcript must never
-            # become desktop actions, and a type_text action that merely
-            # echoes the transcript (planner hallucination, e.g.
-            # type_text("Hello dear")) is blocked.
+            # Steps 4-6: CLOSED-LOOP execution. Every planner-generated
+            # action is validated (schema + verb evidence + params) inside
+            # the runner, then executed ONE step at a time with real
+            # observation and verification. On failure the runner retries
+            # safely and re-plans from the CURRENT state — it never stops
+            # after one plan or one failed action, and never repeats the
+            # exact failed action indefinitely.
+            task_summary = ""
             if plan:
-                for step in plan:
-                    action = self._step_to_action(step)
-                    if action and self._planner_action_allowed(text, action):
-                        ok, _ = await self._dispatch_and_verify(action)
-                        result.actions_executed += 1
-                        if ok:
-                            result.actions_succeeded += 1
-                        else:
-                            result.actions_failed += 1
-                    elif action:
-                        logger.info("[Brain] Planner action BLOCKED by intent "
-                                    "gate: %s (transcript='%s')",
-                                    action.get("action"), text[:50])
-                result.verified = result.actions_failed == 0
+                task_state = await self._run_task_loop(text, plan)
+                self._fill_result_from_state(result, task_state)
+                task_summary = task_state.summary()
 
-            # Step 7: Respond (LLM generates the response)
-            result.response = await self._generate_response(text, perception_ctx, result)
+            # Step 7: Respond — the verified task outcome first; the LLM
+            # only generates the response when no actions ran.
+            if task_summary and result.actions_executed > 0:
+                result.response = task_summary
+            else:
+                result.response = await self._generate_response(text, perception_ctx, result)
 
         # ── Record assistant turn in conversation memory ──────
         # CRITICAL FIX: Diego must remember what it said so follow-ups
@@ -848,6 +884,104 @@ class AgentBrain:
         except Exception as e:
             logger.warning("[Brain] Planning failed: %s", e)
             return None
+
+    # ── Closed-loop task execution (agent/task_state.py) ──────
+
+    async def _observe_state(self) -> str:
+        """Observe the real environment — strongest available evidence
+        (window state / accessibility / screen context). Observation
+        failure is non-fatal (returns "")."""
+        # Cheapest first: perception pipeline (window + a11y, no OCR).
+        try:
+            if self._perception is not None:
+                ctx = await asyncio.wait_for(
+                    self._perception.perceive(include_ocr=False),
+                    timeout=self.PERCEPTION_TIMEOUT_S)
+                summary = getattr(ctx, "compact_summary", "")
+                if summary:
+                    return str(summary)
+        except Exception:
+            pass
+        # Fallback: dispatcher screen context (bounded).
+        try:
+            if self._dispatcher is not None and hasattr(self._dispatcher, "screen_context"):
+                ctx = await asyncio.wait_for(
+                    self._dispatcher.screen_context(), timeout=10.0)
+                if ctx:
+                    return str(ctx)
+        except Exception:
+            pass
+        return ""
+
+    async def _plan_with_context(self, request: str,
+                                 context: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
+        """Planner adapter for RE-PLANNING from the CURRENT state."""
+        if not self._planner:
+            return None
+        try:
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(
+                None, self._planner.generate_plan_only, request, context)
+        except Exception as e:
+            logger.warning("[Brain] Re-plan failed: %s", e)
+            return None
+
+    async def _run_task_loop(self, request: str,
+                             plan: List[Dict[str, Any]],
+                             inherited: Optional["TaskExecutionState"] = None
+                             ) -> "TaskExecutionState":
+        """Run the closed-loop task agent: execute → observe → verify →
+        replan → repeat until the goal is satisfied or a real blocker
+        requires stopping. Task state is preserved for follow-ups."""
+        from agent.task_state import (
+            TaskRunner, PlanValidator, TaskExecutionState, FinalStatus,
+            task_state_store,
+        )
+        runner = TaskRunner(
+            executor=self._dispatch_and_verify,
+            observer=self._observe_state,
+            planner=self._plan_with_context,
+            validator=PlanValidator(action_gate=self._planner_action_allowed),
+            transcript=request,
+        )
+        state = await runner.run(request, plan, inherited=inherited)
+        task_state_store.save(state)
+        # Record the whole task as one experience for self-improvement.
+        try:
+            from learning.experience_db import experience_db
+            experience_db.record(
+                goal=request,
+                plan_steps=[s.action for s in
+                            state.completed_steps + state.failed_steps],
+                plan_actions=[],
+                success=state.final_status == FinalStatus.SUCCESS,
+                result=state.summary(),
+                latency_ms=state.total_latency_ms,
+                error=state.blocker,
+                recovery_action=f"replans={state.replan_count}",
+                recovery_success=(state.replan_count > 0
+                                  and state.final_status == FinalStatus.SUCCESS),
+                used_fallback=state.replan_count > 0,
+            )
+        except Exception as e:
+            logger.debug("[Brain] Task experience recording skipped: %s", e)
+        return state
+
+    @staticmethod
+    def _fill_result_from_state(result: CommandResult,
+                                state: "TaskExecutionState") -> None:
+        """Fill a CommandResult from a closed-loop TaskExecutionState."""
+        from agent.task_state import FinalStatus
+        result.actions_executed = (len(state.completed_steps)
+                                   + len(state.failed_steps))
+        result.actions_succeeded = len(state.completed_steps)
+        result.actions_failed = len(state.failed_steps)
+        result.verified = state.final_status == FinalStatus.SUCCESS
+        result.task_status = (state.final_status.value
+                              if state.final_status else "")
+        if result.actions_executed > 0:
+            result.response = state.summary()
+            result.speak_immediately = False
 
     async def _dispatch_and_verify(self, action: Dict[str, Any]) -> Tuple[bool, str]:
         """

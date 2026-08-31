@@ -145,7 +145,9 @@ class AgentPlanner:
         logger.info("Plan generated with %d steps", len(plan))
         return f"I've planned {len(plan)} steps to accomplish this."
 
-    def generate_plan_only(self, request: str) -> Optional[List[Dict[str, Any]]]:
+    def generate_plan_only(self, request: str,
+                           context: Optional[Dict[str, Any]] = None
+                           ) -> Optional[List[Dict[str, Any]]]:
         """
         Generate a step-by-step plan WITHOUT executing it.
 
@@ -154,18 +156,25 @@ class AgentPlanner:
 
         Args:
             request: User's request text
+            context: Optional CURRENT task state (observed state, completed
+                steps, failure context, artifacts). When provided, the plan
+                is a RE-PLAN from the current state — the planner must not
+                repeat completed steps and must account for what actually
+                happened.
 
         Returns:
             List of action step dicts, or None if no plan could be made.
         """
         logger.info("Agent generating plan: %s", request[:80])
 
-        plan = self._generate_plan_sync(request)
+        plan = self._generate_plan_sync(request, context=context)
         if plan:
             logger.info("Plan generated with %d steps", len(plan))
         return plan
 
-    def _generate_plan_sync(self, request: str) -> Optional[List[Dict[str, Any]]]:
+    def _generate_plan_sync(self, request: str,
+                            context: Optional[Dict[str, Any]] = None
+                            ) -> Optional[List[Dict[str, Any]]]:
         """
         Synchronous plan generation.
 
@@ -176,7 +185,7 @@ class AgentPlanner:
         import asyncio
         coro = None
         try:
-            coro = self._generate_plan(request)
+            coro = self._generate_plan(request, context=context)
             return asyncio.run(coro)
         except RuntimeError:
             # Already inside an event loop — close the un-awaited coroutine
@@ -191,7 +200,9 @@ class AgentPlanner:
             logger.warning("[Planner] Async plan generation failed: %s", e)
             return self._fallback_plan(request)
 
-    async def _generate_plan(self, request: str) -> Optional[List[Dict[str, Any]]]:
+    async def _generate_plan(self, request: str,
+                             context: Optional[Dict[str, Any]] = None
+                             ) -> Optional[List[Dict[str, Any]]]:
         """Generate a step-by-step plan using the LLM + experience DB."""
         # ── Check experience DB for previously successful plans ──
         experience_ctx = ""
@@ -217,13 +228,42 @@ class AgentPlanner:
             return self._fallback_plan(request)
 
         try:
-            # Build context from memory
-            context = f"Current URL: {agent_memory.browser_url or 'unknown'}\n"
-            context += f"Tabs: {len(agent_memory.browser_tabs)} open\n"
-            context += f"Last action: {agent_memory.last_action or 'none'}\n"
-            context += experience_ctx
+            # Build context from memory (NOTE: `context` param above is the
+            # re-plan state dict — keep them separate).
+            memory_ctx = f"Current URL: {agent_memory.browser_url or 'unknown'}\n"
+            memory_ctx += f"Tabs: {len(agent_memory.browser_tabs)} open\n"
+            memory_ctx += f"Last action: {agent_memory.last_action or 'none'}\n"
+            memory_ctx += experience_ctx
 
-            prompt = f"{PLANNER_SYSTEM_PROMPT}\n\nContext:\n{context}\n\nUser request: {request}\n\nPlan:"
+            # Re-plan context (closed loop): the CURRENT observed state,
+            # what already succeeded/failed, and why the last step failed.
+            # The planner must produce ONLY the REMAINING steps.
+            replan_ctx = ""
+            if context:
+                replan_ctx += "\nRE-PLAN CONTEXT (plan from the CURRENT state):\n"
+                replan_ctx += f"  Goal: {context.get('goal', request)}\n"
+                obs = context.get("observed_state") or ""
+                if obs:
+                    replan_ctx += f"  Observed state: {obs[:300]}\n"
+                completed = context.get("completed") or []
+                if completed:
+                    replan_ctx += ("  Already completed (do NOT repeat): "
+                                   + "; ".join(completed[:6]) + "\n")
+                failed = context.get("failed") or []
+                if failed:
+                    replan_ctx += ("  Failed (do NOT repeat the exact failed "
+                                   "action): " + "; ".join(failed[:4]) + "\n")
+                fc = context.get("failure_context") or ""
+                if fc:
+                    replan_ctx += f"  Last failure: {fc}\n"
+                artifacts = context.get("artifacts") or {}
+                if artifacts:
+                    replan_ctx += f"  Known artifacts: {artifacts}\n"
+                replan_ctx += ("  Output ONLY the REMAINING steps needed to "
+                               "finish the goal from the current state.\n")
+
+            prompt = (f"{PLANNER_SYSTEM_PROMPT}\n\nContext:\n{memory_ctx}"
+                      f"{replan_ctx}\n\nUser request: {request}\n\nPlan:")
 
             # CRITICAL FIX: chat() is async — MUST await it.
             # Previously this returned a coroutine object (always truthy),
