@@ -175,19 +175,14 @@ async def run_Diego(no_auth: bool = False, no_wake: bool = False) -> None:
     from core.command_router import command_router
     command_router.wire(action_dispatcher=action_dispatcher, conversation_engine=conversation_engine)
 
-    # Vision context: Use the new VisionService (structured UI tree + OCR)
-    # Falls back gracefully to the old vision module if the new service is
-    # unavailable.
-    conversation_engine.set_vision_context(vision_service.quick_context)
-
-    # Search provider: Use the new SearchService (DuckDuckGo/Tavily + trafilatura)
-    conversation_engine.set_search_provider(search_service.context_for_llm)
-
-    # Learning context: Context Composer — smart, ranked, compact memory injection
-    from agent.context_composer import context_composer
-    conversation_engine.set_learning_context(
-        lambda: context_composer.compose("", max_tokens=500)
-    )
+    # NOTE (2026-08-31): set_vision_context / set_search_provider /
+    # set_learning_context were REMOVED. The Brain has direct, better
+    # paths for each:
+    #   - vision:   brain._perception (perception_pipeline)
+    #   - search:   brain.process_command fetches search_service directly
+    #   - learning: brain._learn uses learning_engine directly
+    # The engine's provider callbacks were never consumed by the Brain,
+    # so wiring them here was dead code.
 
     # ── Initialize new services ───────────────────────────
     # MusicAgent: unified music control (MPV, Spotify, YouTube, local)
@@ -206,7 +201,12 @@ async def run_Diego(no_auth: bool = False, no_wake: bool = False) -> None:
     # ── Face auth provider (deferred to wake) ─────────────
     if no_auth:
         logger.warning("[AUTH] --no-auth: face authentication disabled (dev mode)")
-        conversation_engine.set_authenticated(None)   # dev session, no camera
+        # CRITICAL FIX (2026-08-31): set_auth_disabled() clears the auth
+        # provider so _needs_auth() always returns False. The old
+        # set_authenticated(None) left the provider set, so _needs_auth()
+        # still returned True (because _auth_user is None) and the camera
+        # would still open even with --no-auth.
+        conversation_engine.set_auth_disabled()   # dev session, no camera
     else:
         conversation_engine.set_auth_provider(authenticate_on_wake)
 

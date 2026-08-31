@@ -147,11 +147,6 @@ class ConversationEngine:
         self._session_deadline: float = 0.0
         self._turn_count = 0
 
-        # Providers (context for Brain's LLM pipeline)
-        self._vision_context_fn = None
-        self._search_provider_fn = None
-        self._learning_context_fn = None
-
         # GUI pump
         self._gui_pump_task: Optional[asyncio.Task] = None
 
@@ -160,17 +155,29 @@ class ConversationEngine:
 
     # ── Wiring ────────────────────────────────────────────
 
-    def set_vision_context(self, fn) -> None:
-        self._vision_context_fn = fn
-
-    def set_search_provider(self, fn) -> None:
-        self._search_provider_fn = fn
-
-    def set_learning_context(self, fn) -> None:
-        self._learning_context_fn = fn
+    # NOTE (2026-08-31): set_vision_context / set_search_provider /
+    # set_learning_context were REMOVED. They were set in Diego.py but
+    # never consumed by the Brain — the Brain has direct, better paths:
+    #   - vision:   brain._perception (perception_pipeline)
+    #   - search:   brain.process_command fetches search_service directly
+    #   - learning: brain._learn uses learning_engine directly
+    # Keeping the dead setters created duplicate provider paths.
 
     def set_auth_provider(self, fn) -> None:
         self._auth_provider = fn
+
+    def set_auth_disabled(self) -> None:
+        """Disable face authentication entirely (--no-auth dev mode).
+
+        Clears the auth provider so `_needs_auth()` always returns False.
+        This is the ONLY correct way to bypass auth — `set_authenticated(None)`
+        leaves the provider set, so `_needs_auth()` would still return True
+        (because `_auth_user is None`) and the camera would still open.
+        """
+        self._auth_provider = None
+        self._auth_user = None
+        self._last_auth_time = time.time()
+        logger.info("[ENGINE] Face authentication disabled (--no-auth)")
 
     def set_authenticated(self, name: Optional[str]) -> None:
         self._auth_user = name

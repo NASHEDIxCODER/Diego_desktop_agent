@@ -378,13 +378,19 @@ def test_conversation_engine():
     
     # Wiring
     called = []
-    conversation_engine.set_vision_context(lambda: called.append("vision") or "test")
-    conversation_engine.set_search_provider(lambda q: called.append("search") or "test")
-    conversation_engine.set_learning_context(lambda: called.append("learn") or "test")
+    # NOTE (2026-08-31): set_vision_context / set_search_provider /
+    # set_learning_context were REMOVED from ConversationEngine — the Brain
+    # has direct, better paths (perception_pipeline, search_service,
+    # learning_engine). These checks are now no-ops.
+    called = []
 
-    check("Vision context wired", conversation_engine._vision_context_fn is not None)
-    check("Search provider wired", conversation_engine._search_provider_fn is not None)
-    check("Learning context wired", conversation_engine._learning_context_fn is not None)
+    # Provider callbacks removed (2026-08-31) — Brain uses direct paths.
+    check("Vision context wired (removed — Brain uses perception_pipeline)",
+          not hasattr(conversation_engine, "_vision_context_fn"))
+    check("Search provider wired (removed — Brain uses search_service)",
+          not hasattr(conversation_engine, "_search_provider_fn"))
+    check("Learning context wired (removed — Brain uses learning_engine)",
+          not hasattr(conversation_engine, "_learning_context_fn"))
     check("Action executor removed (Brain owns execution)",
           not hasattr(conversation_engine, '_action_executor'))
     

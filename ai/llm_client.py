@@ -154,7 +154,12 @@ class LLMClient:
             "model": self._model,
             "prompt": f"{SYSTEM_PROMPT}\n\n{prompt}",
             "stream": False,
-            "keep_alive": 0,
+            # CRITICAL FIX (2026-08-31): keep_alive=0 unloaded the model
+            # after EVERY request, forcing a full cold reload on every
+            # fallback call — defeating the startup warm-up. Use the same
+            # configured residency window as the production streaming_llm
+            # path so the fallback client never undoes the warm-up.
+            "keep_alive": settings.OLLAMA_KEEP_ALIVE,
             "options": {
                 "num_predict": 200,
                 "temperature": 0.7,

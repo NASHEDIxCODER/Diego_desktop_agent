@@ -1375,6 +1375,25 @@ class ActionDispatcher:
         except Exception as exc:
             logger.exception("[VISION] read_screen failed: %s", exc)
             return "I couldn't read the screen."
+    async def _ocr_async(self) -> str:
+        """Async OCR of the active window using the production vision service.
+
+        Uses the SAME production OCR path as `_screen_facts()` (the
+        structured VisionService pipeline) so there is no duplicate OCR
+        logic. Returns the extracted text, or "" on failure.
+        """
+        try:
+            from services.vision_service import vision_service
+            ctx = await vision_service.force_analyze()
+            if ctx is not None and getattr(ctx, "raw_ocr_boxes", None):
+                text = " ".join(
+                    box.text for box in ctx.raw_ocr_boxes if box.text)
+                return " ".join(text.split())[:1200]
+            return ""
+        except Exception as e:
+            logger.debug("[ACTIONS] OCR failed: %s", e)
+            return ""
+
     def _ocr_sync(self) -> str:
         """Synchronous OCR of the active window."""
         try:
