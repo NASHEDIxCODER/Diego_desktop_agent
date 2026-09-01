@@ -130,17 +130,13 @@ class WakeModelManager:
                 if "detection_threshold" in meta:
                     self._threshold = float(meta["detection_threshold"])
 
-            # Select the inference framework based on the model file extension.
-            # The openwakeword Model defaults to inference_framework="tflite",
-            # which raises ValueError when an ONNX model is provided. We must
-            # explicitly select "onnx" for .onnx models. `inference_framework`
-            # is an explicit named parameter of Model.__init__ (forwarded to
-            # AudioFeatures.__init__), NOT part of **kwargs, so it does not
-            # cause a TypeError.
-            inference_framework = "onnx" if resolved.suffix == ".onnx" else "tflite"
+            # openwakeword 0.4.0+ renamed `wakeword_models` → `wakeword_model_paths`
+            # and removed the `inference_framework` parameter (the framework is
+            # now auto-detected from the model file extension — .onnx → onnx,
+            # .tflite → tflite). The old parameter names no longer exist in any
+            # installable openwakeword version, so we use the current API.
             self._model = OWWModel(
-                wakeword_models=[str(resolved)],
-                inference_framework=inference_framework,
+                wakeword_model_paths=[str(resolved)],
                 **kwargs
             )
             self._loaded = True

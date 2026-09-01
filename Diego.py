@@ -150,6 +150,13 @@ async def run_Diego(no_auth: bool = False, no_wake: bool = False) -> None:
     The conversation engine owns the real boot sequence (audio → wake
     model → VAD → TTS → Whisper) and logs each stage as it completes.
     """
+    # ── Runtime dependency/asset diagnostic ──────────────────────
+    # Reports [HEALTH] component=OK/DEGRADED/MISSING for every
+    # production component. Runs ONCE — never retries a permanently
+    # missing component (no retry loop).
+    from core.runtime_health import run_runtime_health
+    run_runtime_health()
+
     from core.conversation_engine import conversation_engine
     from agent.action_dispatcher import action_dispatcher
     from services.vision_service import vision_service
