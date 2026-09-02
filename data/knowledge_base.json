@@ -6067,7 +6067,7 @@
       "source": "/usr/share/doc/osert/FAQ.md",
       "summary": "When Offensive Security says you have to highlight the changes you made to the exploit, they mean you have to show / explain what you changed in the code but your are free to choose how to do that.",
       "created_at": 1788291146.2729049,
-      "access_count": 2,
+      "access_count": 4,
       "confidence": 1.0
     },
     {
@@ -13037,7 +13037,7 @@
       "source": "/usr/share/doc/rulesfinder/README.md",
       "summary": "All measurements have been conducted on my laptop while I am doing something else with it. *These measurements are just here to illustrate what you should expect with regards to resource usage.*",
       "created_at": 1788291146.304156,
-      "access_count": 0,
+      "access_count": 2,
       "confidence": 1.0
     },
     {
@@ -15777,7 +15777,7 @@
       "source": "/usr/share/doc/ruby-bigdecimal/README.md",
       "summary": "I don't have enough knowledge about Chocolatey. Please tell me what should I write here.",
       "created_at": 1788291146.313608,
-      "access_count": 0,
+      "access_count": 4,
       "confidence": 1.0
     },
     {
@@ -40877,7 +40877,7 @@
       "source": "/usr/share/doc/pspy/README.md",
       "summary": "We can use the file system events as a trigger to scan `/proc`, hoping that we can do it fast enough to catch the processes. This is what pspy does.",
       "created_at": 1788291146.36614,
-      "access_count": 2,
+      "access_count": 4,
       "confidence": 1.0
     },
     {
@@ -49277,7 +49277,7 @@
       "source": "/usr/share/doc/davscan/README.md",
       "summary": "**My ability to proerly document things** - When I switched out the native xml for beautiful soup that came with some requirements I didn't know I wa supposed to tell you about. You'll want to install that as well as the C library libxml beause it makes things faster.",
       "created_at": 1788291146.4108868,
-      "access_count": 0,
+      "access_count": 4,
       "confidence": 1.0
     },
     {
@@ -49287,7 +49287,7 @@
       "source": "/usr/share/doc/davscan/README.md",
       "summary": "**Probably a lot more that I haven't tested and whatever the issues might be in the github assuming people care to tell me what is tarded..**",
       "created_at": 1788291146.410893,
-      "access_count": 0,
+      "access_count": 2,
       "confidence": 1.0
     },
     {
@@ -49452,19 +49452,19 @@
     }
   ],
   "crawled_sources": [
-    "https://nodejs.org/docs/latest/api/",
-    "https://git-scm.com/docs",
-    "https://archlinux.org/packages/",
+    "https://kubernetes.io/docs/",
     "https://docs.github.com/en",
     "https://docs.docker.com/",
+    "https://developer.mozilla.org/en-US/docs/Web/",
     "https://docs.python.org/3/",
+    "https://git-scm.com/docs",
     "https://doc.rust-lang.org/book/",
-    "https://kubernetes.io/docs/",
-    "https://developer.mozilla.org/en-US/docs/Web/"
+    "https://nodejs.org/docs/latest/api/",
+    "https://archlinux.org/packages/"
   ],
   "action_successes": {},
   "action_failures": {},
   "workflow_patterns": {},
   "learn_count": 500,
-  "updated_at": 1788370421.2589061
+  "updated_at": 1788373279.4414427
 }

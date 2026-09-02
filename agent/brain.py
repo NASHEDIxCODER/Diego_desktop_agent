@@ -1384,6 +1384,28 @@ class AgentBrain:
             # attribute set during process_command (search grounding).
             web_ctx = getattr(self, "_last_web_context", None)
             sentences = []
+            # ── SYSTEM INFO GUARD (2026-09-02) ──
+            # System-information queries ("system info", "what CPU do I
+            # have?", "how much RAM?") are answered deterministically from
+            # the PC snapshot collector. Document retrieval is NEVER used
+            # for basic machine facts. This guard ensures that even if
+            # the decision engine didn't catch it, we answer from the
+            # snapshot here.
+            try:
+                from knowledge.system_info import (
+                    is_system_info_query,
+                    answer_system_info_query,
+                )
+                if is_system_info_query(text):
+                    answer = answer_system_info_query(text)
+                    if answer:
+                        logger.info(
+                            "[Brain] Answered from SYSTEM_INFO snapshot "
+                            "(%d chars)", len(answer))
+                        return answer
+            except Exception as e:
+                logger.debug("[Brain] system-info check skipped: %s", e)
+
             # ── LOCAL KNOWLEDGE FIRST (2026-09-02, UX-hardened) ──
             # Factual questions about the user's PC, documents, projects,
             # files, configuration, or indexed local knowledge are answered

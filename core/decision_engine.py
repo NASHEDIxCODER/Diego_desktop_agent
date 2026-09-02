@@ -50,6 +50,7 @@ class DecisionPath(str, Enum):
     REUSED_PLAN = "REUSED_PLAN"
     VISION = "VISION"
     SEARCH = "SEARCH"
+    SYSTEM_INFO = "SYSTEM_INFO"
     LLM = "LLM"
 
 
@@ -333,6 +334,31 @@ class DecisionEngine:
             )
 
             return decision
+
+        # ──────────────────────────────────────────────────────
+        # SYSTEM INFO — Machine facts from the PC snapshot
+        #
+        # System-information queries ("system info", "what CPU do I
+        # have?", "how much RAM?") are answered deterministically from
+        # the read-only PC snapshot collector. They take precedence
+        # over document retrieval and the LLM. Live-state requests
+        # (vision, desktop state) are handled above.
+        # ──────────────────────────────────────────────────────
+
+        result = await self._check_system_info(normalized)
+
+        if result is not None:
+            self._record(
+                DecisionPath.SYSTEM_INFO,
+                t_start,
+            )
+
+            self._cache_decision(
+                cache_key,
+                result,
+            )
+
+            return result
 
         # ──────────────────────────────────────────────────────
         # L3 — Direct execution
@@ -859,6 +885,69 @@ class DecisionEngine:
                 "[DECIDE:L2] knowledge base query failed: %s",
                 e,
             )
+
+        return None
+
+    # ──────────────────────────────────────────────────────────
+    # SYSTEM INFO — Machine facts from the PC snapshot
+    # ──────────────────────────────────────────────────────────
+
+    async def _check_system_info(
+        self,
+        text: str,
+    ) -> Optional[Decision]:
+        """
+        Check if this is a system-information query and answer it
+        deterministically from the PC snapshot collector.
+
+        System-info queries take precedence over document retrieval
+        and the LLM. They are answered from the structured snapshot
+        (knowledge/snapshot.py), never from indexed documents.
+
+        Live-state requests (vision, desktop state) are handled by
+        earlier layers, so this only handles machine-fact queries.
+        """
+        try:
+            from knowledge.system_info import (
+                detect_system_info_query,
+                SystemInfoTopic,
+                answer_system_info_query,
+            )
+
+            query = detect_system_info_query(text)
+            if query.topic == SystemInfoTopic.NONE:
+                return None
+
+            # Live-state guard: if the query asks about volatile state
+            # (current usage, running processes, active interfaces),
+            # let it refresh the snapshot. But pure live desktop queries
+            # (windows, apps) are handled by _is_live_desktop_query.
+            text_lower = text.lower()
+            if self._is_live_desktop_query(text_lower):
+                return None  # Let live desktop tools handle it
+
+            # Answer from the snapshot (deterministic, no LLM)
+            response = answer_system_info_query(text)
+            if response:
+                logger.info(
+                    "[DECIDE:SYSTEM-INFO] Answered from snapshot: "
+                    "topic=%s live=%s response_len=%d",
+                    query.topic.value, query.is_live, len(response),
+                )
+                return Decision(
+                    path=DecisionPath.SYSTEM_INFO,
+                    needs_llm=False,
+                    response=response,
+                    confidence=0.95,
+                    debug={
+                        "source": "pc_snapshot",
+                        "topic": query.topic.value,
+                        "is_live": query.is_live,
+                    },
+                )
+
+        except Exception as e:
+            logger.debug("[DECIDE:SYSTEM-INFO] check failed: %s", e)
 
         return None
 
