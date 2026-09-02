@@ -1472,7 +1472,9 @@ def test_concurrent_embedding_model_load_single_init(monkeypatch):
 
 def test_brain_strong_local_match_answers_without_llm(monkeypatch):
     """A strong local match (score >= 0.55) is answered LOCALLY — the
-    LLM is never invoked."""
+    LLM is never invoked — and the spoken answer is a concise
+    synthesized response with a FRIENDLY citation (short file name +
+    locator). Raw directory paths are never spoken."""
     import asyncio
 
     class _Ctx:
@@ -1499,8 +1501,10 @@ def test_brain_strong_local_match_answers_without_llm(monkeypatch):
         "knowledge_service",
         type("KS", (), {
             "search": staticmethod(
-                lambda q, top_k=3: [{
-                    "score": 0.95, "doc_path": "/tmp/doc.txt",
+                lambda q, top_k=5: [{
+                    "score": 0.95,
+                    "doc_path": "/home/user/Documents/notes/doc.txt",
+                    "filename": "doc.txt",
                     "locator": "page 2", "text": "diego uses duckdb "
                     "for the knowledge index"}]),
             "context_for_llm": staticmethod(lambda q, top_k=4: ""),
@@ -1508,10 +1512,17 @@ def test_brain_strong_local_match_answers_without_llm(monkeypatch):
     resp = asyncio.run(
         brain._generate_response("what does diego use for its index?",
                                  None, _Result()))
-    assert invoked["llm"] == 0            # LLM never invoked
-    assert "From your local files" in resp
-    assert "/tmp/doc.txt" in resp         # citation present
-    assert "page 2" in resp               # locator present
+    assert invoked["llm"] == 0            # LLM never invoked (bypass)
+    # Friendly citation present — short file name + locator
+    assert "doc.txt" in resp
+    assert "page 2" in resp
+    # The evidence itself is spoken (answered from local knowledge)
+    assert "duckdb" in resp
+    # Raw retrieval internals are NEVER spoken
+    assert "/home/user" not in resp
+    assert "Documents/notes" not in resp
+    assert "From your local files" not in resp
+    assert "score" not in resp.lower()
 
 
 def test_brain_live_screen_request_not_overridden_by_local_knowledge(
@@ -1547,7 +1558,7 @@ def test_brain_live_screen_request_not_overridden_by_local_knowledge(
         "knowledge_service",
         type("KS", (), {
             "search": staticmethod(
-                lambda q, top_k=3: [{
+                lambda q, top_k=5: [{
                     "score": 0.99, "doc_path": "/tmp/screen.txt",
                     "locator": "", "text": "a file mentioning screen"}]),
             "context_for_llm": staticmethod(
@@ -1557,6 +1568,10 @@ def test_brain_live_screen_request_not_overridden_by_local_knowledge(
         brain._generate_response("what is on my screen?",
                                  _Ctx(), _Result()))
     assert "From your local files" not in resp   # NOT overridden locally
+    assert "According to" not in resp            # no local synthesis either
     assert captured["screen"] == "Terminal: pytest output on screen"
     assert captured["local"] is not None        # bounded context still sent
+    # The INTERNAL LLM context may keep the full path for grounding ...
     assert "/tmp/screen.txt" in captured["local"]
+    # ... but the SPOKEN response never leaks it (sanitized).
+    assert "/tmp/screen.txt" not in resp

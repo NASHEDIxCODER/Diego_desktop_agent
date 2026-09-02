@@ -461,8 +461,14 @@ class StreamingLLM:
                 f"your own possibly outdated knowledge):\n{web_context}")
         if local_context:
             prompt_parts.append(
-                f"\nLocal documents from this PC (use these REAL facts and "
-                f"cite the source file paths when answering):\n{local_context}")
+                f"\nLocal documents from this PC — INTERNAL grounding. Use "
+                f"these REAL facts to answer the user's question directly and "
+                f"concisely. NEVER describe the retrieval process, NEVER list "
+                f"matched files or directories, NEVER read out full file "
+                f"paths, scores, or chunk metadata. If citing a source is "
+                f"useful, use ONLY its short file name (e.g. 'According to "
+                f"README.md' or 'This is documented in report.pdf, page 13')."
+                f"\n{local_context}")
         if context:
             prompt_parts.append(f"\nContext:\n{context}")
         prompt_parts.append(f"\nUser: {user_text}\nDiego:")

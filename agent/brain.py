@@ -1384,30 +1384,43 @@ class AgentBrain:
             # attribute set during process_command (search grounding).
             web_ctx = getattr(self, "_last_web_context", None)
             sentences = []
-            # ── LOCAL KNOWLEDGE FIRST (2026-09-02) ──
+            # ── LOCAL KNOWLEDGE FIRST (2026-09-02, UX-hardened) ──
             # Factual questions about the user's PC, documents, projects,
             # files, configuration, or indexed local knowledge are answered
-            # from the LOCAL index before invoking the LLM. Only the
-            # smallest relevant retrieved context is ever provided.
+            # from the LOCAL index before invoking the LLM. Retrieval
+            # results stay INTERNAL: the user only ever hears a concise
+            # synthesized answer with a short friendly citation — never
+            # raw paths, filename dumps, scores, or chunk metadata.
             local_ctx = ""
+            allow_paths = False
             try:
                 from knowledge.service import knowledge_service
-                k_results = knowledge_service.search(text, top_k=3)
-                # LIVE REQUEST GUARD: when perception context exists the
-                # user asked about the CURRENT screen — a static local
-                # file match must never override the live answer. Local
-                # knowledge is then used as bounded LLM context only.
+                from knowledge.presentation import (
+                    synthesize_local_answer,
+                    is_explicit_listing_request,
+                    sanitize_spoken,
+                )
+                # EXPLICIT LISTING GUARD: "list the files", "what files
+                # are in this folder?", "what is the path to X?" must be
+                # answered with real filenames/paths via the LLM context —
+                # never collapsed into a single synthesized snippet.
+                allow_paths = is_explicit_listing_request(text)
+                k_results = knowledge_service.search(text, top_k=5)
+                # LIVE REQUEST GUARD: screen/app/process/current-state
+                # requests must use live tools — a static local file
+                # match must never override the live answer (with or
+                # without perception context). Local knowledge is then
+                # used as bounded LLM context only.
+                live_request = bool(screen_ctx) or self._is_live_state_request(text)
                 if (k_results and k_results[0].get("score", 0.0) >= 0.55
-                        and not screen_ctx):
-                    top = k_results[0]
-                    cite = top.get("doc_path", "")
-                    loc = top.get("locator", "")
-                    snippet = " ".join((top.get("text", "") or "").split())[:400]
-                    loc_part = f" — {loc}" if loc else ""
-                    logger.info("[Brain] Answered from LOCAL_KNOWLEDGE: %s%s",
-                                cite, loc_part)
-                    return (f"From your local files ({cite}{loc_part}): "
-                            f"{snippet}")
+                        and not live_request and not allow_paths):
+                    answer = synthesize_local_answer(text, k_results)
+                    if answer:
+                        logger.info(
+                            "[Brain] Answered from LOCAL_KNOWLEDGE "
+                            "(synthesized, %d chars, %d evidence blocks)",
+                            len(answer), len(k_results))
+                        return sanitize_spoken(answer, allow_paths=False)
                 local_ctx = knowledge_service.context_for_llm(text) or ""
             except Exception as e:
                 logger.debug("[Brain] local knowledge retrieval skipped: %s", e)
@@ -1424,10 +1437,36 @@ class AgentBrain:
                         text, screen_context=screen_ctx,
                         web_context=web_ctx):
                     sentences.append(sentence)
-            return " ".join(sentences) if sentences else "I'm not sure how to help with that."
+            response = (" ".join(sentences) if sentences
+                        else "I'm not sure how to help with that.")
+            # ── SPOKEN RESPONSE GUARD ──
+            # When local knowledge influenced the answer, scrub any
+            # leaked paths/metadata and bound the length for voice UX.
+            # ACTION lines and non-knowledge answers are never touched.
+            try:
+                from knowledge.presentation import sanitize_spoken
+                if local_ctx and "ACTION:" not in response:
+                    response = sanitize_spoken(
+                        response, allow_paths=allow_paths)
+            except Exception:
+                pass
+            return response
         except Exception as e:
             logger.warning("[Brain] LLM response failed: %s", e)
             return "I'm having trouble with that right now."
+
+    @staticmethod
+    def _is_live_state_request(text: str) -> bool:
+        """True when the utterance asks about the CURRENT screen, apps,
+        processes, or desktop state. Such requests must be answered by
+        live tools — never from stale local knowledge."""
+        try:
+            from core.decision_engine import DecisionEngine
+            t = (text or "").lower()
+            return (DecisionEngine._needs_vision(t)
+                    or DecisionEngine._is_live_desktop_query(t))
+        except Exception:
+            return False
 
     # ── Helpers ────────────────────────────────────────────────
 
