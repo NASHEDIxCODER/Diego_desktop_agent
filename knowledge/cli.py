@@ -25,12 +25,18 @@ def main(argv=None) -> int:
     cmd = args[0].lower()
 
     from knowledge.service import knowledge_service
+
+    if cmd in ("status", "index-status", "index status"):
+        # Status must NOT start a background scan — it reports the
+        # current persisted state (accurate counts, no side effects).
+        knowledge_service.ensure_ready()
+        print(json.dumps(knowledge_service.index_status(), indent=2))
+        return 0
+
     knowledge_service.start()  # idempotent, non-blocking schema init
 
     if cmd in ("index", "index-files", "index files"):
         print(json.dumps(knowledge_service.index_files(), indent=2))
-    elif cmd in ("status", "index-status", "index status"):
-        print(json.dumps(knowledge_service.index_status(), indent=2))
     elif cmd in ("reindex", "reindex-file", "reindex file"):
         if len(args) < 2:
             print("usage: reindex <path>")

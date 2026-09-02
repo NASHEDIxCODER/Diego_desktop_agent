@@ -31,15 +31,35 @@ def text_hash(text: str) -> str:
         f"{_MODEL_NAME}::||::{text}".encode("utf-8")).hexdigest()
 
 
+# Module-level default embedder singleton. The local sentence-transformers
+# model is heavy; it must be initialized ONCE and reused by every indexer /
+# retriever instance (never once per file, never once per instance).
+_default_embedder: Optional["LocalEmbedder"] = None
+
+
 class LocalEmbedder:
     """Local sentence-transformers embedder (no cloud calls)."""
 
     name = "local_sentence_transformers"
 
+    def __new__(cls, backend: str = ""):
+        global _default_embedder
+        if not backend and _default_embedder is not None:
+            return _default_embedder
+        inst = super().__new__(cls)
+        if not backend:
+            _default_embedder = inst
+        return inst
+
     def __init__(self, backend: str = ""):
+        # Guard: when __new__ returns the existing singleton, __init__ is
+        # still invoked — do NOT reset the memoized model state.
+        if getattr(self, "_initialized", False):
+            return
         self.backend = backend or settings.KNOWLEDGE_EMBEDDING_BACKEND
         self._ready = False
         self._failed = False  # memoized: never spam the log per file
+        self._initialized = True
 
     @property
     def is_local(self) -> bool:

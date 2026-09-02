@@ -764,3 +764,666 @@ def test_status_accurate_after_scan(store, indexer, root):
     assert "embeddings" in status
     assert status["embeddings"]["local_only"] is True
     assert status["scan"]["running"] is False
+
+
+# ── Idempotent indexing regression tests ─────────────────────────
+# Contract: new path → insert; unchanged hash → skip; changed hash →
+# replace document + chunks atomically; deleted file → remove cleanly;
+# embeddings unavailable → keyword retrieval still works.
+
+def test_first_index_inserts_document_and_chunks(store, indexer, root):
+    """First index: exactly one document row + its chunks persisted."""
+    f = root / "first.txt"
+    f.write_text("first index inserts this content")
+    snap = indexer.scan()
+    assert snap["updated"] == 1
+    doc = store.get_document(str(f))
+    assert doc is not None
+    assert doc["chunk_count"] >= 1
+    assert store.chunk_count(str(f)) == doc["chunk_count"]
+    # Exactly one row for this path (PRIMARY KEY respected)
+    docs = [d for d in store.all_documents() if d["path"] == str(f)]
+    assert len(docs) == 1
+
+
+def test_second_identical_index_skips(store, indexer, root):
+    """Second identical index: no new rows, no re-embedding, no dupes."""
+    f = root / "stable2.txt"
+    f.write_text("identical content stays put")
+    snap1 = indexer.scan()
+    assert snap1["updated"] == 1
+    chunks_before = store.chunk_count(str(f))
+    snap2 = indexer.scan()
+    assert snap2["updated"] == 0
+    assert snap2["skipped"] >= 1
+    # No duplicate document rows, no chunk growth
+    docs = [d for d in store.all_documents() if d["path"] == str(f)]
+    assert len(docs) == 1
+    assert store.chunk_count(str(f)) == chunks_before
+
+
+def test_changed_file_replaces_document_and_chunks_atomically(
+        store, indexer, root):
+    """Changed hash → document + chunks replaced atomically (no orphans)."""
+    f = root / "changing2.txt"
+    f.write_text("version one content")
+    indexer.scan()
+    h1 = store.get_document(str(f))["content_hash"]
+    c1 = store.chunk_count(str(f))
+    assert c1 >= 1
+
+    time.sleep(0.01)
+    f.write_text("version two content with much more text to force "
+                 "multiple chunks " * 30)
+    os.utime(f, (time.time() + 2, time.time() + 2))
+    snap = indexer.scan()
+    assert snap["updated"] == 1
+
+    doc = store.get_document(str(f))
+    assert doc["content_hash"] != h1
+    # Chunks fully replaced: count matches the new document, no orphans
+    assert store.chunk_count(str(f)) == doc["chunk_count"]
+    assert store.chunk_count(str(f)) >= 1
+    # Exactly one document row still
+    docs = [d for d in store.all_documents() if d["path"] == str(f)]
+    assert len(docs) == 1
+
+
+def test_mtime_only_change_refreshes_without_reindex(store, indexer, root):
+    """mtime-only change: content hash unchanged → no re-extraction."""
+    f = root / "touch2.txt"
+    f.write_text("same bytes again")
+    indexer.scan()
+    h1 = store.get_document(str(f))["content_hash"]
+    mtime1 = store.get_document(str(f))["mtime"]
+    os.utime(f, (time.time() + 10, time.time() + 10))
+    snap = indexer.scan()
+    assert snap["updated"] == 0
+    doc = store.get_document(str(f))
+    assert doc["content_hash"] == h1
+    assert abs(doc["mtime"] - mtime1) > 1e-6  # mtime refreshed
+    assert store.chunk_count(str(f)) >= 1
+
+
+def test_deleted_file_removed_cleanly(store, indexer, root):
+    """Deleted file → document AND chunks removed cleanly."""
+    f = root / "doomed2.txt"
+    f.write_text("to be deleted cleanly")
+    indexer.scan()
+    assert store.get_document(str(f)) is not None
+    assert store.chunk_count(str(f)) >= 1
+    f.unlink()
+    snap = indexer.scan()
+    assert snap["removed"] == 1
+    assert store.get_document(str(f)) is None
+    assert store.chunk_count(str(f)) == 0
+    # No orphaned chunk rows remain
+    with store._store.connect() as conn:
+        if conn is not None:
+            orphan = conn.execute(
+                "SELECT COUNT(*) FROM knowledge_chunks WHERE doc_path = ?",
+                [str(f)]).fetchone()[0]
+            assert orphan == 0
+
+
+def test_embeddings_unavailable_indexing_continues(store, indexer, root):
+    """Embeddings unavailable → chunks still persisted (NULL embeddings)
+    and keyword retrieval works."""
+    class BrokenEmbedder(FakeEmbedder):
+        name = "broken3"
+
+        def embed_batch(self, texts):
+            return [None] * len(texts)
+
+        def embed_query(self, text):
+            return None
+
+    f = root / "kw2.txt"
+    f.write_text("quantum flux capacitor calibration notes")
+    indexer2 = KnowledgeIndexer(store, indexer._policy,
+                                embedder=BrokenEmbedder())
+    snap = indexer2.scan()
+    assert snap["updated"] == 1
+    doc = store.get_document(str(f))
+    assert doc is not None
+    assert doc["chunk_count"] >= 1
+    # Chunks persisted even without embeddings
+    assert store.chunk_count(str(f)) == doc["chunk_count"]
+    retriever = KnowledgeRetriever(store, embedder=BrokenEmbedder())
+    results = retriever.search("flux capacitor", top_k=3)
+    assert results
+    assert results[0]["doc_path"] == str(f)
+    assert results[0]["source"] == "keyword"
+
+
+def test_multi_dot_generated_extensions_never_indexed(store, indexer, root):
+    """Multi-dot generated extensions (.duckdb.wal, .log.tmp) must be
+    rejected by NAME — they must never reach persistence."""
+    (root / "db.duckdb.wal").write_bytes(b"\x00wal-data\x00")
+    (root / "app.log.tmp").write_text("temporary log")
+    (root / "normal.txt").write_text("normal content")
+    indexer.scan()
+    paths = {d["path"] for d in store.all_documents()}
+    assert any(p.endswith("normal.txt") for p in paths)
+    assert not any(p.endswith(".duckdb.wal") for p in paths)
+    assert not any(p.endswith(".log.tmp") for p in paths)
+    # Never opened either
+    assert store.get_document(str(root / "db.duckdb.wal")) is None
+    assert store.get_document(str(root / "app.log.tmp")) is None
+
+
+# ── Filesystem security policy hardening (deny-before-open) ───────
+
+def test_denied_files_never_opened(store, indexer, root, monkeypatch):
+    """Credential/session/auth/secret files are rejected by NAME ONLY —
+    never opened, hashed, extracted, embedded, or persisted."""
+    denied = {
+        "credentials.csv": "user,password\nadmin,s3cret\n",
+        ".env": "API_KEY=supersecret\n",
+        "server.pem": "-----BEGIN PRIVATE KEY-----\n",
+        "diego.session": "\x00session-data\x00",
+        "auth_token.json": '{"token": "x"}',
+        "session.json": '{"sid": "x"}',
+        "jwt.txt": "eyJhbGciOiJIUzI1NiJ9.xxx",
+        "server.pem.bak": "-----BEGIN PRIVATE KEY-----\n",
+    }
+    for name, content in denied.items():
+        (root / name).write_text(content)
+    (root / "ok.txt").write_text("normal content")
+
+    real_open = open
+    opened = []
+
+    def spy_open(file, *a, **kw):
+        try:
+            name = str(file)
+        except Exception:
+            name = ""
+        for marker in denied:
+            if marker in name:
+                opened.append(name)
+        return real_open(file, *a, **kw)
+
+    import builtins
+    monkeypatch.setattr(builtins, "open", spy_open)
+    indexer.scan()
+    monkeypatch.undo()
+
+    assert opened == []  # never opened — rejected by name only
+    paths = {d["path"] for d in store.all_documents()}
+    assert any(p.endswith("ok.txt") for p in paths)
+    for name in denied:
+        assert not any(p.endswith(name) for p in paths)
+        assert store.get_document(str(root / name)) is None
+        assert store.chunk_count(str(root / name)) == 0
+
+
+def test_denied_files_never_extracted_or_embedded(store, indexer, root,
+                                                  monkeypatch):
+    """Denied files never reach the extractor or embedder."""
+    (root / "credentials.csv").write_text("user,password\nadmin,s3cret\n")
+    (root / "ok.csv").write_text("name,score\nalice,10\n")
+
+    from knowledge import extractors as ex_mod
+    real_get = ex_mod.get_extractor
+    called = []
+
+    def spy_get(ext):
+        called.append(ext)
+        return real_get(ext)
+
+    monkeypatch.setattr(ex_mod, "get_extractor", spy_get)
+
+    real_embed = indexer._embedder.embed_batch
+    embedded = []
+
+    def spy_embed(texts):
+        embedded.extend(texts)
+        return real_embed(texts)
+
+    monkeypatch.setattr(indexer._embedder, "embed_batch", spy_embed)
+
+    indexer.scan()
+    monkeypatch.undo()
+
+    # The CSV extractor is only invoked for ok.csv — never credentials.csv
+    assert called.count(".csv") == 1
+    # No secret content ever reached the embedder
+    assert not any("s3cret" in t or "admin" in t for t in embedded)
+    assert store.get_document(str(root / "credentials.csv")) is None
+    assert store.get_document(str(root / "ok.csv")) is not None
+
+
+def test_auth_session_jwt_bearer_filenames_denied(store, indexer, root):
+    """Auth/session/JWT/bearer/backup filenames are denied by name."""
+    (root / "auth.json").write_text('{"token": "x"}')
+    (root / "auth_token.json").write_text('{"token": "x"}')
+    (root / "session.json").write_text('{"sid": "x"}')
+    (root / "diego.session.json").write_text('{"sid": "x"}')
+    (root / "jwt.txt").write_text("eyJhbGciOiJIUzI1NiJ9.xxx")
+    (root / "bearer.txt").write_text("Bearer abc123")
+    (root / "server.pem.bak").write_text("-----BEGIN PRIVATE KEY-----")
+    (root / "ok.txt").write_text("normal")
+    indexer.scan()
+    paths = {d["path"] for d in store.all_documents()}
+    assert any(p.endswith("ok.txt") for p in paths)
+    for denied in ("auth.json", "auth_token.json", "session.json",
+                   "diego.session.json", "jwt.txt", "bearer.txt",
+                   "server.pem.bak"):
+        assert not any(p.endswith(denied) for p in paths)
+        assert store.get_document(str(root / denied)) is None
+
+
+def test_sensitive_dir_components_denied(store, indexer, root):
+    """Sensitive directory components (secrets, credentials, auth,
+    tokens, keys, private) are never descended into."""
+    for d in ("secrets", "credentials", "auth", "tokens", "keys",
+              "private"):
+        (root / d).mkdir(exist_ok=True)
+        (root / d / "data.txt").write_text("secret material")
+    (root / "ok.txt").write_text("normal")
+    indexer.scan()
+    paths = {d["path"] for d in store.all_documents()}
+    assert any(p.endswith("ok.txt") for p in paths)
+    for d in ("secrets", "credentials", "auth", "tokens", "keys",
+              "private"):
+        assert not any(f"/{d}/" in p for p in paths)
+
+
+def test_previously_indexed_secret_purged_without_open(
+        store, indexer, root, monkeypatch):
+    """A file indexed before the policy existed is purged on the next
+    scan — and is never opened to classify it."""
+    f = root / "notes.txt"
+    f.write_text("innocent content")
+    indexer.scan()
+    assert store.get_document(str(f)) is not None
+
+    # Rename to a sensitive name (simulates a credential file that was
+    # indexed before the denylist existed).
+    secret = root / "credentials.csv"
+    f.rename(secret)
+    secret.write_text("user,password\nadmin,s3cret\n")
+
+    real_open = open
+    opened = []
+
+    def spy_open(file, *a, **kw):
+        try:
+            name = str(file)
+        except Exception:
+            name = ""
+        if "credentials.csv" in name:
+            opened.append(name)
+        return real_open(file, *a, **kw)
+
+    import builtins
+    monkeypatch.setattr(builtins, "open", spy_open)
+    snap = indexer.scan()
+    monkeypatch.undo()
+
+    assert opened == []  # never opened to hash/classify
+    assert store.get_document(str(secret)) is None
+    assert store.get_document(str(f)) is None  # old path purged too
+    assert snap["removed"] >= 1
+    # Purge logged by category only — never the secret filename
+    for entry in indexer.skipped_paths():
+        assert "credentials.csv" not in entry["path"]
+
+
+def test_reindex_denied_file_purges(store, indexer, root):
+    """reindex_file on a denied path purges it — never re-persists."""
+    f = root / "credentials.csv"
+    f.write_text("user,password\nadmin,s3cret\n")
+    result = indexer.reindex_file(f)
+    assert result["status"] == "denied"
+    assert store.get_document(str(f)) is None
+    assert store.chunk_count(str(f)) == 0
+
+
+# ── Retrieval quality / determinism (focused retrieval tests) ─────
+
+def test_keyword_only_retrieval_full_weight(store, indexer, root):
+    """Without embeddings, a full-coverage keyword match scores high
+    enough to be authoritative (never scaled down to 0.4x)."""
+    class BrokenEmbedder(FakeEmbedder):
+        name = "kw-only"
+
+        def embed_batch(self, texts):
+            return [None] * len(texts)
+
+        def embed_query(self, text):
+            return None
+
+    (root / "doc.txt").write_text("quantum flux capacitor calibration")
+    indexer2 = KnowledgeIndexer(store, indexer._policy,
+                                embedder=BrokenEmbedder())
+    indexer2.scan()
+    retriever2 = KnowledgeRetriever(store, embedder=BrokenEmbedder())
+    results = retriever2.search("flux capacitor", top_k=3)
+    assert results
+    top = results[0]
+    assert top["source"] == "keyword"
+    assert top["score"] >= 0.9  # full weight — can be authoritative
+    assert str(root / "doc.txt") == top["doc_path"]
+
+
+def test_hybrid_ranking_deterministic(store, indexer, retriever, root):
+    """Identical scores are broken deterministically by doc_path;
+    repeated searches return identical orderings."""
+    text = "diego architecture pipeline design notes"
+    for name in ("b_doc.txt", "a_doc.txt", "c_doc.txt"):
+        (root / name).write_text(text)
+    indexer.scan()
+    r1 = retriever.search("diego architecture pipeline", top_k=5)
+    r2 = retriever.search("diego architecture pipeline", top_k=5)
+    assert len(r1) == len(r2) >= 2
+    assert [(x["doc_path"], x["chunk_index"]) for x in r1] \
+        == [(x["doc_path"], x["chunk_index"]) for x in r2]
+    # Ties at the top score are broken by doc_path ascending
+    tied = [r for r in r1 if abs(r["score"] - r1[0]["score"]) < 1e-9]
+    paths = [r["doc_path"] for r in tied]
+    assert paths == sorted(paths)
+
+
+def test_low_quality_matches_filtered(store, indexer, root):
+    """Weak matches (tiny query coverage) are dropped — they are never
+    returned as authoritative local knowledge."""
+    class BrokenEmbedder(FakeEmbedder):
+        name = "kw-lowq"
+
+        def embed_batch(self, texts):
+            return [None] * len(texts)
+
+        def embed_query(self, text):
+            return None
+
+    (root / "giraffe.txt").write_text("giraffe habitat savanna facts")
+    indexer2 = KnowledgeIndexer(store, indexer._policy,
+                                embedder=BrokenEmbedder())
+    indexer2.scan()
+    retriever2 = KnowledgeRetriever(store, embedder=BrokenEmbedder())
+    # 1 of 6 content tokens matches → below the relevance floor
+    results = retriever2.search(
+        "giraffe quantum physics relativity biology chemistry", top_k=5)
+    assert results == []
+    # No overlap at all → nothing
+    assert retriever2.search("quantum physics relativity") == []
+
+
+def test_stopwords_do_not_inflate_keyword_score(store, indexer, root):
+    """Filler query words must not inflate keyword coverage."""
+    class BrokenEmbedder(FakeEmbedder):
+        name = "kw-stop"
+
+        def embed_batch(self, texts):
+            return [None] * len(texts)
+
+        def embed_query(self, text):
+            return None
+
+    (root / "filler.txt").write_text("the is a what of and to")
+    (root / "real.txt").write_text("diego architecture pipeline design")
+    indexer2 = KnowledgeIndexer(store, indexer._policy,
+                                embedder=BrokenEmbedder())
+    indexer2.scan()
+    retriever2 = KnowledgeRetriever(store, embedder=BrokenEmbedder())
+    # Filler-only query → no content tokens → no results
+    assert retriever2.search("what is the a of and to") == []
+    # "diego architecture" must score a full 1.0 coverage, not be
+    # diluted by the "what is the" filler
+    results = retriever2.search("what is the diego architecture", top_k=3)
+    assert results
+    assert results[0]["doc_path"].endswith("real.txt")
+    assert results[0]["score"] >= 0.9
+
+
+def test_citation_includes_path_and_locator(store, indexer, retriever, root):
+    """context_for_llm carries the file path AND the sheet locator."""
+    openpyxl = pytest.importorskip("openpyxl")
+    f = root / "fin.xlsx"
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Q3"
+    ws["A1"] = "revenue grew strongly this quarter"
+    wb.save(str(f))
+    indexer.scan()
+    ctx = retriever.context_for_llm("revenue grew", top_k=2)
+    assert str(f) in ctx          # absolute file path cited
+    assert "Q3" in ctx            # sheet locator present in the citation
+
+
+def test_context_for_llm_single_oversized_chunk_bounded(
+        store, indexer, retriever, root):
+    """A single oversized chunk must still yield bounded context — it is
+    truncated, never dropped, and never exceeds max_chars."""
+    (root / "huge.txt").write_text("soloword " * 3000)
+    indexer.scan()
+    retriever.invalidate_cache()
+    ctx = retriever.context_for_llm("soloword", top_k=4, max_chars=600)
+    assert 0 < len(ctx) <= 600
+    assert "soloword" in ctx
+    assert str(root / "huge.txt") in ctx  # citation present
+
+
+def test_pc_snapshot_separate_from_document_retrieval(
+        store, indexer, retriever, root):
+    """diego:// snapshot chunks stay OUT of document search results."""
+    (root / "doc.txt").write_text("document knowledge content here")
+    indexer.scan()
+    # Persist a PC snapshot as a virtual document (like service.py does)
+    store.replace_chunks("diego://pc-snapshot", [{
+        "index": 0, "locator": "pc snapshot",
+        "text": "document knowledge content here too",
+        "text_hash": "snap-hash", "embedding": None,
+        "embedding_model": "",
+    }])
+    store.upsert_document(
+        path="diego://pc-snapshot", filename="pc-snapshot",
+        root="diego://", size=30, mtime=time.time(), content_hash="",
+        file_type="snapshot", mime_type="text/plain",
+        extraction_status="extracted", error="", chunk_count=1)
+    retriever.invalidate_cache()
+    results = retriever.search("document knowledge content", top_k=5)
+    assert results
+    assert not any(r["doc_path"].startswith("diego://") for r in results)
+    assert any(r["doc_path"].endswith("doc.txt") for r in results)
+
+
+def test_semantic_and_keyword_fusion_ranking(store, indexer, retriever,
+                                             root):
+    """With embeddings available, a chunk matching BOTH signals outranks
+    a keyword-only chunk."""
+    (root / "both.txt").write_text(
+        "neural networks power modern machine learning systems")
+    (root / "kwonly.txt").write_text(
+        "machine learning is a broad field with many applications")
+    indexer.scan()
+    results = retriever.search("neural networks machine learning", top_k=3)
+    assert results
+    top = results[0]
+    assert top["doc_path"].endswith("both.txt")
+    assert top["source"] == "both"
+
+
+# ── Production readiness: continuous local PC indexing ────────────
+
+def test_periodic_rescan_picks_up_new_files(store, indexer, root):
+    """Continuous indexing: files created after the initial scan are
+    indexed automatically by the periodic rescan loop."""
+    f1 = root / "initial.txt"
+    f1.write_text("initial content")
+    indexer.scan()
+    assert store.get_document(str(f1)) is not None
+
+    ok = indexer.start_periodic_rescan(interval_s=0.3)
+    assert ok
+    assert indexer.start_periodic_rescan(interval_s=0.3) is False  # idempotent
+    try:
+        f2 = root / "later.txt"
+        f2.write_text("later content indexed continuously")
+        deadline = time.time() + 6
+        while time.time() < deadline:
+            if store.get_document(str(f2)) is not None:
+                break
+            time.sleep(0.1)
+        assert store.get_document(str(f2)) is not None
+    finally:
+        indexer.stop_periodic_rescan()
+
+
+def test_periodic_rescan_detects_changes_and_deletions(store, indexer, root):
+    """The rescan loop picks up content changes (new hash) and deletions
+    without any manual trigger."""
+    f1 = root / "c1.txt"
+    f1.write_text("content one")
+    f2 = root / "c2.txt"
+    f2.write_text("content two")
+    indexer.scan()
+    h1 = store.get_document(str(f1))["content_hash"]
+    # Change one file, delete the other
+    f1.write_text("content one changed with much more text " * 20)
+    os.utime(f1, (time.time() + 2, time.time() + 2))
+    f2.unlink()
+    ok = indexer.start_periodic_rescan(interval_s=0.3)
+    assert ok
+    try:
+        deadline = time.time() + 6
+        while time.time() < deadline:
+            doc1 = store.get_document(str(f1))
+            gone = store.get_document(str(f2)) is None
+            if doc1 and doc1["content_hash"] != h1 and gone:
+                break
+            time.sleep(0.1)
+        doc1 = store.get_document(str(f1))
+        assert doc1 is not None and doc1["content_hash"] != h1
+        assert store.get_document(str(f2)) is None   # deletion detected
+        assert store.chunk_count(str(f2)) == 0       # chunks purged too
+    finally:
+        indexer.stop_periodic_rescan()
+
+
+def test_periodic_rescan_no_duplicate_rows(store, indexer, root):
+    """Rescan cycles + explicit scans never duplicate documents."""
+    (root / "dupe.txt").write_text("unique continuous content")
+    ok = indexer.start_periodic_rescan(interval_s=0.3)
+    assert ok
+    try:
+        time.sleep(0.5)
+        indexer.scan()   # explicit scan while the loop runs (serialized)
+        indexer.scan()
+        time.sleep(0.5)
+        docs = [d for d in store.all_documents()
+                if d["path"].endswith("dupe.txt")]
+        assert len(docs) == 1
+    finally:
+        indexer.stop_periodic_rescan()
+
+
+def test_scan_resumable_after_interruption(store, indexer, root):
+    """An interrupted scan leaves committed work in place; the next scan
+    completes the rest WITHOUT re-extracting completed files."""
+    files = [root / f"r{i}.txt" for i in range(6)]
+    for i, f in enumerate(files):
+        f.write_text(f"resumable content {i} " + "filler text " * 60)
+    indexer.start_background_scan()
+    indexer.cancel()  # interrupt as early as possible
+    for _ in range(100):
+        if not indexer.progress.snapshot()["running"]:
+            break
+        time.sleep(0.05)
+    partial = sum(1 for f in files if store.get_document(str(f)))
+    # Rescan completes the remaining work — only the missing files are
+    # extracted (per-file commits make the scan resumable).
+    snap = indexer.scan()
+    assert all(store.get_document(str(f)) is not None for f in files)
+    assert snap["updated"] == 6 - partial
+    # A following scan re-extracts nothing (incremental + resumable)
+    snap2 = indexer.scan()
+    assert snap2["updated"] == 0
+
+
+def test_extraction_timeout_is_graceful(store, indexer, root, monkeypatch):
+    """A hanging extractor is bounded by the timeout — the scan never
+    blocks and the file degrades to status=failed."""
+    from config.settings import settings as cfg
+
+    class SlowExtractor(extractors.BaseExtractor):
+        extensions = (".slow",)
+
+        def extract(self, path):
+            time.sleep(30)  # would hang far beyond the timeout
+            return extractors.Extracted(status=extractors.STATUS_EXTRACTED,
+                                        sections=[])
+
+    monkeypatch.setattr(extractors, "get_extractor",
+                        lambda ext: SlowExtractor() if ext == ".slow"
+                        else None)
+    monkeypatch.setattr(cfg, "KNOWLEDGE_EXTRACTION_TIMEOUT_S", 1.0)
+    f = root / "slow.slow"
+    f.write_text("slow content")
+    t0 = time.time()
+    snap = indexer.scan()
+    elapsed = time.time() - t0
+    monkeypatch.undo()
+    assert elapsed < 5.0   # bounded by the timeout, not the 30s hang
+    doc = store.get_document(str(f))
+    assert doc is not None
+    assert doc["extraction_status"] == "failed"
+    assert snap["failed"] >= 1
+
+
+def test_embedder_singleton_no_repeated_init():
+    """The embedding model is initialized ONCE per process — every
+    indexer/retriever/service shares the same embedder instance."""
+    from knowledge.embedder import LocalEmbedder as LE
+    e1 = LE()
+    e2 = LE()
+    assert e1 is e2
+    p = PathPolicy(allow_roots=[], deny_paths=set(), deny_names=set())
+    idx = KnowledgeIndexer(store=None, policy=p)
+    ret = KnowledgeRetriever(store=None)
+    assert idx._embedder is e1
+    assert ret._embedder is e1
+
+
+def test_service_continuous_indexing_picks_up_new_files(
+        store, root, monkeypatch):
+    """Service startup: initial scan in the background (no blocking) and
+    a periodic rescan that indexes files created afterwards."""
+    from config.settings import settings as cfg
+    from knowledge.service import KnowledgeService
+
+    monkeypatch.setattr(cfg, "KNOWLEDGE_RESCAN_INTERVAL_S", 0.5)
+    root.mkdir(parents=True, exist_ok=True)
+    f1 = root / "initial.txt"
+    f1.write_text("initial content")
+    policy = PathPolicy(allow_roots=[root], deny_paths=set(),
+                        deny_names={".git", ".venv", "node_modules"},
+                        max_file_size=1024 * 1024)
+    svc = KnowledgeService()
+    svc._store = store
+    svc._policy = policy
+    svc._indexer = KnowledgeIndexer(store, policy, embedder=FakeEmbedder())
+    svc._retriever = KnowledgeRetriever(store, embedder=FakeEmbedder())
+    svc._embedder = FakeEmbedder()
+    t0 = time.time()
+    svc.start()
+    assert time.time() - t0 < 1.0  # startup NOT blocked by indexing
+    try:
+        for _ in range(100):
+            if not svc._indexer.progress.snapshot()["running"]:
+                break
+            time.sleep(0.05)
+        assert store.get_document(str(f1)) is not None
+        # New file created AFTER startup → picked up by the periodic rescan
+        f2 = root / "later.txt"
+        f2.write_text("later content indexed continuously")
+        deadline = time.time() + 8
+        while time.time() < deadline:
+            if store.get_document(str(f2)) is not None:
+                break
+            time.sleep(0.1)
+        assert store.get_document(str(f2)) is not None
+    finally:
+        svc.stop()

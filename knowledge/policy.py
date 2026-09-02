@@ -54,8 +54,9 @@ def _expand(raw: str) -> Path:
 # ── Sensitive filename material (checked by NAME ONLY) ────────────
 # Extensions that are secret material, always denied.
 SENSITIVE_EXTENSIONS = frozenset({
-    ".pem", ".key", ".p12", ".pfx", ".pfx", ".jks", ".kdbx", ".keystore",
+    ".pem", ".key", ".p12", ".pfx", ".jks", ".kdbx", ".keystore",
     ".session", ".crt.pem", ".gpg", ".asc", ".sigstore",
+    ".p8", ".jceks", ".bks",
 })
 
 # fnmatch patterns matched against the lowercased basename.
@@ -71,6 +72,16 @@ SENSITIVE_NAME_PATTERNS: Tuple[str, ...] = (
     "serviceaccountkey*", "service_account*", "*firebase*",
     "*authservice*", "*faceauth*", "*.pem", "*.p12", "*.pfx", "*.jks",
     "*private*", "*_private.*", "credentials*", "*creds*",
+    # Auth / session / token material (name-only, never opened).
+    # Precise patterns — "*auth*" would falsely match "author_notes.txt"
+    # and "*session*" would falsely match "session_notes.md".
+    "auth", "auth.*", "auth_*", "auth-*", "*_auth.*", "*-auth.*",
+    "*.auth", "*_auth_*", "*-auth-*", "*_auth", "*-auth",
+    "*.session*", "session.*", "*session.*", "*jwt*", "*bearer*",
+    # Backups/derivatives of secret material (multi-dot names).
+    "*.pem.*", "*.key.*", "*.p12.*", "*.pfx.*", "*.jks.*",
+    "*.kdbx.*", "*.keystore.*", "*.gpg.*", "*.asc.*", "*.session.*",
+    "*.p8.*", "*.jceks.*", "*.bks.*",
 )
 
 # Directory names that are never descended into (inside approved roots).
@@ -79,14 +90,18 @@ SENSITIVE_DIR_NAMES = frozenset({
     ".docker", ".mozilla", ".thunderbird", ".config/google-chrome",
     ".config/chromium", "keyrings", "keychain", "keychains",
     "Cookies", "Login Data", ".env",
+    # Additional sensitive directory components (name-only, no open).
+    "secrets", "credentials", "private", "auth", "session", "sessions",
+    "tokens", "keys", "passwords", "secret", "credential", "token",
+    "password", "keyring", "keystore",
 })
 
 # Generated / non-useful directory names (inside approved roots).
 GENERATED_DIR_NAMES = frozenset({
     ".git", ".venv", "venv", "env", "node_modules", "__pycache__",
     ".pytest_cache", ".mypy_cache", ".ruff_cache", ".cache",
-    "caches", "logs", "log", "dist", "build", "coverage", ".idea",
-    ".vscode-server", ".tox", ".eggs", "htmlcov", ".gradle",
+    "caches", "cache", "logs", "log", "dist", "build", "coverage",
+    ".idea", ".vscode-server", ".tox", ".eggs", "htmlcov", ".gradle",
 })
 
 # Generated / non-useful file extensions (metadata only, never indexed).
@@ -111,6 +126,12 @@ def sensitive_name_reason(filename: str) -> Optional[str]:
     ext = os.path.splitext(lower)[1]
     if ext in SENSITIVE_EXTENSIONS:
         return "sensitive extension"
+    # Multi-dot sensitive extensions (e.g. ".crt.pem") are NOT captured
+    # by os.path.splitext (it splits on the LAST dot only). Check the
+    # full basename so secret material is never missed.
+    for s_ext in SENSITIVE_EXTENSIONS:
+        if s_ext.count(".") > 1 and lower.endswith(s_ext):
+            return "sensitive extension"
     for pat in SENSITIVE_NAME_PATTERNS:
         if fnmatch.fnmatch(lower, pat):
             return "sensitive filename pattern"
@@ -123,6 +144,13 @@ def generated_name_reason(filename: str) -> Optional[str]:
     ext = os.path.splitext(lower)[1]
     if ext in GENERATED_EXTENSIONS:
         return "generated file extension"
+    # Multi-part extensions (e.g. ".duckdb.wal", ".log.tmp") are NOT
+    # captured by os.path.splitext (it splits on the LAST dot only).
+    # Check the full basename against every multi-dot extension so
+    # database WAL/tmp files never reach persistence.
+    for gen_ext in GENERATED_EXTENSIONS:
+        if gen_ext.count(".") > 1 and lower.endswith(gen_ext):
+            return "generated file extension"
     return None
 
 
@@ -197,12 +225,15 @@ class PathPolicy:
         #    matches any rule.
         for part in parts:
             lower = part.lower()
+            # Sensitive directory/file segment names FIRST so sensitive
+            # material is always reported as "sensitive" (and therefore
+            # sanitized in logs) even when it also appears in the
+            # configured deny_names (e.g. "credentials").
+            if lower in {d.lower() for d in SENSITIVE_DIR_NAMES}:
+                return f"sensitive directory ({CAT_SENSITIVE})"
             # Configured deny names (.git, .venv, node_modules, ...)
             if part in self.deny_names:
                 return f"denylisted name ({CAT_DenyName})"
-            # Sensitive directory/file segment names
-            if lower in {d.lower() for d in SENSITIVE_DIR_NAMES}:
-                return f"sensitive directory ({CAT_SENSITIVE})"
             # Generated / non-useful directory segments (project root
             # included: .git, .venv, __pycache__, logs, caches, ...)
             if lower in {d.lower() for d in GENERATED_DIR_NAMES}:
@@ -238,26 +269,33 @@ class PathPolicy:
         """
         try:
             p = Path(os.path.normpath(os.path.abspath(str(path))))
-            # lstat: do NOT follow the final symlink for existence check
+            # 1. NAME-BASED RULES RUN FIRST — before ANY filesystem
+            #    resolution (lexists/realpath/lstat). A denied name is
+            #    rejected without the file ever being touched, so secret
+            #    material is never opened, hashed, extracted, embedded,
+            #    or persisted. Denylist always wins over allowlist.
+            reason = self._name_in_deny(p)
+            if reason:
+                return False, reason, p
+            # 2. lstat: do NOT follow the final symlink for existence
+            #    check (metadata only — never opens file contents).
             if not os.path.lexists(p):
                 return False, "not found", p
             real = Path(os.path.realpath(p))
-            # Symlink escaping all approved roots
+            # 3. Symlink escaping all approved roots
             if real != p and not self._realpath_in_allow(real):
                 return False, "symlink escapes approved roots", real
             if not self._realpath_in_allow(real):
                 return False, "outside approved roots", real
-            # Absolute denylist (system paths, ~/.ssh, ...)
+            # 4. Absolute denylist (system paths, ~/.ssh, ...)
             reason = self._realpath_in_deny(real)
             if reason:
                 return False, reason, real
-            # Name-based rules (sensitive + generated + deny names).
-            # NOTE: checked against BOTH the symlink path and the real
-            # path so a symlink cannot smuggle a secret name.
-            for candidate in (p, real):
-                reason = self._name_in_deny(candidate)
-                if reason:
-                    return False, reason, real
+            # 5. Name-based rules re-checked against the REAL path so a
+            #    symlink cannot smuggle a secret name past step 1.
+            reason = self._name_in_deny(real)
+            if reason:
+                return False, reason, real
             # Size limit (metadata check only)
             try:
                 st = os.lstat(real)
@@ -270,6 +308,17 @@ class PathPolicy:
             return True, "", real
         except Exception as e:  # never crash the scanner on a bad path
             return False, f"policy error: {e}", path
+
+    def name_deny_reason(self, path: Path) -> Optional[str]:
+        """Name-only deny check — NO filesystem access at all.
+
+        Returns the deny reason when the path's NAME is sensitive,
+        generated, or denylisted. Used for sanitized logging and for
+        purging previously-indexed material without ever touching the
+        file (a deleted secret must not be re-opened to be classified).
+        """
+        p = Path(os.path.normpath(os.path.abspath(str(path))))
+        return self._name_in_deny(p)
 
     def is_sensitive(self, path: Path) -> bool:
         """True when a path is denylisted/sensitive (for reporting)."""

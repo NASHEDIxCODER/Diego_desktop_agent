@@ -106,6 +106,10 @@ class Settings(BaseSettings):
     KNOWLEDGE_EMBEDDING_BACKEND: str = "local_sentence_transformers"
     # Periodic snapshot refresh (seconds; 0 disables).
     KNOWLEDGE_SNAPSHOT_REFRESH_S: int = 3600
+    # Periodic incremental rescan (seconds; 0 disables). Keeps the local
+    # index continuous: new/changed/deleted files under the approved
+    # roots are picked up automatically without blocking anything.
+    KNOWLEDGE_RESCAN_INTERVAL_S: float = 300.0
 
     # ── Paths ──────────────────────────────────────────────────────
     BASE_DIR: Path = Path(__file__).resolve().parent.parent

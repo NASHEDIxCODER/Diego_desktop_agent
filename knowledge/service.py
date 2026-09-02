@@ -59,11 +59,20 @@ class KnowledgeService:
         except Exception as e:
             logger.warning("[KNOWLEDGE] store init failed (non-fatal): %s", e)
             return
-        # Background indexing — never blocks startup
+        # Background indexing — never blocks startup. The INITIAL scan
+        # runs in a daemon thread; Diego never waits for it.
         try:
             self._indexer.start_background_scan()
         except Exception as e:
             logger.warning("[KNOWLEDGE] background scan failed to start: %s",
+                           e)
+        # CONTINUOUS INDEXING: periodic incremental rescan picks up
+        # new/changed/deleted files automatically (daemon, serialized,
+        # cancellable — no startup blocking, no user-facing latency).
+        try:
+            self._indexer.start_periodic_rescan()
+        except Exception as e:
+            logger.warning("[KNOWLEDGE] periodic rescan failed to start: %s",
                            e)
         # Periodic snapshot refresh (background, optional)
         if settings.KNOWLEDGE_SNAPSHOT_REFRESH_S > 0:
@@ -75,6 +84,7 @@ class KnowledgeService:
 
     def stop(self) -> None:
         self._stop.set()
+        self._indexer.stop_periodic_rescan()
         self._indexer.cancel()
 
     def ensure_ready(self) -> None:

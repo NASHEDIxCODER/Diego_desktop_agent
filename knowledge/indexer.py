@@ -99,6 +99,10 @@ class KnowledgeIndexer:
         # CLI call) must never index the same file simultaneously (that
         # is what produced duplicate PRIMARY KEY races before).
         self._scan_lock = threading.Lock()
+        # Continuous (periodic) incremental rescan loop state.
+        self._rescan_thread: Optional[threading.Thread] = None
+        self._rescan_stop = threading.Event()
+        self._rescan_interval = 300.0
 
     # ── Public API ────────────────────────────────────────────
 
@@ -113,6 +117,49 @@ class KnowledgeIndexer:
             target=self._safe_scan, name="knowledge-indexer", daemon=True)
         self._thread.start()
         return True
+
+    def start_periodic_rescan(self, interval_s: Optional[float] = None
+                              ) -> bool:
+        """Start the continuous incremental rescan loop (daemon thread).
+
+        Every interval an incremental scan runs: new/changed (size+mtime,
+        SHA-256 confirmed) and deleted files are picked up automatically.
+        The loop is serialized with explicit scans via _scan_lock, is
+        cancellable, and never blocks the caller. Safe to call twice —
+        the second call is a no-op.
+        """
+        if self._rescan_thread is not None and self._rescan_thread.is_alive():
+            return False
+        interval = (interval_s if interval_s is not None
+                    else max(1.0, settings.KNOWLEDGE_RESCAN_INTERVAL_S))
+        if interval <= 0:
+            return False
+        self._rescan_interval = interval
+        self._rescan_stop.clear()
+        self._rescan_thread = threading.Thread(
+            target=self._rescan_loop, name="knowledge-rescan", daemon=True)
+        self._rescan_thread.start()
+        logger.info("[KNOWLEDGE] periodic rescan started (every %.0fs)",
+                    interval)
+        return True
+
+    def stop_periodic_rescan(self) -> None:
+        """Stop the periodic rescan loop (idempotent)."""
+        self._rescan_stop.set()
+
+    def _rescan_loop(self) -> None:
+        """Continuous incremental indexing: scan, then wait. Each cycle
+        is a full incremental pass (hash+mtime change detection, deletion
+        detection, purge of denied material). Cancellation-aware."""
+        while not self._rescan_stop.is_set():
+            try:
+                self._cancel.clear()  # a prior cancel must not leak in
+                self._scan()
+            except Exception as e:
+                logger.error("[KNOWLEDGE] rescan cycle failed (recovered): %s",
+                             e)
+            # Wait for the interval; stop wakes immediately.
+            self._rescan_stop.wait(self._rescan_interval)
 
     def cancel(self) -> None:
         """Request cancellation of the running scan."""
@@ -189,6 +236,13 @@ class KnowledgeIndexer:
                     # mtime-only change: confirm via content hash. If the
                     # content is identical, just refresh mtime — no
                     # re-extraction, no re-embedding.
+                    # DEFENSE IN DEPTH: re-check the policy BEFORE the
+                    # content hash opens the file — a denied path must
+                    # never be opened just to hash it.
+                    allowed, why, _ = self._policy.check(p)
+                    if not allowed:
+                        self._record_skip(p, why)
+                        continue
                     if file_hash(p) == prev["content_hash"]:
                         self._store.upsert_document(
                             path=sp, filename=p.name,
@@ -205,13 +259,47 @@ class KnowledgeIndexer:
                         continue
             to_index.append(p)
 
-        # 4. Handle deleted / moved files
+        # 4. Handle deleted / moved files AND purge previously-indexed
+        #    material that is now denied by policy. A credential/session/
+        #    auth file that reached persistence before the policy existed
+        #    must be removed — it must never remain retrievable.
         removed = 0
         for path_str in list(known.keys()):
-            if path_str not in seen and not os.path.lexists(path_str):
+            # Virtual paths (e.g. "diego://pc-snapshot") are not real
+            # files on disk — never treat them as deleted.
+            if path_str.startswith("diego://"):
+                continue
+            # Purge denied material by NAME ONLY first — the file is
+            # never opened, hashed, or inspected to classify it (a
+            # deleted secret must not be re-opened either).
+            deny_reason = self._policy.name_deny_reason(Path(path_str))
+            if deny_reason:
                 self._store.delete_document(path_str)
                 removed += 1
-                logger.info("[KNOWLEDGE] removed deleted file from index: %s",
+                self._record_skip(Path(path_str), deny_reason)
+                continue
+            if path_str not in seen:
+                # Full policy check (metadata-only: lexists/realpath/
+                # lstat — never opens file contents). Purges files that
+                # are now outside approved roots or inside a deny path,
+                # and deleted files.
+                allowed, why, _ = self._policy.check(Path(path_str))
+                if not allowed and why != "not found":
+                    self._store.delete_document(path_str)
+                    removed += 1
+                    self._record_skip(Path(path_str), why)
+                    continue
+                if not os.path.lexists(path_str):
+                    self._store.delete_document(path_str)
+                    removed += 1
+                    # Log by category only when the path is sensitive —
+                    # never expose the secret filename.
+                    if self._policy.name_deny_reason(Path(path_str)):
+                        logger.info(
+                            "[KNOWLEDGE] removed denied file from index")
+                    else:
+                        logger.info(
+                            "[KNOWLEDGE] removed deleted file from index: %s",
                             path_str)
         self.progress.update(removed=removed)
 
@@ -231,8 +319,8 @@ class KnowledgeIndexer:
             except Exception as e:
                 logger.error("[KNOWLEDGE] scan worker error (recovered): %s", e)
 
+        self.progress.update(running=False, finished_at=time.time())
         snap = self.progress.snapshot()
-        snap["running"] = False
         logger.info("[KNOWLEDGE] scan end: %s", snap)
         return snap
 
@@ -275,6 +363,15 @@ class KnowledgeIndexer:
 
     def _record_skip(self, path: Path, reason: str) -> None:
         sensitive = any(m in reason.lower() for m in self._SENSITIVE_MARKERS)
+        if not sensitive:
+            # A configured deny name can be a secret filename even when
+            # the reason string is generic ("denylisted name"). Sanitize
+            # by NAME ONLY — never open the file to decide.
+            name_reason = self._policy.name_deny_reason(path)
+            if name_reason and any(
+                    m in name_reason.lower()
+                    for m in self._SENSITIVE_MARKERS):
+                sensitive = True
         if sensitive:
             # Category only — never the filename for secret material.
             self._skipped_log.append({"path": "<sensitive>",
@@ -357,14 +454,13 @@ class KnowledgeIndexer:
             })
 
         try:
-            self._store.replace_chunks(str(path), chunk_dicts)
-            self._store.upsert_document(
+            self._store.replace_document(
                 path=str(path), filename=path.name, root=self._root_of(path),
                 size=size, mtime=mtime, content_hash=content_hash,
                 file_type=file_type, mime_type=mime,
                 extraction_status=extracted.status,
                 error=extracted.error[:300],
-                chunk_count=len(chunk_dicts))
+                chunks=chunk_dicts)
         except Exception as e:
             logger.error("[KNOWLEDGE] persist failed for %s: %s", path, e)
             self.progress.update(
@@ -419,10 +515,19 @@ class KnowledgeIndexer:
             pass
 
     def reindex_file(self, path: Path) -> Dict:
-        """Force re-index of a single file (developer command)."""
-        self._index_file(Path(path))
-        return {"path": str(path), "status": "done",
-                "chunks": self._store.chunk_count(str(path))}
+        """Force re-index of a single file (developer command).
+
+        Denied files are purged — never re-persisted.
+        """
+        p = Path(path)
+        allowed, reason, _ = self._policy.check(p)
+        if not allowed:
+            self._record_skip(p, reason)
+            self._store.delete_document(str(p))
+            return {"path": str(p), "status": "denied", "chunks": 0}
+        self._index_file(p)
+        return {"path": str(p), "status": "done",
+                "chunks": self._store.chunk_count(str(p))}
 
 
 # ── Helpers ──────────────────────────────────────────────────────

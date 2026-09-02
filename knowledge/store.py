@@ -183,8 +183,9 @@ class KnowledgeStore:
                 return {"documents": 0, "chunks": 0, "by_status": {},
                         "roots": []}
             docs = conn.execute(
-                "SELECT COUNT(*), COALESCE(SUM(chunk_count), 0) "
-                "FROM knowledge_documents").fetchone()
+                "SELECT COUNT(*) FROM knowledge_documents").fetchone()
+            chunks = conn.execute(
+                "SELECT COUNT(*) FROM knowledge_chunks").fetchone()
             by_status = conn.execute(
                 "SELECT extraction_status, COUNT(*) "
                 "FROM knowledge_documents GROUP BY extraction_status"
@@ -194,7 +195,7 @@ class KnowledgeStore:
             ).fetchall()
         return {
             "documents": docs[0] if docs else 0,
-            "chunks": docs[1] if docs else 0,
+            "chunks": chunks[0] if chunks else 0,
             "by_status": {r[0]: r[1] for r in by_status},
             "roots": [r[0] for r in roots],
         }
@@ -230,6 +231,70 @@ class KnowledgeStore:
                           c.get("locator", ""), c.get("text", ""),
                           c.get("text_hash", ""), emb_list,
                           c.get("embedding_model", "")])
+                conn.execute("COMMIT")
+            except Exception:
+                try:
+                    conn.execute("ROLLBACK")
+                except Exception:
+                    pass
+                raise
+
+    def replace_document(self, path: str, filename: str, root: str,
+                         size: int, mtime: float, content_hash: str,
+                         file_type: str, mime_type: str,
+                         extraction_status: str, error: str,
+                         chunks: List[Dict]) -> None:
+        """Atomically replace a document's metadata and all its chunks.
+
+        Single transaction: either the document row AND all its chunks
+        are updated, or neither is. This is the idempotent write path
+        used by the indexer (new path → insert, changed hash → replace).
+        The PRIMARY KEY on path is preserved — never dropped.
+        """
+        with self._store.connect() as conn:
+            if conn is None:
+                return
+            conn.execute("BEGIN TRANSACTION")
+            try:
+                conn.execute(
+                    "DELETE FROM knowledge_chunks WHERE doc_path = ?",
+                    [path])
+                for c in chunks:
+                    emb = c.get("embedding")
+                    emb_list = None
+                    if emb is not None:
+                        emb_list = [float(x) for x in emb]
+                    conn.execute("""
+                        INSERT INTO knowledge_chunks
+                            (id, doc_path, chunk_index, locator, text,
+                             text_hash, embedding, embedding_model)
+                        SELECT nextval('seq_knowledge_chunks'),
+                               ?, ?, ?, ?, ?, ?, ?
+                    """, [path, c.get("index", 0),
+                          c.get("locator", ""), c.get("text", ""),
+                          c.get("text_hash", ""), emb_list,
+                          c.get("embedding_model", "")])
+                conn.execute("""
+                    INSERT INTO knowledge_documents
+                        (path, filename, root, size, mtime, content_hash,
+                         file_type, mime_type, extraction_status, error,
+                         chunk_count, indexed_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, now())
+                    ON CONFLICT (path) DO UPDATE SET
+                        filename = EXCLUDED.filename,
+                        root = EXCLUDED.root,
+                        size = EXCLUDED.size,
+                        mtime = EXCLUDED.mtime,
+                        content_hash = EXCLUDED.content_hash,
+                        file_type = EXCLUDED.file_type,
+                        mime_type = EXCLUDED.mime_type,
+                        extraction_status = EXCLUDED.extraction_status,
+                        error = EXCLUDED.error,
+                        chunk_count = EXCLUDED.chunk_count,
+                        indexed_at = now()
+                """, [path, filename, root, size, mtime, content_hash,
+                      file_type, mime_type, extraction_status, error,
+                      len(chunks)])
                 conn.execute("COMMIT")
             except Exception:
                 try:
