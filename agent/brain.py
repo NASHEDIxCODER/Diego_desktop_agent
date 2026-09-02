@@ -1393,7 +1393,12 @@ class AgentBrain:
             try:
                 from knowledge.service import knowledge_service
                 k_results = knowledge_service.search(text, top_k=3)
-                if k_results and k_results[0].get("score", 0.0) >= 0.55:
+                # LIVE REQUEST GUARD: when perception context exists the
+                # user asked about the CURRENT screen — a static local
+                # file match must never override the live answer. Local
+                # knowledge is then used as bounded LLM context only.
+                if (k_results and k_results[0].get("score", 0.0) >= 0.55
+                        and not screen_ctx):
                     top = k_results[0]
                     cite = top.get("doc_path", "")
                     loc = top.get("locator", "")

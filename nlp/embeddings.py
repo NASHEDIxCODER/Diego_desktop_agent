@@ -19,6 +19,7 @@ import hashlib
 import logging
 import os
 import pickle
+import threading
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -142,32 +143,41 @@ def _set_offline_mode():
         logger.info("Set HuggingFace to offline mode")
 
 
+# Serializes model loading: multiple threads (knowledge indexer workers,
+# NLP classifier, retriever) can trigger the first preload concurrently.
+# Without this lock, a double load races on torch meta-tensor init and
+# one thread crashes the load for everyone.
+_model_lock = threading.Lock()
+
+
 def _get_model():
-    """Lazy-load the sentence-transformers model (loaded once)."""
+    """Lazy-load the sentence-transformers model (loaded exactly once)."""
     global _model
     if _model is None:
-        try:
-            from sentence_transformers import SentenceTransformer
+        with _model_lock:
+            if _model is None:  # double-checked: another thread may have won
+                try:
+                    from sentence_transformers import SentenceTransformer
 
-            # Set offline mode BEFORE loading if model is already cached locally
-            if _model_is_cached_locally():
-                _set_offline_mode()
-                logger.info("Model found in local cache, enabling offline mode before load")
+                    # Set offline mode BEFORE loading if model is already cached locally
+                    if _model_is_cached_locally():
+                        _set_offline_mode()
+                        logger.info("Model found in local cache, enabling offline mode before load")
 
-            # Support HF_TOKEN for authenticated models
-            hf_token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN")
-            model_kwargs = {}
-            if hf_token:
-                model_kwargs["use_auth_token"] = hf_token
+                    # Support HF_TOKEN for authenticated models
+                    hf_token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN")
+                    model_kwargs = {}
+                    if hf_token:
+                        model_kwargs["use_auth_token"] = hf_token
 
-            _model = SentenceTransformer(settings.MODEL_NAME, **model_kwargs)
-            _set_offline_mode()
-            logger.info("Loaded embedding model: %s (dim=%d)",
-                        settings.MODEL_NAME, settings.EMBEDDING_DIM)
+                    _model = SentenceTransformer(settings.MODEL_NAME, **model_kwargs)
+                    _set_offline_mode()
+                    logger.info("Loaded embedding model: %s (dim=%d)",
+                                settings.MODEL_NAME, settings.EMBEDDING_DIM)
 
-        except Exception as e:
-            logger.error("Failed to load embedding model: %s", e)
-            raise
+                except Exception as e:
+                    logger.error("Failed to load embedding model: %s", e)
+                    raise
     return _model
 
 

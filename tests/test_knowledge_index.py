@@ -1427,3 +1427,136 @@ def test_service_continuous_indexing_picks_up_new_files(
         assert store.get_document(str(f2)) is not None
     finally:
         svc.stop()
+
+
+# ── Production validation regressions (discovered live) ───────────
+
+def test_concurrent_embedding_model_load_single_init(monkeypatch):
+    """Concurrent preload attempts (indexer workers + retriever) must
+    load the model EXACTLY once — a double load races on torch meta
+    tensors and one thread's failure must not poison the process."""
+    import threading
+    import nlp.embeddings as emb_mod
+
+    load_calls = []
+    real_st = emb_mod.SentenceTransformer if hasattr(
+        emb_mod, "SentenceTransformer") else None
+
+    class FakeModel:
+        def __init__(self, name):
+            load_calls.append(name)
+
+    import sentence_transformers as st_mod
+    monkeypatch.setattr(st_mod, "SentenceTransformer",
+                        FakeModel, raising=False)
+    # Reset the singleton so this test exercises a fresh load
+    monkeypatch.setattr(emb_mod, "_model", None)
+
+    errors = []
+
+    def worker():
+        try:
+            emb_mod._get_model()
+        except Exception as e:
+            errors.append(e)
+
+    threads = [threading.Thread(target=worker) for _ in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert errors == []
+    assert len(load_calls) == 1  # exactly ONE model construction
+    assert emb_mod._model is not None
+
+
+def test_brain_strong_local_match_answers_without_llm(monkeypatch):
+    """A strong local match (score >= 0.55) is answered LOCALLY — the
+    LLM is never invoked."""
+    import asyncio
+
+    class _Ctx:
+        compact_summary = ""
+
+    invoked = {"llm": 0}
+
+    async def fake_generate(*a, **kw):
+        invoked["llm"] += 1
+        yield "llm sentence"
+
+    import agent.streaming_llm as sl
+    monkeypatch.setattr(sl.streaming_llm, "generate", fake_generate)
+
+    class _Result:
+        response = ""
+        actions_executed = 0
+        actions_failed = 0
+
+    brain = __import__("agent.brain", fromlist=["agent_brain"]) \
+        .agent_brain
+    monkeypatch.setattr(
+        __import__("knowledge.service", fromlist=["knowledge_service"]),
+        "knowledge_service",
+        type("KS", (), {
+            "search": staticmethod(
+                lambda q, top_k=3: [{
+                    "score": 0.95, "doc_path": "/tmp/doc.txt",
+                    "locator": "page 2", "text": "diego uses duckdb "
+                    "for the knowledge index"}]),
+            "context_for_llm": staticmethod(lambda q, top_k=4: ""),
+        })())
+    resp = asyncio.run(
+        brain._generate_response("what does diego use for its index?",
+                                 None, _Result()))
+    assert invoked["llm"] == 0            # LLM never invoked
+    assert "From your local files" in resp
+    assert "/tmp/doc.txt" in resp         # citation present
+    assert "page 2" in resp               # locator present
+
+
+def test_brain_live_screen_request_not_overridden_by_local_knowledge(
+        monkeypatch):
+    """Local knowledge must NEVER override a live request about the
+    current screen: with perception context present, the strong-match
+    shortcut is suppressed and the LLM gets the screen context."""
+    import asyncio
+
+    class _Ctx:
+        compact_summary = "Terminal: pytest output on screen"
+
+    captured = {}
+
+    async def fake_generate(text, screen_context="", web_context=None,
+                            local_context=None):
+        captured["screen"] = screen_context
+        captured["local"] = local_context
+        yield "on your screen is a pytest run"
+
+    import agent.streaming_llm as sl
+    monkeypatch.setattr(sl.streaming_llm, "generate", fake_generate)
+
+    class _Result:
+        response = ""
+        actions_executed = 0
+        actions_failed = 0
+
+    brain = __import__("agent.brain", fromlist=["agent_brain"]) \
+        .agent_brain
+    monkeypatch.setattr(
+        __import__("knowledge.service", fromlist=["knowledge_service"]),
+        "knowledge_service",
+        type("KS", (), {
+            "search": staticmethod(
+                lambda q, top_k=3: [{
+                    "score": 0.99, "doc_path": "/tmp/screen.txt",
+                    "locator": "", "text": "a file mentioning screen"}]),
+            "context_for_llm": staticmethod(
+                lambda q, top_k=4: "[/tmp/screen.txt]\nscreen content"),
+        })())
+    resp = asyncio.run(
+        brain._generate_response("what is on my screen?",
+                                 _Ctx(), _Result()))
+    assert "From your local files" not in resp   # NOT overridden locally
+    assert captured["screen"] == "Terminal: pytest output on screen"
+    assert captured["local"] is not None        # bounded context still sent
+    assert "/tmp/screen.txt" in captured["local"]
