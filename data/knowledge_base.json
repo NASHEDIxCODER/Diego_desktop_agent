@@ -4777,7 +4777,7 @@
       "source": "/usr/share/doc/donut/CHANGELOG.md",
       "summary": "* The -y switch now uses the value provided as an offset from the base address of the process's executable module. So, for example, if you have injected donut into an infected, legitimate PE file, then once donut completes it will create a thread at the provided offset of that legitimate PE, allowin",
       "created_at": 1788291146.266732,
-      "access_count": 0,
+      "access_count": 2,
       "confidence": 1.0
     },
     {
@@ -5047,7 +5047,7 @@
       "source": "/usr/share/doc/donut/2019-5-9-Introducing-Donut.md",
       "summary": "The result is that execute-assembly *does* allow you to inject your .NET Assembly into a remote process. However, it does not let you inject into a running process or specify how that injection occurs.",
       "created_at": 1788291146.2689369,
-      "access_count": 0,
+      "access_count": 2,
       "confidence": 1.0
     },
     {
@@ -5877,7 +5877,7 @@
       "source": "/usr/share/doc/osert/FAQ.md",
       "summary": "## How do I know what Markdown formatting is supported (there are so many different version)?",
       "created_at": 1788291146.2728038,
-      "access_count": 0,
+      "access_count": 2,
       "confidence": 1.0
     },
     {
@@ -6067,7 +6067,7 @@
       "source": "/usr/share/doc/osert/FAQ.md",
       "summary": "When Offensive Security says you have to highlight the changes you made to the exploit, they mean you have to show / explain what you changed in the code but your are free to choose how to do that.",
       "created_at": 1788291146.2729049,
-      "access_count": 0,
+      "access_count": 2,
       "confidence": 1.0
     },
     {
@@ -40877,7 +40877,7 @@
       "source": "/usr/share/doc/pspy/README.md",
       "summary": "We can use the file system events as a trigger to scan `/proc`, hoping that we can do it fast enough to catch the processes. This is what pspy does.",
       "created_at": 1788291146.36614,
-      "access_count": 0,
+      "access_count": 2,
       "confidence": 1.0
     },
     {
@@ -49187,7 +49187,7 @@
       "source": "/usr/share/doc/davscan/README.md",
       "summary": "If you actually take the time to read my shitty code, you'll notice that I decided to change up some of the core of davscan to use beautiful soup which will require libxml. I decided to do this as a result of running into a REALLY bad dav config that returned almost 500mb of XML data and killed the ",
       "created_at": 1788291146.4108174,
-      "access_count": 0,
+      "access_count": 2,
       "confidence": 1.0
     },
     {
@@ -49453,18 +49453,18 @@
   ],
   "crawled_sources": [
     "https://nodejs.org/docs/latest/api/",
-    "https://developer.mozilla.org/en-US/docs/Web/",
-    "https://kubernetes.io/docs/",
-    "https://archlinux.org/packages/",
-    "https://docs.docker.com/",
-    "https://docs.github.com/en",
     "https://git-scm.com/docs",
+    "https://archlinux.org/packages/",
+    "https://docs.github.com/en",
+    "https://docs.docker.com/",
     "https://docs.python.org/3/",
-    "https://doc.rust-lang.org/book/"
+    "https://doc.rust-lang.org/book/",
+    "https://kubernetes.io/docs/",
+    "https://developer.mozilla.org/en-US/docs/Web/"
   ],
   "action_successes": {},
   "action_failures": {},
   "workflow_patterns": {},
   "learn_count": 500,
-  "updated_at": 1788291148.615392
+  "updated_at": 1788370421.2589061
 }

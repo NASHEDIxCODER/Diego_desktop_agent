@@ -18,6 +18,11 @@ env/
 ENV/
 .python-version
 
+
+
+data/Diego.duckdb.wal
+
+
 # Packaging / build
 build/
 dist/
