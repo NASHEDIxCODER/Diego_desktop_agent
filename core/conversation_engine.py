@@ -236,6 +236,15 @@ class ConversationEngine:
         self._set_state(EngineState.IDLE)
         logger.info("[ENGINE] Diego conversation engine starting")
 
+        # ── Local Knowledge subsystem (2026-09-02) ──
+        # Background indexing + PC snapshot. start() NEVER blocks: it
+        # only schedules daemon threads. Diego keeps booting regardless.
+        try:
+            from knowledge.service import knowledge_service
+            knowledge_service.start()
+        except Exception as e:
+            logger.warning("[ENGINE] Knowledge subsystem not started: %s", e)
+
         if threading.current_thread() is threading.main_thread():
             gui.start()
             self._gui_pump_task = asyncio.create_task(gui.pump())

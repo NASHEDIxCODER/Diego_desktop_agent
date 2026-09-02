@@ -77,6 +77,36 @@ class Settings(BaseSettings):
     EMBEDDING_DIM: int = 384
     MODEL_VERSION: str = "2.0.0"
 
+    # ── Local Knowledge Index (read-only PC document indexing) ─────
+    # Allowlist: user-approved scan roots. Extend via env/.env
+    # (comma-separated). Never defaults to sensitive locations.
+    KNOWLEDGE_SCAN_ROOTS: str = (
+        "~/Documents,~/Desktop,~/Downloads,~/Projects"
+    )
+    # Denylist: sensitive/system locations that are NEVER scanned even
+    # if they appear inside an approved root (e.g. ~/Projects/.venv).
+    KNOWLEDGE_DENYLIST: str = (
+        "~/.ssh,~/.gnupg,~/.config,~/.cache,~/.local/share/keyrings,"
+        "~/.password-store,~/.aws,~/.kube,~/.docker,"
+        ".git,.venv,venv,node_modules,__pycache__,.env,"
+        "credentials,.mozilla,.thunderbird,.config/google-chrome,"
+        ".config/chromium,/proc,/sys,/dev,/run,/var/run"
+    )
+    # File size limit for extraction (bytes). Larger files: metadata only.
+    KNOWLEDGE_MAX_FILE_SIZE: int = 20 * 1024 * 1024
+    # Per-file extraction timeout (seconds).
+    KNOWLEDGE_EXTRACTION_TIMEOUT_S: float = 30.0
+    # Bounded concurrency for background indexing.
+    KNOWLEDGE_MAX_WORKERS: int = 2
+    # Chunking parameters (deterministic).
+    KNOWLEDGE_CHUNK_SIZE: int = 900
+    KNOWLEDGE_CHUNK_OVERLAP: int = 120
+    # Embedding backend override (defaults to the existing local
+    # sentence-transformers model from MODEL_NAME — no cloud API).
+    KNOWLEDGE_EMBEDDING_BACKEND: str = "local_sentence_transformers"
+    # Periodic snapshot refresh (seconds; 0 disables).
+    KNOWLEDGE_SNAPSHOT_REFRESH_S: int = 3600
+
     # ── Paths ──────────────────────────────────────────────────────
     BASE_DIR: Path = Path(__file__).resolve().parent.parent
     DATA_DIR: Path = BASE_DIR / "data"

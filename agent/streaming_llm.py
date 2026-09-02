@@ -406,6 +406,7 @@ class StreamingLLM:
         cancel_event: Optional[asyncio.Event] = None,
         screen_context: Optional[str] = None,
         web_context: Optional[str] = None,
+        local_context: Optional[str] = None,
     ) -> AsyncIterator[str]:
         """
         Stream a response as complete sentences.
@@ -458,6 +459,10 @@ class StreamingLLM:
             prompt_parts.append(
                 f"\nWeb search results (use these REAL facts; do not rely on "
                 f"your own possibly outdated knowledge):\n{web_context}")
+        if local_context:
+            prompt_parts.append(
+                f"\nLocal documents from this PC (use these REAL facts and "
+                f"cite the source file paths when answering):\n{local_context}")
         if context:
             prompt_parts.append(f"\nContext:\n{context}")
         prompt_parts.append(f"\nUser: {user_text}\nDiego:")

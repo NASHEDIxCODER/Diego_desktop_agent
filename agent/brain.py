@@ -1384,9 +1384,41 @@ class AgentBrain:
             # attribute set during process_command (search grounding).
             web_ctx = getattr(self, "_last_web_context", None)
             sentences = []
-            async for sentence in streaming_llm.generate(
-                    text, screen_context=screen_ctx, web_context=web_ctx):
-                sentences.append(sentence)
+            # ── LOCAL KNOWLEDGE FIRST (2026-09-02) ──
+            # Factual questions about the user's PC, documents, projects,
+            # files, configuration, or indexed local knowledge are answered
+            # from the LOCAL index before invoking the LLM. Only the
+            # smallest relevant retrieved context is ever provided.
+            local_ctx = ""
+            try:
+                from knowledge.service import knowledge_service
+                k_results = knowledge_service.search(text, top_k=3)
+                if k_results and k_results[0].get("score", 0.0) >= 0.55:
+                    top = k_results[0]
+                    cite = top.get("doc_path", "")
+                    loc = top.get("locator", "")
+                    snippet = " ".join((top.get("text", "") or "").split())[:400]
+                    loc_part = f" — {loc}" if loc else ""
+                    logger.info("[Brain] Answered from LOCAL_KNOWLEDGE: %s%s",
+                                cite, loc_part)
+                    return (f"From your local files ({cite}{loc_part}): "
+                            f"{snippet}")
+                local_ctx = knowledge_service.context_for_llm(text) or ""
+            except Exception as e:
+                logger.debug("[Brain] local knowledge retrieval skipped: %s", e)
+            try:
+                async for sentence in streaming_llm.generate(
+                        text, screen_context=screen_ctx,
+                        web_context=web_ctx,
+                        local_context=local_ctx or None):
+                    sentences.append(sentence)
+            except TypeError:
+                # Backward compatibility: fakes/stubs without the
+                # local_context parameter keep working.
+                async for sentence in streaming_llm.generate(
+                        text, screen_context=screen_ctx,
+                        web_context=web_ctx):
+                    sentences.append(sentence)
             return " ".join(sentences) if sentences else "I'm not sure how to help with that."
         except Exception as e:
             logger.warning("[Brain] LLM response failed: %s", e)
