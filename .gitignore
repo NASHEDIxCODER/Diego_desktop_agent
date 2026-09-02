@@ -20,7 +20,10 @@ ENV/
 
 
 
-data/Diego.duckdb.wal
+# Runtime DuckDB files
+data/*.duckdb.wal
+data/*.duckdb-shm
+data/*.duckdb.tmp
 
 
 # Packaging / build
