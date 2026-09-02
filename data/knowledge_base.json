@@ -7,7 +7,7 @@
       "source": "/usr/share/doc/gef/api.md",
       "summary": "Yes, that's it! Check out [the complete API](api/gef.md) to see what else GEF offers.",
       "created_at": 1788291146.2529871,
-      "access_count": 0,
+      "access_count": 4,
       "confidence": 1.0
     },
     {
@@ -347,7 +347,7 @@
       "source": "/usr/share/doc/gef/api.md",
       "summary": "This decorator aims to facilitate the argument passing to a command. If added, it will use the\n`argparse` module to parse arguments, and will store them in the `kwargs[\"arguments\"]` of the\ncalling function (therefore the function **must** have `*args, **kwargs` added to its signature).",
       "created_at": 1788291146.253158,
-      "access_count": 0,
+      "access_count": 2,
       "confidence": 1.0
     },
     {
@@ -357,7 +357,7 @@
       "source": "/usr/share/doc/gef/api.md",
       "summary": "Values given for the parameters also allow list of arguments being past. This can be useful in the\ncase where the number of exact option values is known in advance.",
       "created_at": 1788291146.2531655,
-      "access_count": 0,
+      "access_count": 2,
       "confidence": 1.0
     },
     {
@@ -2027,7 +2027,7 @@
       "source": "/usr/share/doc/gef/commands/tmux-setup.md",
       "summary": "On Linux tmux only supports 8 colors with some terminal capabilities (`$TERM` environment variable). This can mess up your color themes when using GEF with tmux.",
       "created_at": 1788291146.258218,
-      "access_count": 0,
+      "access_count": 2,
       "confidence": 1.0
     },
     {
@@ -2587,7 +2587,7 @@
       "source": "/usr/share/doc/obfs4proxy/ChangeLog/obfs4-spec.txt",
       "summary": "This is a protocol obfuscation layer for TCP protocols. Its purpose is to\n   keep a third party from telling what protocol is in use based on message\n   contents.",
       "created_at": 1788291146.261257,
-      "access_count": 0,
+      "access_count": 2,
       "confidence": 1.0
     },
     {
@@ -39217,7 +39217,7 @@
       "source": "/usr/share/doc/gg-images/README.md",
       "summary": "| Operating system | Tested | Repository | Link |\n| --- | --- | --- | --- |\n| Debian Bullseye | Yes |\n| RebornOS | Yes |\n| BlackArch | Yes | Yes | https://blackarch.org/tools.html |",
       "created_at": 1788291146.3567982,
-      "access_count": 0,
+      "access_count": 4,
       "confidence": 1.0
     },
     {
@@ -49452,19 +49452,19 @@
     }
   ],
   "crawled_sources": [
-    "https://kubernetes.io/docs/",
-    "https://docs.github.com/en",
     "https://docs.docker.com/",
+    "https://nodejs.org/docs/latest/api/",
     "https://developer.mozilla.org/en-US/docs/Web/",
     "https://docs.python.org/3/",
     "https://git-scm.com/docs",
-    "https://doc.rust-lang.org/book/",
-    "https://nodejs.org/docs/latest/api/",
-    "https://archlinux.org/packages/"
+    "https://kubernetes.io/docs/",
+    "https://docs.github.com/en",
+    "https://archlinux.org/packages/",
+    "https://doc.rust-lang.org/book/"
   ],
   "action_successes": {},
   "action_failures": {},
   "workflow_patterns": {},
   "learn_count": 500,
-  "updated_at": 1788373279.4414427
+  "updated_at": 1788378347.2721963
 }

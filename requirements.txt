@@ -1,4 +1,4 @@
-# Diego Desktop Assistant runtime dependencies
+# Diego Desktop Agent runtime dependencies
 #
 # Derived from project imports. This is a top-level requirements file, not a
 # frozen dump of every transitive dependency from one local environment.

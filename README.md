@@ -5,10 +5,10 @@
   <img src="https://img.shields.io/badge/status-active-success.svg" alt="Active">
 </p>
 
-<h1 align="center">🦁 Diego Desktop Assistant</h1>
+<h1 align="center">🦁 Diego Desktop Agent</h1>
 
 <p align="center">
-  <em>A fully autonomous, conversational AI companion for Linux — wake-word activated, face-authenticated, full-duplex streaming voice, persistent memory, screen vision, and automatic desktop control.</em>
+  <em>A fully autonomous, conversational AI desktop agent for Linux — wake-word activated, face-authenticated, full-duplex streaming voice, persistent memory, local document knowledge, screen vision, and automatic desktop control.</em>
 </p>
 
 <p align="center">
@@ -19,8 +19,8 @@
 
 ## 📖 Table of Contents
 
-- [What is Diego?](#-what-is-Diego)
-- [Why Diego Exists](#-why-Diego-exists)
+- [What is Diego?](#-what-is-diego)
+- [Why Diego Exists](#-why-diego-exists)
 - [Core Architecture](#-core-architecture)
 - [Streaming Pipeline](#-streaming-pipeline)
 - [Features](#-features)
@@ -38,7 +38,7 @@
 
 ## 🧠 What is Diego?
 
-Diego is a **production-grade conversational desktop agent** for Linux. Unlike traditional voice assistants that merely execute commands, Diego is a **companion** — it maintains context across conversations, remembers facts about you, sees your screen, controls your desktop, and speaks with a natural, varied personality.
+Diego is a **production-grade autonomous desktop agent** for Linux. Unlike traditional voice assistants that merely execute commands, Diego is an **agent** — it maintains context across conversations, remembers facts about you, indexes your local documents, reads your PC's hardware inventory, sees your screen, controls your desktop, and speaks with a natural, varied personality.
 
 Diego runs entirely on your machine. The core pipeline (wake word → speech recognition → intent understanding → action execution → speech synthesis) is **local-first**. Cloud LLMs (Gemini, OpenAI, Ollama) are used only as optional fallbacks for complex reasoning.
 
@@ -48,10 +48,11 @@ Diego runs entirely on your machine. The core pipeline (wake word → speech rec
 |-----------|---------------|
 | **Conversation First** | Diego is a companion, not a command executor. Greetings, thanks, and small talk never hit the planner or LLM. |
 | **Full Duplex** | You can interrupt Diego mid-sentence. Just start talking — TTS aborts instantly and Diego listens. |
-| **Local First** | Everything critical runs offline. Wake word, STT, TTS, intent classification, face auth — all local. |
+| **Local First** | Everything critical runs offline. Wake word, STT, TTS, intent classification, face auth, document knowledge — all local. |
 | **Autonomous** | Diego acts on its own. "Open VS Code", "search GitHub", "play Spotify" — no confirmation prompts. |
 | **Always Alive** | Diego boots once and stays alive forever. It sleeps after a goodbye or ~60s of silence, then waits for the wake word again. |
 | **Memory** | Rolling conversation context + long-term fact storage + automatic summarization. "Remember my project is Diego" … later "what was my project called?" → answered instantly. |
+| **Grounded Answers** | Machine facts come from a live PC snapshot, document questions come from your locally indexed files — never hallucinated by an LLM. |
 
 ---
 
@@ -71,6 +72,7 @@ Diego was built to be:
 - **Stateful** — remembers your projects, preferences, and conversations
 - **Conversational** — natural back-and-forth, not "say a command, get a response"
 - **Desktop-native** — sees your screen, controls your apps, automates your workflow
+- **Knowledgeable** — indexes your documents and knows your machine's hardware
 - **Personal** — varied, alive personality that feels like a companion
 
 ---
@@ -81,44 +83,59 @@ Diego uses a **layered, event-driven architecture** with clear separation of con
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                        DIEGO ARCHITECTURE                         │
+│                        DIEGO ARCHITECTURE                        │
 ├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  ┌──────────┐   ┌──────────┐   ┌──────────┐   ┌──────────┐    │
-│  │  WAKE    │   │  FACE    │   │ STREAMING│   │ STREAMING│    │
-│  │  WORD    │──▶│  AUTH    │──▶│   VAD    │──▶│  WHISPER │    │
-│  │(openWake │   │(OpenCV + │   │ (Silero) │   │ (faster- │    │
-│  │  Word)   │   │ face_rec)│   │          │   │ whisper) │    │
-│  └──────────┘   └──────────┘   └──────────┘   └────┬─────┘    │
-│                                                     │          │
-│  ┌──────────────────────────────────────────────────┘          │
-│  │                                                             │
-│  │   ┌──────────────────────────────────────────────┐          │
-│  │   │              AGENT BRAIN                      │          │
-│  │   │  perceive → decide → plan → dispatch →       │          │
-│  │   │  verify → learn → respond                    │          │
-│  │   └──────────────────────────────────────────────┘          │
-│  │         │           │           │           │               │
-│  │         ▼           ▼           ▼           ▼               │
-│  │   ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐         │
-│  │   │PERCEPTION│ │DECISION │ │ PLANNER │ │DISPATCH │         │
-│  │   │(screen + │ │ ENGINE  │ │ (LLM    │ │ (desktop│         │
-│  │   │ a11y +   │ │(routing)│ │  plans) │ │ actions)│         │
-│  │   │ OCR)     │ │         │ │         │ │         │         │
-│  │   └─────────┘ └─────────┘ └─────────┘ └─────────┘         │
-│  │                                                             │
-│  │   ┌──────────────────────────────────────────────┐          │
-│  │   │           STREAMING TTS (Kokoro → XTTS →     │          │
-│  │   │           Piper → pyttsx3)                    │          │
-│  │   └──────────────────────────────────────────────┘          │
-│  │                                                             │
-│  │   ┌──────────────────────────────────────────────┐          │
-│  │   │  MEMORY LAYER                                │          │
-│  │   │  ConversationMemory + UnifiedMemory +        │          │
-│  │   │  ExperienceDB + ContextComposer              │          │
-│  │   └──────────────────────────────────────────────┘          │
-│                                                                 │
+│                                                                  │
+│  ┌──────────┐   ┌──────────┐   ┌──────────┐   ┌──────────┐     │
+│  │  WAKE    │   │  FACE    │   │ STREAMING│   │ STREAMING│     │
+│  │  WORD    │──▶│  AUTH    │──▶│   VAD    │──▶│  WHISPER │     │
+│  │(openWake │   │(OpenCV + │   │ (Silero) │   │ (faster- │     │
+│  │  Word)   │   │ face_rec)│   │          │   │ whisper) │     │
+│  └──────────┘   └──────────┘   └──────────┘   └────┬─────┘     │
+│                                                     │           │
+│  ┌──────────────────────────────────────────────────┘           │
+│  │                                                              │
+│  │   ┌──────────────────────────────────────────────┐           │
+│  │   │              AGENT BRAIN                      │           │
+│  │   │  perceive → decide → plan → dispatch →       │           │
+│  │   │  verify → learn → respond                    │           │
+│  │   └──────────────────────────────────────────────┘           │
+│  │         │           │           │           │                │
+│  │         ▼           ▼           ▼           ▼                │
+│  │   ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐          │
+│  │   │PERCEPTION│ │DECISION │ │ PLANNER │ │DISPATCH │          │
+│  │   │(screen + │ │ ENGINE  │ │ (LLM    │ │ (desktop│          │
+│  │   │ a11y +   │ │(routing)│ │  plans) │ │ actions)│          │
+│  │   │ OCR)     │ │         │ │         │ │         │          │
+│  │   └─────────┘ └─────────┘ └─────────┘ └─────────┘          │
+│  │                                                              │
+│  │   ┌──────────────────────────────────────────────┐           │
+│  │   │           STREAMING TTS (Kokoro → XTTS →     │           │
+│  │   │           Piper → pyttsx3)                    │           │
+│  │   └──────────────────────────────────────────────┘           │
+│  │                                                              │
+│  │   ┌──────────────────────────────────────────────┐           │
+│  │   │  MEMORY & KNOWLEDGE LAYER                     │           │
+│  │   │  ConversationMemory + UnifiedMemory +         │           │
+│  │   │  ExperienceDB + Local Knowledge Index +       │           │
+│  │   │  PC Snapshot (system facts)                   │           │
+│  │   └──────────────────────────────────────────────┘           │
+│                                                                  │
 └─────────────────────────────────────────────────────────────────┘
+```
+
+### Routing Priority
+
+Every request is routed hierarchically — the LLM is always the **last resort**:
+
+```
+LIVE STATE request (screen, apps, processes)
+    ↓
+SYSTEM INFO / MACHINE FACT request ("what CPU do I have?")
+    ↓
+LOCAL DOCUMENT KNOWLEDGE (indexed files)
+    ↓
+NORMAL LLM/tool path
 ```
 
 ### Key Subsystems
@@ -130,11 +147,13 @@ Diego uses a **layered, event-driven architecture** with clear separation of con
 | **Streaming STT** | `voice/streaming_stt.py` | Silero VAD + faster-whisper with endpointing and interruption detection |
 | **Streaming TTS** | `voice/streaming_tts.py` | Interruptible sentence-streamed TTS with provider chain: Kokoro → XTTS → Piper → pyttsx3 |
 | **Agent Brain** | `agent/brain.py` | Central orchestrator: perceive → decide → plan → dispatch → verify → learn → respond |
-| **Decision Engine** | `core/decision_engine.py` | Routes commands: conversation, cached, direct action, or LLM fallback |
+| **Decision Engine** | `core/decision_engine.py` | Routes commands: live state → system info → conversation → cached → direct action → knowledge → LLM fallback |
 | **Planner** | `agent/planner.py` | LLM-powered task decomposition for complex multi-step goals |
+| **Task Runner** | `agent/task_state.py` | Closed-loop task execution: execute → observe → verify → replan → repeat |
 | **Action Dispatcher** | `agent/action_dispatcher.py` | Maps LLM actions → real desktop operations (open apps, browser control, system commands) |
 | **Action Verifier** | `vision/action_verifier.py` | Vision-based verification: did the action actually work? Compares pre/post screen state. |
-| **Perception** | `services/perception_pipeline.py`, `services/vision_service.py` | Screen capture (MSS) + OCR (Tesseract) + accessibility tree + UI element detection |
+| **Perception** | `services/perception_pipeline.py`, `services/vision_service.py` | Screen capture (MSS) + OCR (PaddleOCR/Tesseract) + accessibility tree + UI element detection |
+| **Local Knowledge** | `knowledge/` | Local-first document indexing (DuckDB + sentence-transformers), hybrid retrieval, PC hardware snapshot, system-info query answering |
 | **Conversation Memory** | `agent/conversation_memory.py` | Rolling context + long-term facts + auto-summarization |
 | **Personality** | `agent/personality.py` | Varied, alive conversational phrasing — never robotic |
 | **Streaming LLM** | `agent/streaming_llm.py` | Token-streaming LLM → sentence segmentation → ACTION extraction |
@@ -159,7 +178,7 @@ Everything streams concurrently — no blocking between stages:
 │                      FULL-DUPLEX STREAMING PIPELINE                  │
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                     │
-│  Wake ("Diego" / "hey Diego" / "hello Diego")                             │
+│  Wake ("Diego" / "hey Diego" / "hello Diego")                       │
 │    │                                                                │
 │    ├──▶ Transcript verification (fuzzy + phonetic)                  │
 │    │                                                                │
@@ -173,7 +192,7 @@ Everything streams concurrently — no blocking between stages:
 │    ├──▶ Streaming Whisper (faster-whisper)          │  FULL DUPLEX  │
 │    │                                                │               │
 │    ├──▶ Streaming LLM (Ollama, token stream)        │  speak while  │
-│    │                                                │  Diego talks    │
+│    │                                                │  Diego talks  │
 │    ├──▶ Sentence-by-sentence generation             │  → instant    │
 │    │                                                │  TTS abort    │
 │    ├──▶ Streaming TTS (Kokoro → XTTS → Piper) ─────┘               │
@@ -227,6 +246,7 @@ Everything streams concurrently — no blocking between stages:
 | Feature | Implementation |
 |---------|---------------|
 | Intent Classification | 3-tier: sentence-transformers embeddings → centroids → RapidFuzz fuzzy matching |
+| Intent Authorization | Category boundary (deterministic / vision / search / conversational / knowledge / multi-step) before any expensive work |
 | Entity Extraction | spaCy NER + regex patterns |
 | Command Normalization | App aliases, verb canonicalization, noise removal, follow-up detection |
 | Conversation Memory | Rolling context window + long-term fact extraction + auto-summarization |
@@ -234,17 +254,30 @@ Everything streams concurrently — no blocking between stages:
 | Context Composer | Smart, ranked memory injection for LLM prompts |
 | Learning Engine | Records action outcomes, builds experience database |
 | Goal Management | Multi-session goal tracking with task DAG decomposition |
+| Closed-Loop Tasks | Execute → observe → verify → replan until the goal is actually satisfied |
 
 ### 🖥️ Desktop Automation
 
 | Feature | Implementation |
 |---------|---------------|
 | App Control | Open, close, focus any desktop application |
-| Browser Control | Navigate, search, click, type, scroll |
+| Browser Control | Navigate, search, click, type, scroll (Playwright/Selenium/PyAutoGUI) |
 | System Control | Volume, brightness, lock screen, shutdown |
-| Screen Vision | MSS capture + Tesseract OCR + accessibility tree + UI element detection |
+| Screen Vision | MSS capture + PaddleOCR/Tesseract OCR + accessibility tree + UI element detection |
 | Action Verification | Pre/post screen comparison + OS-level process verification (pgrep) |
 | Music Control | Unified MPV + Spotify + YouTube + local files |
+
+### 📚 Local Knowledge & System Facts
+
+| Feature | Implementation |
+|---------|---------------|
+| Document Indexing | Local incremental scan of approved roots (Documents, Desktop, Downloads, Projects) |
+| Hybrid Retrieval | sentence-transformers embeddings + keyword search over DuckDB chunks |
+| PC Snapshot | Read-only hardware inventory: OS, CPU, RAM, GPU, disks, network, Python envs, processes |
+| System-Info Queries | "system info", "what CPU do I have?", "how much RAM?" — answered deterministically from the snapshot, never from document retrieval or the LLM |
+| Live vs Persistent | Volatile values (free space, current usage) refresh the snapshot; persistent facts use the cache |
+| Response UX | Never speaks raw JSON, paths, scores, or metadata — only concise, voice-friendly answers |
+| Privacy Policy | Path-based allow/deny rules; sensitive directories are never indexed |
 
 ### 🔌 Extensibility
 
@@ -259,7 +292,7 @@ Everything streams concurrently — no blocking between stages:
 
 | Feature | Implementation |
 |---------|---------------|
-| Structured DB | DuckDB (intents, examples, embeddings, entities, synonyms, history, preferences) |
+| Structured DB | DuckDB (intents, examples, embeddings, entities, synonyms, history, preferences, knowledge chunks, PC snapshots) |
 | Semantic Memory | Embedding-based similarity search |
 | Unified Memory | Single API across DuckDB + semantic + conversation stores |
 | Experience DB | Action outcome recording for learning |
@@ -276,6 +309,7 @@ Every technology choice in Diego is deliberate. Here's what we use and **why**:
 |-----------|---------------|
 | **Python 3.11+** | Async/await maturity, extensive ML/AI ecosystem, rapid prototyping. Python's asyncio enables the full-duplex streaming pipeline without complex threading. |
 | **asyncio** | First-class async I/O for concurrent audio streaming, LLM token processing, and TTS playback — all without blocking. |
+| **psutil** | Cross-platform process/system monitoring. Powers the read-only PC snapshot (CPU, RAM, disks, network, processes) for system-info queries. |
 
 ### Voice Pipeline
 
@@ -292,47 +326,53 @@ Every technology choice in Diego is deliberate. Here's what we use and **why**:
 | **sounddevice** | Full-duplex audio I/O. Enables simultaneous recording and playback — critical for interruption support. |
 | **RapidFuzz** | Fast fuzzy string matching for wake word verification and intent classification fallback. |
 | **Jellyfish** | Phonetic matching (metaphone) for wake word verification. Handles mispronunciations gracefully. |
+| **Sherpa-ONNX / NeMo** | Alternative ASR runtimes for the provider fallback chain. |
 
 ### Intelligence & NLP
 
 | Technology | Why We Use It |
 |-----------|---------------|
-| **sentence-transformers (all-MiniLM-L6-v2)** | 384-dimensional embeddings. Excellent semantic similarity at only 80MB. Runs locally, no API calls needed for intent matching. |
+| **sentence-transformers (all-MiniLM-L6-v2)** | 384-dimensional embeddings. Excellent semantic similarity at only 80MB. Runs locally — used for both intent matching and document knowledge retrieval. |
 | **spaCy (en_core_web_sm)** | Fast, production-ready NER. Extracts person names, locations, organizations from commands. |
 | **Ollama** | Local LLM inference. Runs models like Llama 3, Mistral, Gemma entirely offline. No API keys, no latency, no privacy concerns. |
 | **Google Gemini** | Primary cloud LLM fallback. Strong reasoning, large context window, good tool-use capabilities. |
 | **OpenAI** | Secondary cloud LLM fallback. GPT-4-level reasoning for complex tasks. |
+| **scikit-learn** | Cosine similarity for embeddings, centroid computation for intent classification. |
 
 ### Vision & Desktop
 
 | Technology | Why We Use It |
 |-----------|---------------|
 | **MSS** | Ultra-fast screen capture. C extension, <20ms per frame. Critical for real-time vision verification. |
-| **Tesseract (pytesseract)** | Offline OCR. Extracts text from screen for context-aware responses. |
+| **PaddleOCR** | Primary offline OCR engine for screen text extraction. |
+| **EasyOCR / Tesseract (pytesseract)** | OCR fallbacks in the extraction chain. |
 | **OpenCV** | Industry-standard computer vision. Face detection, image processing, frame differencing. |
 | **face_recognition** | High-accuracy face recognition built on dlib. 99.38% accuracy on LFW benchmark. |
 | **dlib** | C++ ML library. Provides the HOG face detector and face landmark detection used by face_recognition. |
 | **PyAutoGUI** | Cross-platform GUI automation. Keyboard, mouse, screen control. |
-| **Selenium** | Browser automation for YouTube and web-based plugins. |
+| **Playwright** | Modern browser automation (Chromium) for web tasks and plugins. |
+| **Selenium** | Browser automation fallback for YouTube and web-based plugins. |
+| **PyGObject (AT-SPI)** | Linux accessibility tree integration for structured UI understanding. |
 
 ### Storage & Data
 
 | Technology | Why We Use It |
 |-----------|---------------|
-| **DuckDB** | Embedded analytical database. Zero-config, single-file, SQL-compatible. Perfect for local intent/entity/context storage. Faster than SQLite for analytical queries. |
+| **DuckDB** | Embedded analytical database. Zero-config, single-file, SQL-compatible. Stores intents, entities, context, command history, knowledge chunks, embeddings, and PC snapshots. Faster than SQLite for analytical queries. |
 | **NumPy** | Foundation for all numerical computation. Audio processing, embedding operations, signal analysis. |
-| **scikit-learn** | Cosine similarity for embeddings, centroid computation for intent classification. |
+| **SciPy** | Signal processing for the audio pipeline. |
 
 ### Infrastructure
 
 | Technology | Why We Use It |
 |-----------|---------------|
 | **Pydantic Settings** | Type-safe configuration management. Validates all settings at startup, reads from .env. Prevents runtime config errors. |
-| **aiohttp** | Async HTTP client. Used for web search, LLM API calls, and content fetching — all non-blocking. |
+| **aiohttp / httpx** | Async HTTP clients. Used for web search, LLM API calls, and content fetching — all non-blocking. |
 | **trafilatura** | High-quality HTML content extraction. Strips boilerplate from web pages for clean LLM context. |
 | **BeautifulSoup4 + lxml** | HTML parsing for search results and content extraction. |
 | **Firebase Admin** | Optional cloud backup for face encodings. |
 | **Telethon** | Telegram client for the Telegram plugin. |
+| **pytest** | Test framework for the 550+ test suite. |
 
 ---
 
@@ -342,220 +382,248 @@ Every technology choice in Diego is deliberate. Here's what we use and **why**:
 Diego_desktop_agent/
 │
 ├── Diego.py                          # 🚀 Conversational entry point (primary)
-├── main.py                         # 🔧 Utility entry point (train, benchmark, debug)
-├── compat.py                       # 🐍 Python 3.14 compatibility stubs
-├── requirements.txt                # 📦 Dependencies
-├── .gitignore                      # 🙈 Git ignore rules
-├── LICENSE                         # 📄 MIT License
+├── main.py                           # 🔧 Utility entry point (train, benchmark, debug)
+├── compat.py                         # 🐍 Python 3.14 compatibility stubs
+├── requirements.txt                  # 📦 Dependencies
+├── pytest.ini                        # 🧪 Pytest configuration
+├── .gitignore                        # 🙈 Git ignore rules
+├── LICENSE                           # 📄 MIT License
 │
-├── agent/                          # 🧠 Agent intelligence layer
-│   ├── brain.py                    #    Central orchestrator (perceive→decide→plan→dispatch→verify→learn→respond)
-│   ├── planner.py                  #    LLM-powered task decomposition
-│   ├── action_dispatcher.py        #    Maps LLM actions → real desktop operations
-│   ├── streaming_llm.py            #    Token-streaming LLM with sentence segmentation
-│   ├── conversation_memory.py      #    Rolling context + long-term facts + auto-summarization
-│   ├── personality.py              #    Varied, alive conversational phrasing
-│   ├── context_composer.py         #    Smart, ranked memory injection for LLM prompts
-│   ├── memory.py                   #    Memory abstractions
-│   ├── executor.py                 #    Action execution helpers
-│   ├── goal_manager.py             #    Multi-session goal tracking
-│   ├── proactive_agent.py          #    Proactive suggestion engine
-│   ├── project_mode.py             #    Project-aware context switching
-│   ├── task_executor.py            #    Task execution helpers
-│   ├── browser.py                  #    Browser automation
-│   └── code_assistant.py           #    Code-aware assistance
+├── agent/                            # 🧠 Agent intelligence layer
+│   ├── brain.py                      #    Central orchestrator (perceive→decide→plan→dispatch→verify→learn→respond)
+│   ├── planner.py                    #    LLM-powered task decomposition
+│   ├── task_state.py                 #    Closed-loop task runner (execute→observe→verify→replan)
+│   ├── action_dispatcher.py          #    Maps LLM actions → real desktop operations
+│   ├── streaming_llm.py              #    Token-streaming LLM with sentence segmentation
+│   ├── conversation_memory.py        #    Rolling context + long-term facts + auto-summarization
+│   ├── personality.py                #    Varied, alive conversational phrasing
+│   ├── context_composer.py           #    Smart, ranked memory injection for LLM prompts
+│   ├── memory.py                     #    Memory abstractions
+│   ├── executor.py                   #    Action execution helpers
+│   ├── goal_manager.py               #    Multi-session goal tracking
+│   ├── proactive_agent.py            #    Proactive suggestion engine
+│   ├── project_mode.py               #    Project-aware context switching
+│   ├── task_executor.py              #    Task execution helpers
+│   ├── browser.py                    #    Browser automation
+│   └── code_assistant.py             #    Code-aware assistance
 │
-├── voice/                          # 🎙️ Voice pipeline
-│   ├── wake_word.py                #    openWakeWord detection
-│   ├── wake_listener.py            #    Wake word listener loop
-│   ├── wake_model_manager.py       #    Wake model download & management
-│   ├── streaming_stt.py            #    Streaming Silero VAD + faster-whisper
-│   ├── streaming_tts.py            #    Interruptible sentence-streamed TTS
-│   ├── vad.py                      #    Voice activity detection
-│   ├── audio_manager.py            #    Full-duplex audio ring buffer
-│   ├── audio_processing.py         #    Noise floor, auto-gain, pre-filtering
-│   ├── command_listener.py         #    Legacy command listener
-│   ├── asr_provider.py             #    ASR provider abstraction
-│   ├── asr_fallback.py             #    ASR fallback chain
-│   ├── settings.py                 #    Voice-specific settings
-│   ├── providers/                  #    ASR provider implementations
-│   │   ├── whisper_provider.py     #       faster-whisper provider
-│   │   ├── sherpa_base.py          #       Sherpa-ONNX base
-│   │   ├── sherpa_providers.py     #       Sherpa-ONNX providers
-│   │   └── nemotron_provider.py    #       Nemotron provider
-│   └── tts/                        #    TTS engine implementations
-│       ├── base.py                 #       TTS base class
-│       ├── kokoro_engine.py        #       Kokoro-82M engine
-│       └── manager.py              #       TTS provider manager
+├── knowledge/                        # 📚 Local knowledge & system facts
+│   ├── service.py                    #    Facade: policy → indexer → store → embedder → retriever → snapshot
+│   ├── indexer.py                    #    Incremental document scanning (background, non-blocking)
+│   ├── store.py                      #    DuckDB storage for documents, chunks, embeddings, snapshots
+│   ├── embedder.py                   #    Local sentence-transformers embeddings
+│   ├── retriever.py                  #    Hybrid semantic + keyword retrieval with citations
+│   ├── chunker.py                    #    Deterministic text chunking
+│   ├── extractors.py                 #    File content extraction (txt, md, pdf, code, ...)
+│   ├── policy.py                     #    Path allow/deny rules (privacy: sensitive dirs never indexed)
+│   ├── snapshot.py                   #    Read-only PC hardware inventory (OS, CPU, RAM, GPU, disks, network)
+│   ├── system_info.py                #    System-info query detection + deterministic snapshot answers
+│   ├── presentation.py               #    Spoken-response guard: no paths, scores, or metadata leaks
+│   └── cli.py                        #    Developer CLI (index, status, search, snapshot)
 │
-├── core/                           # ⚙️ Core infrastructure
-│   ├── conversation_engine.py      #    Full-duplex orchestrator (wake/conversation lifecycle)
-│   ├── decision_engine.py          #    Command routing (conversation/cached/direct/LLM)
-│   ├── event_bus.py                #    Async pub/sub event system
-│   ├── plugin_base.py              #    BasePlugin abstract class
-│   ├── plugin_manager.py           #    Plugin discovery & lifecycle
-│   ├── command_router.py           #    Command classification & routing
-│   ├── tool_registry.py            #    Dynamic tool discovery
-│   ├── tool_reliability.py         #    Tool reliability tracking
-│   ├── state_machine.py            #    Application state machine
-│   ├── service.py                  #    Service base class
-│   ├── background_agent.py         #    Background task agent
-│   ├── background_workers.py       #    Background worker pool
-│   ├── background_learning.py      #    Idle-time self-improvement
-│   ├── autonomous_reasoning.py     #    Autonomous reasoning engine
-│   ├── cache_manager.py            #    Response caching
-│   ├── metrics.py                  #    Performance metrics
-│   ├── response_guarantee.py       #    Response delivery guarantee
-│   ├── startup_health.py           #    Startup health checks
-│   ├── gui_dispatcher.py           #    GUI event dispatching
-│   ├── benchmark.py                #    Benchmarking utilities
-│   └── manual_session_recorder.py  #    Session recording for debugging
+├── voice/                            # 🎙️ Voice pipeline
+│   ├── wake_word.py                  #    openWakeWord detection
+│   ├── wake_listener.py              #    Wake word listener loop
+│   ├── wake_model_manager.py         #    Wake model download & management
+│   ├── streaming_stt.py              #    Streaming Silero VAD + faster-whisper
+│   ├── streaming_tts.py              #    Interruptible sentence-streamed TTS
+│   ├── vad.py                        #    Voice activity detection
+│   ├── audio_manager.py              #    Full-duplex audio ring buffer
+│   ├── audio_processing.py           #    Noise floor, auto-gain, pre-filtering
+│   ├── command_listener.py           #    Command listener (speech evidence + endpointing)
+│   ├── asr_provider.py               #    ASR provider abstraction
+│   ├── asr_fallback.py               #    ASR fallback chain
+│   ├── settings.py                   #    Voice-specific settings
+│   ├── providers/                    #    ASR provider implementations
+│   │   ├── whisper_provider.py       #       faster-whisper provider
+│   │   ├── sherpa_base.py            #       Sherpa-ONNX base
+│   │   ├── sherpa_providers.py       #       Sherpa-ONNX providers
+│   │   └── nemotron_provider.py      #       Nemotron provider
+│   └── tts/                          #    TTS engine implementations
+│       ├── base.py                   #       TTS base class
+│       ├── kokoro_engine.py          #       Kokoro-82M engine
+│       └── manager.py                #       TTS provider manager
 │
-├── vision/                         # 👁️ Computer vision
-│   ├── action_verifier.py          #    Pre/post screen comparison for action verification
-│   ├── perception.py               #    Visual perception
-│   ├── ocr_pipeline.py             #    OCR pipeline (Tesseract)
-│   ├── layout_analyzer.py          #    UI layout analysis
-│   ├── screen_memory.py            #    Screen state memory
-│   ├── frame_differencer.py        #    Frame difference detection
-│   ├── debug_overlay.py            #    Live debug overlay (green/red/white boxes)
-│   └── forensic_logger.py          #    Forensic vision logging
+├── core/                             # ⚙️ Core infrastructure
+│   ├── conversation_engine.py        #    Full-duplex orchestrator (wake/conversation lifecycle)
+│   ├── decision_engine.py            #    Hierarchical routing (live state → system info → knowledge → LLM)
+│   ├── command_router.py             #    Command classification & routing
+│   ├── event_bus.py                  #    Async pub/sub event system
+│   ├── plugin_base.py                #    BasePlugin abstract class
+│   ├── plugin_manager.py             #    Plugin discovery & lifecycle
+│   ├── tool_registry.py              #    Dynamic tool discovery
+│   ├── tool_reliability.py           #    Tool reliability tracking
+│   ├── state_machine.py              #    Application state machine
+│   ├── service.py                    #    Service base class
+│   ├── background_agent.py           #    Background task agent
+│   ├── background_workers.py         #    Background worker pool
+│   ├── background_learning.py        #    Idle-time self-improvement
+│   ├── autonomous_reasoning.py       #    Autonomous reasoning engine
+│   ├── cache_manager.py              #    Response caching
+│   ├── metrics.py                    #    Performance metrics
+│   ├── response_guarantee.py         #    Response delivery guarantee
+│   ├── startup_health.py             #    Startup health checks
+│   ├── runtime_health.py             #    Runtime health monitoring
+│   ├── gui_dispatcher.py             #    GUI event dispatching
+│   ├── benchmark.py                  #    Benchmarking utilities
+│   └── manual_session_recorder.py    #    Session recording for debugging
 │
-├── services/                       # 🛠️ Application services
-│   ├── perception_pipeline.py      #    Unified perception (screen + a11y + OCR)
-│   ├── vision_service.py           #    Structured UI tree + OCR service
-│   ├── screen_capture.py           #    Ultra-fast MSS screen capture
-│   ├── screen_reasoning.py         #    Screen content reasoning
-│   ├── search_service.py           #    DuckDuckGo/Tavily web search
-│   ├── music_agent.py              #    Unified music control (MPV/Spotify/YouTube)
-│   ├── desktop_observer.py         #    Desktop state observation
-│   ├── desktop_state.py            #    Desktop state tracking
-│   ├── accessibility.py            #    Accessibility tree integration
-│   └── ui_tree.py                  #    UI element tree
+├── vision/                           # 👁️ Computer vision
+│   ├── action_verifier.py            #    Pre/post screen comparison for action verification
+│   ├── perception.py                 #    Visual perception
+│   ├── ocr_pipeline.py               #    OCR pipeline (PaddleOCR/Tesseract)
+│   ├── layout_analyzer.py            #    UI layout analysis
+│   ├── screen_memory.py              #    Screen state memory
+│   ├── frame_differencer.py          #    Frame difference detection
+│   ├── debug_overlay.py              #    Live debug overlay (green/red/white boxes)
+│   └── forensic_logger.py            #    Forensic vision logging
 │
-├── nlp/                            # 📝 Natural Language Processing
-│   ├── parser.py                   #    NLP pipeline orchestrator
-│   ├── classifier.py               #    Intent classification (3-tier)
-│   ├── embeddings.py               #    sentence-transformers embeddings
-│   ├── entities.py                 #    Entity extraction (spaCy + regex)
-│   ├── tokenizer.py                #    Text tokenization
-│   ├── normalizer.py               #    Text normalization + synonyms
-│   ├── command_normalizer.py       #    Command canonicalization
-│   ├── context.py                  #    Conversation context
-│   ├── conversation_state.py       #    Conversation state machine
-│   ├── confidence.py               #    Confidence scoring
-│   ├── inference.py                #    Model inference
-│   ├── trainer.py                  #    Intent training data generator
-│   ├── evaluator.py                #    Benchmarking & evaluation
-│   └── model_metadata.py           #    Model metadata management
+├── services/                         # 🛠️ Application services
+│   ├── perception_pipeline.py        #    Unified perception (screen + a11y + OCR)
+│   ├── vision_service.py             #    Structured UI tree + OCR service
+│   ├── screen_capture.py             #    Ultra-fast MSS screen capture
+│   ├── screen_reasoning.py           #    Screen content reasoning
+│   ├── search_service.py             #    DuckDuckGo/Tavily web search
+│   ├── music_agent.py                #    Unified music control (MPV/Spotify/YouTube)
+│   ├── desktop_observer.py           #    Desktop state observation
+│   ├── desktop_state.py              #    Desktop state tracking
+│   ├── accessibility.py              #    Accessibility tree integration
+│   └── ui_tree.py                    #    UI element tree
 │
-├── memory/                         # 💾 Persistent storage
-│   ├── duckdb_store.py             #    DuckDB structured storage
-│   ├── unified_memory.py           #    Unified memory API
-│   └── semantic_memory.py          #    Embedding-based semantic search
+├── nlp/                              # 📝 Natural Language Processing
+│   ├── parser.py                     #    NLP pipeline orchestrator
+│   ├── classifier.py                 #    Intent classification (3-tier)
+│   ├── embeddings.py                 #    sentence-transformers embeddings
+│   ├── entities.py                   #    Entity extraction (spaCy + regex)
+│   ├── tokenizer.py                  #    Text tokenization
+│   ├── normalizer.py                 #    Text normalization + synonyms
+│   ├── command_normalizer.py         #    Command canonicalization
+│   ├── intent_authorizer.py          #    Final intent authorization boundary
+│   ├── intent_gate.py                #    Tool-execution intent gate
+│   ├── context.py                    #    Conversation context
+│   ├── conversation_state.py         #    Conversation state machine
+│   ├── confidence.py                 #    Confidence scoring
+│   ├── inference.py                  #    Model inference
+│   ├── trainer.py                    #    Intent training data generator
+│   ├── evaluator.py                  #    Benchmarking & evaluation
+│   └── model_metadata.py             #    Model metadata management
 │
-├── learning/                       # 📚 Learning & adaptation
-│   ├── learning_engine.py          #    Action outcome recording
-│   ├── experience_db.py            #    Experience database
-│   ├── habits.py                   #    User habit learning
-│   ├── preferences.py              #    User preference learning
-│   ├── user_profile.py             #    User profile management
-│   ├── skill_memory.py             #    Skill memory
-│   └── desktop_layouts.py          #    Desktop layout learning
+├── memory/                           # 💾 Persistent storage
+│   ├── duckdb_store.py               #    DuckDB structured storage
+│   ├── unified_memory.py             #    Unified memory API
+│   └── semantic_memory.py            #    Embedding-based semantic search
 │
-├── auth/                           # 🔐 Face authentication
-│   ├── robust_auth.py              #    Multi-frame voting, anti-spoofing
-│   ├── live_auth.py                #    Live camera authentication
-│   ├── faceauth.py                 #    Face authentication core
-│   ├── face_detector.py            #    Face detection
-│   ├── face_popup.py               #    Auth popup UI
-│   ├── auth_service.py             #    Auth service
-│   └── encode.py                   #    Face encoding utilities
+├── learning/                         # 📚 Learning & adaptation
+│   ├── learning_engine.py            #    Action outcome recording
+│   ├── experience_db.py              #    Experience database
+│   ├── habits.py                     #    User habit learning
+│   ├── preferences.py                #    User preference learning
+│   ├── user_profile.py               #    User profile management
+│   ├── skill_memory.py               #    Skill memory
+│   └── desktop_layouts.py            #    Desktop layout learning
 │
-├── ai/                             # 🤖 LLM integration
-│   └── llm_client.py               #    Unified multi-provider LLM client
+├── auth/                             # 🔐 Face authentication
+│   ├── robust_auth.py                #    Multi-frame voting, anti-spoofing
+│   ├── live_auth.py                  #    Live camera authentication
+│   ├── faceauth.py                   #    Face authentication core
+│   ├── face_detector.py              #    Face detection
+│   ├── face_popup.py                 #    Auth popup UI
+│   ├── auth_service.py               #    Auth service
+│   └── encode.py                     #    Face encoding utilities
 │
-├── plugins/                        # 🔌 Plugin system
-│   ├── youtube_plugin.py           #    YouTube control
-│   ├── telegram_plugin.py          #    Telegram messaging
-│   └── brightness_plugin.py        #    Screen brightness
+├── ai/                               # 🤖 LLM integration
+│   └── llm_client.py                 #    Unified multi-provider LLM client
 │
-├── config/                         # ⚙️ Configuration
-│   └── settings.py                 #    Pydantic Settings (all config)
+├── plugins/                          # 🔌 Plugin system
+│   ├── youtube_plugin.py             #    YouTube control
+│   ├── telegram_plugin.py            #    Telegram messaging
+│   └── brightness_plugin.py          #    Screen brightness
 │
-├── telemetry/                      # 📊 Logging & telemetry
-│   └── logger.py                   #    Structured JSON logging
+├── config/                           # ⚙️ Configuration
+│   └── settings.py                   #    Pydantic Settings (all config)
 │
-├── runtime/                        # 🖥️ Runtime UI
-│   └── status_popup.py             #    Status popup overlay
+├── telemetry/                        # 📊 Logging & telemetry
+│   └── logger.py                     #    Structured JSON logging
 │
-├── tests/                          # 🧪 Test suite
-│   ├── test_command_listener.py    #    Voice command tests
-│   ├── test_runtime_stability.py   #    Runtime stability tests
-│   ├── test_event_bus.py           #    Event bus tests
-│   ├── test_nlp.py                 #    NLP pipeline tests
-│   ├── test_duckdb_store.py        #    Storage tests
-│   ├── test_e2e.py                 #    End-to-end tests
-│   ├── test_integration_pipeline.py#    Integration tests
-│   ├── test_response_guarantee.py  #    Response guarantee tests
-│   ├── test_trainer.py             #    Trainer tests
-│   ├── test_runtime.py             #    Runtime tests
-│   └── test_production_regression.py # Production regression tests
+├── runtime/                          # 🖥️ Runtime UI
+│   └── status_popup.py               #    Status popup overlay
 │
-├── debug/                          # 🔍 Diagnostic & debugging tools
-│   ├── voice_diagnostic_mode.py    #    Voice pipeline diagnostics
-│   ├── benchmark_asr_alternatives.py#   ASR provider benchmarking
-│   ├── benchmark_worker.py         #    Benchmark worker
-│   ├── benchmark_asr.py            #    ASR benchmarks
-│   ├── benchmark_stt.py            #    STT benchmarks
-│   ├── benchmark_commands.py       #    Command benchmarks
-│   ├── asr_dataset.py              #    ASR dataset tools
-│   ├── record_asr_dataset.py       #    ASR dataset recording
-│   ├── audit_system.py             #    System audit
-│   ├── audit_execution_pipeline.py #    Execution pipeline audit
-│   ├── voice_pipeline_validation.py#    Voice pipeline validation
-│   ├── diag_channels.py            #    Audio channel diagnostics
-│   ├── diag_live_mic.py            #    Live microphone diagnostics
-│   ├── diag_vad_pipeline.py        #    VAD pipeline diagnostics
-│   ├── audio_diagnostics.py        #    Audio system diagnostics
-│   ├── analyze_wake_fail.py        #    Wake failure analysis
-│   ├── retrain_wake_verifier.py    #    Wake verifier retraining
-│   ├── test_all_mics.py            #    Multi-microphone testing
-│   ├── test_audio.py               #    Audio tests
-│   ├── test_camera.py              #    Camera tests
-│   ├── test_detector.py            #    Detector tests
-│   ├── test_faceauth.py            #    Face auth tests
-│   ├── test_gain_pipeline.py       #    Gain pipeline tests
-│   ├── test_gui_dispatcher.py      #    GUI dispatcher tests
-│   ├── test_microphone.py          #    Microphone tests
-│   ├── test_perception_pipeline.py #    Perception pipeline tests
-│   ├── test_state_machine.py       #    State machine tests
-│   ├── test_wake.py                #    Wake word tests
-│   ├── test_wake_offline.py        #    Offline wake tests
+├── tests/                            # 🧪 Test suite (550+ tests)
+│   ├── test_system_info.py           #    System-info query handling tests
+│   ├── test_knowledge_index.py       #    Knowledge indexing tests
+│   ├── test_knowledge_response_ux.py #    Knowledge response UX tests
+│   ├── test_command_listener.py      #    Voice command tests
+│   ├── test_runtime_stability.py     #    Runtime stability tests
+│   ├── test_event_bus.py             #    Event bus tests
+│   ├── test_nlp.py                   #    NLP pipeline tests
+│   ├── test_duckdb_store.py          #    Storage tests
+│   ├── test_e2e.py                   #    End-to-end tests
+│   ├── test_integration_pipeline.py  #    Integration tests
+│   ├── test_task_agent.py            #    Closed-loop task agent tests
+│   ├── test_intent_authorization.py  #    Intent authorization tests
+│   ├── test_response_guarantee.py    #    Response guarantee tests
+│   ├── test_trainer.py               #    Trainer tests
+│   ├── test_runtime.py               #    Runtime tests
+│   └── test_production_regression.py #    Production regression tests
+│
+├── debug/                            # 🔍 Diagnostic & debugging tools
+│   ├── voice_diagnostic_mode.py      #    Voice pipeline diagnostics
+│   ├── benchmark_asr_alternatives.py #    ASR provider benchmarking
+│   ├── benchmark_worker.py           #    Benchmark worker
+│   ├── benchmark_asr.py              #    ASR benchmarks
+│   ├── benchmark_stt.py              #    STT benchmarks
+│   ├── benchmark_commands.py         #    Command benchmarks
+│   ├── asr_dataset.py                #    ASR dataset tools
+│   ├── record_asr_dataset.py         #    ASR dataset recording
+│   ├── audit_system.py               #    System audit
+│   ├── audit_execution_pipeline.py   #    Execution pipeline audit
+│   ├── voice_pipeline_validation.py  #    Voice pipeline validation
+│   ├── diag_channels.py              #    Audio channel diagnostics
+│   ├── diag_live_mic.py              #    Live microphone diagnostics
+│   ├── diag_vad_pipeline.py          #    VAD pipeline diagnostics
+│   ├── audio_diagnostics.py          #    Audio system diagnostics
+│   ├── analyze_wake_fail.py          #    Wake failure analysis
+│   ├── retrain_wake_verifier.py      #    Wake verifier retraining
+│   ├── test_all_mics.py              #    Multi-microphone testing
+│   ├── test_audio.py                 #    Audio tests
+│   ├── test_camera.py                #    Camera tests
+│   ├── test_detector.py              #    Detector tests
+│   ├── test_faceauth.py              #    Face auth tests
+│   ├── test_gain_pipeline.py         #    Gain pipeline tests
+│   ├── test_gui_dispatcher.py        #    GUI dispatcher tests
+│   ├── test_microphone.py            #    Microphone tests
+│   ├── test_perception_pipeline.py   #    Perception pipeline tests
+│   ├── test_state_machine.py         #    State machine tests
+│   ├── test_wake.py                  #    Wake word tests
+│   ├── test_wake_offline.py          #    Offline wake tests
 │   ├── test_wake_pipeline_acceptance.py # Wake pipeline acceptance tests
-│   ├── vision_test.py              #    Vision tests
-│   └── vision/                     #    Vision debug screenshots
+│   ├── vision_test.py                #    Vision tests
+│   └── vision/                       #    Vision debug screenshots
 │
-├── scripts/                        # 📜 Legacy scripts (wrapped by plugins)
-│   ├── brightness.py               #    Brightness control
-│   ├── volume.py                   #    Volume control
-│   ├── youtube.py                  #    YouTube control
-│   ├── telegram_bot.py             #    Telegram bot
-│   ├── mail.py                     #    Email
-│   ├── conversation_llm.py         #    Conversation LLM
-│   ├── fill_datasets.py            #    Dataset generation
-│   ├── generate_datasets.py        #    Dataset generation
-│   └── nlp_controller.py           #    NLP controller
+├── scripts/                          # 📜 Legacy scripts (wrapped by plugins)
+│   ├── brightness.py                 #    Brightness control
+│   ├── volume.py                     #    Volume control
+│   ├── youtube.py                    #    YouTube control
+│   ├── telegram_bot.py               #    Telegram bot
+│   ├── mail.py                       #    Email
+│   ├── conversation_llm.py           #    Conversation LLM
+│   ├── fill_datasets.py              #    Dataset generation
+│   ├── generate_datasets.py          #    Dataset generation
+│   └── nlp_controller.py             #    NLP controller
 │
-├── docs/                           # 📖 Documentation
-│   └── architecture.md             #    Architecture documentation
+├── docs/                             # 📖 Documentation
+│   ├── architecture.md               #    Architecture documentation
+│   ├── Database.md                   #    Database documentation
+│   ├── ASR_BENCHMARK.md              #    ASR benchmark results
+│   ├── ASR_ALTERNATIVES_BENCHMARK.md #    ASR alternatives benchmark
+│   └── TRAINING_PIPELINE.md          #    Training pipeline documentation
 │
-├── datasets/                       # 📊 Training datasets
-│   └── intents/                    #    Per-intent training examples (JSON)
+├── datasets/                         # 📊 Training datasets
+│   └── intents/                      #    Per-intent training examples (JSON)
 │
-└── data/                           # 💿 Local data
-    ├── knowledge_base.json         #    Knowledge base
-    └── mic_selection.json          #    Microphone selection
+└── data/                             # 💿 Local data
+    ├── knowledge_base.json           #    Knowledge base
+    └── mic_selection.json            #    Microphone selection
 ```
 
 ---
@@ -570,7 +638,7 @@ Diego_desktop_agent/
 | **Python** | 3.11 or higher |
 | **Microphone** | Any working microphone |
 | **Webcam** | Required for face authentication (can skip with `--no-auth`) |
-| **Browser** | Chrome/Chromium (for YouTube Selenium automation) |
+| **Browser** | Chrome/Chromium (for browser automation) |
 | **Disk Space** | ~4GB for models (Whisper, Kokoro, sentence-transformers, openWakeWord) |
 
 ### 1. Clone & Setup
@@ -582,6 +650,7 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 python -m spacy download en_core_web_sm
+python -m playwright install chromium
 ```
 
 ### 2. Install System Dependencies
@@ -639,17 +708,30 @@ python main.py --train-wake   # Record wake phrases + train custom verifier
 python main.py --record-session  # Record conversation turns to JSON
 ```
 
+### Knowledge Subsystem CLI
+
+```bash
+python -m knowledge.cli index              # Index local documents
+python -m knowledge.cli status             # Index status (docs, chunks, scan state)
+python -m knowledge.cli search "<query>"   # Search local knowledge
+python -m knowledge.cli snapshot           # Refresh the PC hardware snapshot
+python -m knowledge.cli roots              # Show indexed roots
+python -m knowledge.cli skipped            # Show skipped/sensitive paths
+python -m knowledge.cli rebuild-embeddings # Rebuild all embeddings
+```
+
 ### What Happens When You Run Diego
 
 1. **Boot** — Environment fixes, Python 3.14 compatibility shims, logging setup
 2. **Model Loading** — Wake word model, Whisper, Kokoro TTS, Silero VAD, sentence-transformers
 3. **Audio Init** — Microphone calibration, noise floor measurement, ring buffer setup
-4. **Wait for Wake** — Diego listens silently for "Diego", "hey Diego", or "hello Diego"
-5. **Wake Detected** → Transcript verification (fuzzy + phonetic)
-6. **Face Auth** — Camera opens, verifies your face (skipped with `--no-auth`)
-7. **Conversation** — Full-duplex streaming: you talk, Diego listens, thinks, speaks
-8. **Sleep** — After 60s of silence or "goodbye", Diego goes back to wake listening
-9. **Diego NEVER exits on its own** — it stays alive until you press Ctrl+C
+4. **Knowledge Init** — Non-blocking background document indexing + periodic PC snapshot refresh
+5. **Wait for Wake** — Diego listens silently for "Diego", "hey Diego", or "hello Diego"
+6. **Wake Detected** → Transcript verification (fuzzy + phonetic)
+7. **Face Auth** — Camera opens, verifies your face (skipped with `--no-auth`)
+8. **Conversation** — Full-duplex streaming: you talk, Diego listens, thinks, speaks
+9. **Sleep** — After 60s of silence or "goodbye", Diego goes back to wake listening
+10. **Diego NEVER exits on its own** — it stays alive until you press Ctrl+C
 
 ---
 
@@ -665,6 +747,20 @@ python main.py --record-session  # Record conversation turns to JSON
 | "Open github.com" | Navigate to URL |
 | "Click on Settings" / "Type hello world" | UI interaction |
 | "Scroll down" / "Scroll up" | Page scrolling |
+
+### System Information
+
+| Command | Action |
+|---------|--------|
+| "System info" / "System information" | Full system summary (OS, CPU, RAM, GPU, storage, network) |
+| "PC specs" / "Computer specifications" | Hardware summary |
+| "Tell me about my computer" | Concise machine overview |
+| "What CPU do I have?" | Processor model + core count |
+| "How much RAM do I have?" | Total memory |
+| "What GPU do I have?" | Graphics card |
+| "Which OS am I running?" | Operating system + version |
+| "What disk space do I have?" | Storage capacity (free space for live queries) |
+| "What network interfaces do I have?" | Active network interfaces |
 
 ### Media & System
 
@@ -698,7 +794,7 @@ python main.py --record-session  # Record conversation turns to JSON
 | "Read messages from [contact]" | Read messages |
 | "Reply saying [message]" | Reply to last message |
 
-### Conversation & Memory
+### Conversation, Memory & Knowledge
 
 | Command | Action |
 |---------|--------|
@@ -709,6 +805,8 @@ python main.py --record-session  # Record conversation turns to JSON
 | "What can you do?" | Capability listing |
 | "Remember my project is called Diego" | Store fact in long-term memory |
 | "What was my project called?" | Recall from memory |
+| "What do you know about my Diego project?" | Answer from locally indexed documents |
+| "List the files in my documents folder" | File listing (explicit request) |
 | "Goodbye" / "Stop listening" / "Cancel" | End conversation, return to wake |
 
 ---
@@ -729,16 +827,23 @@ All configuration is centralized in `config/settings.py` using **Pydantic Settin
 | `MODEL_NAME` | sentence-transformers model | `all-MiniLM-L6-v2` |
 | `SIMILARITY_THRESHOLD` | Intent match threshold | `0.75` |
 | `KNOWN_ENCODINGS_PATH` | Face encodings file | `auth/Known_encodings.p` |
+| `KNOWLEDGE_SCAN_ROOTS` | Directories indexed for local knowledge | Documents, Desktop, Downloads, Projects |
+| `KNOWLEDGE_MAX_FILE_SIZE` | Max file size for indexing | — |
+| `KNOWLEDGE_SNAPSHOT_REFRESH_S` | PC snapshot refresh interval | — |
+| `DUCKDB_PATH` | DuckDB database path | — |
 
 ---
 
 ## 🧪 Testing
 
 ```bash
-# Run all tests
+# Run all tests (550+ tests)
 pytest tests/ -v
 
 # Run specific test suites
+pytest tests/test_system_info.py -v          # System-info query handling
+pytest tests/test_knowledge_index.py -v      # Knowledge indexing
+pytest tests/test_knowledge_response_ux.py -v # Knowledge response UX
 pytest tests/test_event_bus.py -v
 pytest tests/test_nlp.py -v
 pytest tests/test_command_listener.py -v
@@ -778,5 +883,5 @@ MIT License — see the [LICENSE](LICENSE) file for details.
 ---
 
 <p align="center">
-  <strong>🦁 Diego Desktop Assistant</strong> — Crafted with ❤️ by <a href="https://github.com/NASHEDIxCODER">NASHEDI_X_CODER</a>
+  <strong>🦁 Diego Desktop Agent</strong> — Crafted with ❤️ by <a href="https://github.com/NASHEDIxCODER">NASHEDI_X_CODER</a>
 </p>
