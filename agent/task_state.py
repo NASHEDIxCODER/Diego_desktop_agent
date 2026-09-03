@@ -68,6 +68,81 @@ class FinalStatus(str, Enum):
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
     NEEDS_INPUT = "NEEDS_INPUT"
+    NEEDS_CONFIRMATION = "NEEDS_CONFIRMATION"  # sensitive action requires user approval
+
+
+# ═══════════════════════════════════════════════════════════════
+# Human safety — sensitive action detection
+# ═══════════════════════════════════════════════════════════════
+
+# Actions that are DESTRUCTIVE, IRREVERSIBLE, or SECURITY-SENSITIVE.
+# These require explicit user confirmation before execution.
+# Read-only investigation is always allowed.
+SENSITIVE_ACTIONS = frozenset({
+    # Destructive / irreversible
+    "shutdown", "restart", "delete_file", "delete_folder", "format_disk",
+    "rm", "rmdir", "shred", "wipe",
+    # Credential / security related
+    "change_password", "reset_password", "delete_credentials",
+    "modify_ssh_keys", "modify_gpg_keys", "clear_keyring",
+    # Financial
+    "make_payment", "transfer_money", "submit_order", "purchase",
+    # Communication (sending on user's behalf)
+    "send_email", "send_message", "post_message", "tweet", "submit_form",
+    # Security-sensitive system changes
+    "modify_firewall", "disable_security", "change_permissions",
+    "modify_sudoers", "install_package", "uninstall_package",
+    "modify_system_config", "change_network_settings",
+})
+
+# Actions that are READ-ONLY and always allowed without confirmation.
+READ_ONLY_ACTIONS = frozenset({
+    "read_screen", "list_windows", "get_time", "get_date", "music_status",
+    "web_search", "screenshot", "desktop_open", "browser_navigate",
+    "browser_search", "open_folder", "volume_up", "volume_down",
+    "volume_set", "volume_mute", "brightness_up", "brightness_down",
+    "brightness_set", "wifi_on", "wifi_off", "bluetooth_on", "bluetooth_off",
+})
+
+
+def is_sensitive_action(action: str, params: Dict[str, Any]) -> Tuple[bool, str]:
+    """
+    Determine if an action requires explicit user confirmation.
+
+    Returns (requires_confirmation, reason).
+
+    HUMAN SAFETY RULE:
+    - Destructive, irreversible, credential-related, financial,
+      communication, or security-sensitive actions require confirmation.
+    - Read-only investigation is always allowed.
+    """
+    action_lower = action.lower()
+
+    # Explicitly sensitive actions
+    if action_lower in SENSITIVE_ACTIONS:
+        return True, f"'{action}' is a sensitive action"
+
+    # Heuristic: actions with destructive keywords in params
+    params_str = str(params).lower()
+    destructive_keywords = (
+        "delete", "remove", "format", "wipe", "shred", "drop",
+        "rm -rf", "sudo rm", "mkfs", "dd if=",
+    )
+    for kw in destructive_keywords:
+        if kw in params_str:
+            return True, f"action contains destructive keyword '{kw}'"
+
+    # Heuristic: commands that might be destructive
+    cmd = str(params.get("command", "")).lower()
+    if cmd:
+        sensitive_cmd = ("rm ", "rmdir", "shred", "dd ", "mkfs", "format",
+                         "del ", "erase", "shutdown", "reboot", "halt",
+                         "poweroff", "systemctl stop", "service stop")
+        for kw in sensitive_cmd:
+            if kw in cmd:
+                return True, f"command contains sensitive keyword '{kw}'"
+
+    return False, ""
 
 
 class FailureKind(str, Enum):
@@ -88,6 +163,7 @@ class StepStatus(str, Enum):
     ALREADY_SATISFIED = "already_satisfied"  # idempotent skip (verified pre-existing)
     FAILED = "failed"
     SKIPPED_INVALID = "skipped_invalid"      # plan validation rejected it
+    NEEDS_CONFIRMATION = "needs_confirmation"  # sensitive action awaiting user approval
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -130,6 +206,30 @@ class TaskLimits:
 # Step + task state records
 # ═══════════════════════════════════════════════════════════════
 
+class EvidenceSource(str, Enum):
+    """Where a piece of evidence came from (priority of truth)."""
+    LIVE_OBSERVATION = "live_observation"      # highest priority
+    DETERMINISTIC_SYSTEM = "deterministic_system"  # OS-level facts
+    ACTION_VERIFICATION = "action_verification"    # verified action result
+    LOCAL_KNOWLEDGE = "local_knowledge"        # indexed knowledge with source
+    DIAGNOSTICS = "diagnostics"                # measured diagnostics
+    TOOL_RESULT = "tool_result"                # tool/action return value
+    LLM_INFERENCE = "llm_inference"            # lowest priority
+    UNKNOWN = "unknown"                        # no evidence available
+
+
+@dataclass
+class Evidence:
+    """A piece of evidence with its source for priority-of-truth tracking."""
+    fact: str
+    source: EvidenceSource
+    timestamp: float = field(default_factory=time.time)
+    confidence: float = 1.0
+
+    def __str__(self) -> str:
+        return f"{self.fact} [{self.source.value}]"
+
+
 @dataclass
 class StepRecord:
     """One step of a plan and its execution evidence."""
@@ -144,6 +244,8 @@ class StepRecord:
     retries: int = 0
     error: str = ""
     latency_ms: float = 0.0
+    evidence_source: EvidenceSource = EvidenceSource.UNKNOWN
+    sensitive_reason: str = ""       # why this action needs confirmation
 
     def signature(self) -> str:
         """Canonical signature for duplicate/loop detection."""
@@ -175,6 +277,11 @@ class TaskExecutionState:
     # Human-readable execution log ([TASK]/[PLAN]/[STEP]/[VERIFY]/[REPLAN])
     log: List[str] = field(default_factory=list)
     blocker: str = ""                # honest explanation of a real blocker
+    # Evidence tracking (priority of truth):
+    evidence_log: List[Evidence] = field(default_factory=list)
+    # Sensitive action awaiting confirmation:
+    pending_confirmation: Optional[StepRecord] = None
+    confirmation_reason: str = ""
 
     @property
     def total_latency_ms(self) -> float:
@@ -184,6 +291,18 @@ class TaskExecutionState:
     def note(self, line: str) -> None:
         self.log.append(line)
         logger.info(line)
+
+    def add_evidence(self, fact: str, source: EvidenceSource,
+                     confidence: float = 1.0) -> None:
+        """Record a piece of evidence with its source."""
+        self.evidence_log.append(Evidence(
+            fact=fact, source=source, confidence=confidence))
+
+    def get_evidence(self, source: Optional[EvidenceSource] = None) -> List[Evidence]:
+        """Get evidence, optionally filtered by source."""
+        if source is None:
+            return list(self.evidence_log)
+        return [e for e in self.evidence_log if e.source == source]
 
     def summary(self) -> str:
         """Honest, status-aware summary for the spoken response."""
@@ -598,6 +717,8 @@ STATEFUL_ACTIONS = frozenset({
 Executor = Callable[[Dict[str, Any]], Awaitable[Tuple[bool, str]]]
 Observer = Callable[[], Awaitable[str]]
 Planner = Callable[[str, Dict[str, Any]], Awaitable[Optional[List[Dict[str, Any]]]]]
+# Confirmation callback: returns True if user approved the sensitive action.
+ConfirmationCallback = Callable[[str, str, Dict[str, Any]], Awaitable[bool]]
 
 
 class TaskRunner:
@@ -627,6 +748,7 @@ class TaskRunner:
         validator: Optional[PlanValidator] = None,
         limits: Optional[TaskLimits] = None,
         transcript: str = "",
+        confirmation_callback: Optional[ConfirmationCallback] = None,
     ):
         self._executor = executor
         self._observer = observer
@@ -637,6 +759,7 @@ class TaskRunner:
         self._transcript = transcript
         self._loops = LoopDetector()
         self._cancelled = False
+        self._confirmation_callback = confirmation_callback
 
     # ── External control ──────────────────────────────────────
 
@@ -774,12 +897,33 @@ class TaskRunner:
                 rec.verified = True
                 rec.verification = f"already satisfied: {already}"
                 rec.result = already
+                rec.evidence_source = EvidenceSource.DETERMINISTIC_SYSTEM
                 state.completed_steps.append(rec)
                 state.verification_results.append(
                     {"step": idx, "action": action, "verified": True,
                      "evidence": already})
+                state.add_evidence(already, EvidenceSource.DETERMINISTIC_SYSTEM)
                 state.note(f"[VERIFY] success (idempotent — {already})")
                 continue
+
+            # ── HUMAN SAFETY: sensitive action confirmation ────
+            sensitive, sensitive_reason = is_sensitive_action(action, params)
+            if sensitive:
+                rec.sensitive_reason = sensitive_reason
+                approved = await self._request_confirmation(
+                    action, sensitive_reason, params, state)
+                if not approved:
+                    rec.status = StepStatus.NEEDS_CONFIRMATION
+                    rec.verification = f"awaiting confirmation: {sensitive_reason}"
+                    state.pending_confirmation = rec
+                    state.confirmation_reason = sensitive_reason
+                    state.final_status = FinalStatus.NEEDS_CONFIRMATION
+                    state.blocker = (f"'{action}' requires your explicit "
+                                     f"confirmation: {sensitive_reason}")
+                    state.note(f"[STEP {idx}] BLOCKED — sensitive action "
+                               f"requires confirmation: {sensitive_reason}")
+                    state.ended_at = time.time()
+                    return state
 
             # ── Execute ONE step ──────────────────────────────
             t0 = time.time()
@@ -954,6 +1098,31 @@ class TaskRunner:
         return state
 
     # ── Internals ─────────────────────────────────────────────
+
+    async def _request_confirmation(self, action: str, reason: str,
+                                    params: Dict[str, Any],
+                                    state: TaskExecutionState) -> bool:
+        """Request user confirmation for a sensitive action.
+
+        Returns True if approved, False if denied or no callback available.
+        HUMAN SAFETY RULE: without an explicit approval mechanism in place,
+        sensitive actions are DENIED by default.
+        """
+        if self._confirmation_callback is None:
+            # No confirmation mechanism — deny by default (safe).
+            logger.info("[TaskRunner] Sensitive action '%s' denied: "
+                        "no confirmation callback available", action)
+            return False
+        try:
+            return await asyncio.wait_for(
+                self._confirmation_callback(action, reason, params),
+                timeout=60.0)
+        except asyncio.TimeoutError:
+            logger.warning("[TaskRunner] Confirmation timeout for '%s'", action)
+            return False
+        except Exception as e:
+            logger.warning("[TaskRunner] Confirmation callback failed: %s", e)
+            return False
 
     def _replans_left(self, state: TaskExecutionState) -> bool:
         return state.replan_count < self._limits.max_replans
