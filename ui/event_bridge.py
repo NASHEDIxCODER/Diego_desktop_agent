@@ -54,6 +54,7 @@ class UIEventType(Enum):
     IDLE = auto()
     STATE_CHANGE = auto()  # Generic state change (for status display)
     AUDIO_LEVEL = auto()   # Microphone audio level for waveform
+    TTS_LEVEL = auto()     # TTS output level for speaking visualization
     WAKE_DETECTED = auto()  # Wake word detected
     AUTH_REQUIRED = auto()  # Face authentication required
     AUTH_COMPLETED = auto()  # Face authentication completed
@@ -106,7 +107,8 @@ class EventBridge(QObject):
     error = Signal(str)               # friendly error message
     idle = Signal()
     state_changed = Signal(str)       # high-level state name
-    audio_level = Signal(float)       # 0.0 - 1.0
+    audio_level = Signal(float)       # 0.0 - 1.0 (microphone input)
+    tts_level = Signal(float)         # 0.0 - 1.0 (TTS output)
     wake_detected = Signal()
     auth_required = Signal()
     auth_completed = Signal(str)      # authenticated user name
@@ -213,6 +215,9 @@ class EventBridge(QObject):
     def emit_audio_level(self, level: float) -> None:
         self.emit(UIEvent(UIEventType.AUDIO_LEVEL, {"level": level}))
 
+    def emit_tts_level(self, level: float) -> None:
+        self.emit(UIEvent(UIEventType.TTS_LEVEL, {"level": level}))
+
     def emit_wake_detected(self) -> None:
         self.emit(UIEvent(UIEventType.WAKE_DETECTED))
 
@@ -301,6 +306,9 @@ class EventBridge(QObject):
 
             elif event.type == UIEventType.AUDIO_LEVEL:
                 self.audio_level.emit(event.data.get("level", 0.0))
+
+            elif event.type == UIEventType.TTS_LEVEL:
+                self.tts_level.emit(event.data.get("level", 0.0))
 
             elif event.type == UIEventType.WAKE_DETECTED:
                 self.wake_detected.emit()

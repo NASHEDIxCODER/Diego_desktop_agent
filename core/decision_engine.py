@@ -1050,6 +1050,30 @@ class DecisionEngine:
 
         from core.command_router import RouteKind
 
+        # ── LOCAL KNOWLEDGE GUARD (2026-09-03, runtime bug-fix pass) ──
+        # "find my Diego project" → normalizer rewrites it to "search my
+        # project" → the router's simple match produced a web_search
+        # action BEFORE the local-knowledge guard in _needs_search()
+        # was ever consulted. Local project/file/code references must
+        # NEVER be web-searched — they must reach the LLM path, which
+        # answers from the local knowledge index (brain.py
+        # "LOCAL KNOWLEDGE FIRST"). Skip direct execution here so the
+        # request falls through to the correct path.
+        if route.kind == RouteKind.SIMPLE_DESKTOP:
+            action_name = ((route.action or {}).get("action") or "")
+            if action_name == "web_search":
+                try:
+                    from nlp.intent_authorizer import _match_local_knowledge
+                    if _match_local_knowledge(text):
+                        logger.info(
+                            "[DECIDE:L3] Blocking web_search direct "
+                            "execution for local-knowledge request: %s",
+                            text[:120],
+                        )
+                        return None
+                except Exception:
+                    pass
+
         if route.kind == RouteKind.SIMPLE_DESKTOP:
             logger.info(
                 "[DECIDE:L3] Direct execution: %s",

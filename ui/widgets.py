@@ -1,379 +1,247 @@
 """
-Diego UI Widgets — Custom widgets for the voice-first assistant HUD.
+Diego UI Widgets — Premium HUD widgets for the voice-first assistant.
 
 Includes:
-    - VoiceStateIndicator: Current Diego voice state display
-    - WaveformWidget: Audio activity visualization
-    - MicIndicator: Microphone/listening state indicator
-    - TranscriptLabel: Live partial/final user transcript display
-    - ResponseLabel: Diego response display
-    - LatencyMetrics: Optional latency diagnostics
+    - ConnectionIndicator: Compact connection/status indicator
+    - TranscriptPanel: "YOU SAID" live transcript region
+    - ResponsePanel: "DIEGO" prominent response display
+    - ActivityPanel: Right-side high-level activity display
+    - MetricsCards: Compact latency metrics (STT/Agent/TTS/Total)
+    - SystemStatus: Footer system health display
+    - MiniWaveform: Small waveform for response/speaking indication
 """
 
 from __future__ import annotations
 
 import math
-import time
-from typing import Optional
+from typing import Optional, List
 
-from PySide6.QtCore import Qt, QTimer, Property, QPointF
-from PySide6.QtGui import QColor, QPainter, QPen, QBrush, QLinearGradient, QFont
+from PySide6.QtCore import Qt, QTimer, QPointF, Property, QEasingCurve
+from PySide6.QtGui import QColor, QPainter, QPen, QBrush, QFont
 from PySide6.QtWidgets import (
     QWidget, QLabel, QVBoxLayout, QHBoxLayout, QFrame, QSizePolicy,
+    QGraphicsOpacityEffect, QGridLayout,
 )
 
-from ui.styles import COLORS
+from ui.styles import COLORS, FONTS
 
 
-class VoiceStateIndicator(QFrame):
+# ═══════════════════════════════════════════════════════════════
+# Connection Indicator
+# ═══════════════════════════════════════════════════════════════
+
+class ConnectionIndicator(QFrame):
     """
-    Displays the current Diego voice state with color coding.
+    Compact connection/status indicator for the header.
 
-    States: Idle, Listening, Speech Detected, Thinking, Planning,
-            Executing, Observing, Verifying, Replanning, Speaking, Error
+    Shows a colored dot + text indicating pipeline status.
     """
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
-        self.setObjectName("stateIndicator")
-        self._state = "Idle"
+        self.setObjectName("connectionIndicator")
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(12, 6, 12, 6)
+        layout.setContentsMargins(10, 4, 10, 4)
         layout.setSpacing(6)
 
         self._dot = QLabel("●")
-        self._dot.setFixedWidth(14)
+        self._dot.setObjectName("connectionDot")
+        self._dot.setFixedWidth(10)
         layout.addWidget(self._dot)
 
-        self._label = QLabel("Idle")
-        layout.addWidget(self._label)
+        self._text = QLabel("Ready")
+        self._text.setObjectName("connectionText")
+        layout.addWidget(self._text)
 
-        self.set_state("Idle")
+        self.set_status("ready")
 
-    def set_state(self, state: str) -> None:
-        """Update the displayed state."""
-        self._state = state
-        self._label.setText(state)
-
-        color = self._state_color(state)
-        self._dot.setStyleSheet(f"color: {color}; font-size: 10px;")
-        self.setStyleSheet(f"""
-            VoiceStateIndicator {{
-                background-color: {color}22;
-                border-radius: 14px;
-                border: 1px solid {color}44;
-            }}
-            QLabel {{
-                color: {color};
-                font-size: 13px;
-                font-weight: 500;
-                background: transparent;
-            }}
-        """)
-
-    def _state_color(self, state: str) -> str:
-        """Get the color for a state."""
-        state_lower = state.lower()
-        if "listen" in state_lower:
-            return COLORS['state_listening']
-        elif "speech" in state_lower:
-            return COLORS['state_listening']
-        elif any(s in state_lower for s in ("think", "plan", "replan")):
-            return COLORS['state_thinking']
-        elif any(s in state_lower for s in ("execut", "observ", "verif")):
-            return COLORS['state_executing']
-        elif "speak" in state_lower or "respond" in state_lower:
-            return COLORS['accent_secondary']
-        elif "error" in state_lower:
-            return COLORS['state_error']
-        elif "auth" in state_lower:
-            return COLORS['accent_warning']
-        return COLORS['state_idle']
-
-    def state(self) -> str:
-        """Get the current state."""
-        return self._state
-
-
-class WaveformWidget(QWidget):
-    """
-    Audio waveform visualization for microphone activity.
-
-    Displays a smooth, animated waveform based on audio level input.
-    Low CPU usage when idle (no animation timer running).
-    """
-
-    def __init__(self, parent: Optional[QWidget] = None):
-        super().__init__(parent)
-        self.setObjectName("waveformWidget")
-        self.setMinimumHeight(40)
-        self.setMaximumHeight(120)
-
-        self._level = 0.0
-        self._target_level = 0.0
-        self._bars = 32
-        self._bar_values = [0.0] * self._bars
-        self._active = False
-
-        # Animation timer (only runs when active)
-        self._timer = QTimer(self)
-        self._timer.setInterval(33)  # ~30 FPS
-        self._timer.timeout.connect(self._animate)
-
-        self.setStyleSheet(f"""
-            WaveformWidget {{
-                background-color: {COLORS['bg_secondary']};
-                border-radius: 12px;
-            }}
-        """)
-
-    def set_level(self, level: float) -> None:
-        """Set the current audio level (0.0 - 1.0)."""
-        self._target_level = max(0.0, min(1.0, level))
-        if level > 0.05 and not self._active:
-            self._active = True
-            self._timer.start()
-        elif level <= 0.02 and self._active:
-            # Decay before stopping
-            self._target_level = 0.0
-
-    def _animate(self) -> None:
-        """Animate the waveform bars."""
-        # Smooth level transition
-        self._level += (self._target_level - self._level) * 0.3
-
-        # Generate bar values with some randomness for natural look
-        import random
-        for i in range(self._bars):
-            # Center bars are taller
-            center_factor = 1.0 - abs(i - self._bars / 2) / (self._bars / 2) * 0.5
-            noise = random.uniform(0.7, 1.0)
-            target = self._level * center_factor * noise
-            self._bar_values[i] += (target - self._bar_values[i]) * 0.4
-
-        self.update()
-
-        # Stop animation when idle
-        if self._level < 0.01 and self._target_level < 0.01:
-            self._active = False
-            self._timer.stop()
-            self._bar_values = [0.0] * self._bars
-            self.update()
-
-    def paintEvent(self, event) -> None:
-        """Draw the waveform bars."""
-        from PySide6.QtCore import QRectF
-
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-
-        w = self.width()
-        h = self.height()
-        bar_width = w / (self._bars * 1.5)
-        spacing = bar_width * 0.5
-
-        # Gradient for bars
-        gradient = QLinearGradient(0, 0, w, 0)
-        gradient.setColorAt(0, QColor(COLORS['accent_primary']))
-        gradient.setColorAt(0.5, QColor(COLORS['accent_secondary']))
-        gradient.setColorAt(1, QColor(COLORS['accent_primary']))
-
-        painter.setBrush(QBrush(gradient))
-        painter.setPen(Qt.NoPen)
-
-        for i, value in enumerate(self._bar_values):
-            bar_height = max(2, value * (h - 8))
-            x = i * (bar_width + spacing) + spacing
-            y = (h - bar_height) / 2
-            rect = QRectF(x, y, bar_width, bar_height)
-            painter.drawRoundedRect(rect, bar_width / 2, bar_width / 2)
-
-        painter.end()
-
-
-class MicIndicator(QWidget):
-    """
-    Microphone indicator showing listening state.
-
-    Displays a pulsing dot when listening, static when idle.
-    """
-
-    def __init__(self, parent: Optional[QWidget] = None):
-        super().__init__(parent)
-        self.setObjectName("micIndicator")
-        self.setFixedSize(24, 24)
-        self._active = False
-        self._pulse_phase = 0.0
-
-        self._timer = QTimer(self)
-        self._timer.setInterval(50)
-        self._timer.timeout.connect(self._pulse)
-
-    def set_active(self, active: bool) -> None:
-        """Set the listening state."""
-        if active != self._active:
-            self._active = active
-            if active:
-                self._timer.start()
-            else:
-                self._timer.stop()
-                self._pulse_phase = 0.0
-            self.update()
-
-    def _pulse(self) -> None:
-        """Animate the pulse."""
-        self._pulse_phase += 0.15
-        self.update()
-
-    def paintEvent(self, event) -> None:
-        """Draw the mic indicator."""
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-
-        center = QPointF(12, 12)
-
-        if self._active:
-            # Pulsing glow
-            pulse = (math.sin(self._pulse_phase) + 1) / 2
-            glow_radius = 8 + pulse * 3
-            glow_color = QColor(COLORS['state_listening'])
-            glow_color.setAlpha(int(80 + pulse * 60))
-            painter.setBrush(QBrush(glow_color))
-            painter.setPen(Qt.NoPen)
-            painter.drawEllipse(center, glow_radius, glow_radius)
-
-            # Core dot
-            painter.setBrush(QBrush(QColor(COLORS['state_listening'])))
-            painter.drawEllipse(center, 5, 5)
+    def set_status(self, status: str) -> None:
+        """Set the connection status: ready, connecting, error."""
+        if status == "ready":
+            color = COLORS["accent_success"]
+            text = "Ready"
+        elif status == "connecting":
+            color = COLORS["accent_warning"]
+            text = "Connecting"
+        elif status == "error":
+            color = COLORS["accent_error"]
+            text = "Error"
         else:
-            # Static muted dot
-            painter.setBrush(QBrush(QColor(COLORS['text_muted'])))
-            painter.setPen(Qt.NoPen)
-            painter.drawEllipse(center, 5, 5)
+            color = COLORS["text_muted"]
+            text = status.capitalize()
 
-        painter.end()
+        self._dot.setStyleSheet(f"color: {color}; font-size: 8px; background: transparent;")
+        self._text.setText(text)
+
+    def status(self) -> str:
+        """Get the current status text."""
+        return self._text.text()
 
 
-class TranscriptLabel(QFrame):
+# ═══════════════════════════════════════════════════════════════
+# Transcript Panel ("YOU SAID")
+# ═══════════════════════════════════════════════════════════════
+
+class TranscriptPanel(QFrame):
     """
-    Displays the user's transcript.
+    Displays the user's transcript in a single "YOU SAID" region.
 
-    Shows "You: ..." with live partial updates while speaking,
-    then the final recognized sentence once.
+    During speech: shows live partial text (italic, secondary color).
+    When final: replaces partial with final text (smooth transition).
+    Never duplicates — one region only.
     """
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
-        self.setObjectName("transcriptLabel")
+        self.setObjectName("transcriptPanel")
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 10, 16, 10)
-        layout.setSpacing(2)
+        layout.setContentsMargins(20, 14, 20, 14)
+        layout.setSpacing(6)
 
-        # Sender label
-        self._sender_label = QLabel("You")
-        self._sender_label.setObjectName("transcriptSender")
-        layout.addWidget(self._sender_label)
+        # Header: "YOU SAID"
+        self._header = QLabel("You said")
+        self._header.setObjectName("transcriptHeader")
+        layout.addWidget(self._header)
 
         # Text label
         self._text_label = QLabel("")
         self._text_label.setObjectName("transcriptText")
         self._text_label.setWordWrap(True)
         self._text_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self._text_label.setMinimumHeight(28)
         layout.addWidget(self._text_label)
 
-        self.setStyleSheet(f"""
-            TranscriptLabel {{
-                background-color: {COLORS['bg_tertiary']};
-                border-radius: 12px;
-                border: 1px solid {COLORS['border']};
-            }}
-            #transcriptSender {{
-                color: {COLORS['accent_primary']};
-                font-size: 11px;
-                font-weight: 600;
-                text-transform: uppercase;
-                letter-spacing: 0.5px;
-            }}
-            #transcriptText {{
-                color: {COLORS['text_primary']};
-                font-size: 15px;
-            }}
-        """)
+        # Opacity effect for smooth transitions
+        self._opacity = QGraphicsOpacityEffect(self)
+        self._opacity.setOpacity(1.0)
+        self._text_label.setGraphicsEffect(self._opacity)
+
+        self._is_partial = False
 
     def set_partial(self, text: str) -> None:
         """Update the live partial transcript."""
+        if not text.strip():
+            return
+
+        self._is_partial = True
+        self._text_label.setObjectName("transcriptTextPartial")
         self._text_label.setText(text)
-        self._text_label.setStyleSheet(f"""
-            #transcriptText {{
-                color: {COLORS['text_secondary']};
-                font-size: 15px;
-                font-style: italic;
-            }}
-        """)
+        self._apply_text_style()
 
     def set_final(self, text: str) -> None:
-        """Set the final recognized sentence (replaces partial)."""
+        """Set the final transcript (replaces partial with smooth transition)."""
+        if not text.strip():
+            return
+
+        # Smooth transition: fade out, update, fade in
+        self._transition_to(text, is_partial=False)
+
+    def _transition_to(self, text: str, is_partial: bool) -> None:
+        """Smoothly transition the text content."""
+        self._is_partial = is_partial
+
+        # Quick fade out
+        self._opacity.setOpacity(0.3)
+
+        # Update content
+        self._text_label.setObjectName(
+            "transcriptTextPartial" if is_partial else "transcriptText"
+        )
         self._text_label.setText(text)
-        self._text_label.setStyleSheet(f"""
-            #transcriptText {{
-                color: {COLORS['text_primary']};
-                font-size: 15px;
-            }}
-        """)
+        self._apply_text_style()
+
+        # Fade back in
+        self._opacity.setOpacity(1.0)
+
+    def _apply_text_style(self) -> None:
+        """Apply the appropriate text style."""
+        if self._is_partial:
+            self._text_label.setStyleSheet(f"""
+                #transcriptTextPartial {{
+                    color: {COLORS['text_secondary']};
+                    font-size: {FONTS['size_xl']};
+                    font-style: italic;
+                    background: transparent;
+                }}
+            """)
+        else:
+            self._text_label.setStyleSheet(f"""
+                #transcriptText {{
+                    color: {COLORS['text_primary']};
+                    font-size: {FONTS['size_xl']};
+                    background: transparent;
+                }}
+            """)
 
     def clear(self) -> None:
         """Clear the transcript."""
         self._text_label.setText("")
+        self._is_partial = False
+
+    def text(self) -> str:
+        """Get the current transcript text."""
+        return self._text_label.text()
+
+    def is_partial(self) -> bool:
+        """Check if the current text is a partial transcript."""
+        return self._is_partial
 
 
-class ResponseLabel(QFrame):
+# ═══════════════════════════════════════════════════════════════
+# Response Panel ("DIEGO")
+# ═══════════════════════════════════════════════════════════════
+
+class ResponsePanel(QFrame):
     """
     Displays Diego's response prominently.
 
-    The response appears before/during TTS and remains visible after.
+    Shows "DIEGO" header, large response text, and a small
+    waveform/speaking indicator. The response appears immediately
+    when available (before/during TTS) and remains visible.
     """
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
-        self.setObjectName("responseLabel")
+        self.setObjectName("responsePanel")
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 10, 16, 10)
-        layout.setSpacing(2)
+        layout.setContentsMargins(20, 14, 20, 14)
+        layout.setSpacing(8)
 
-        # Sender label
-        self._sender_label = QLabel("Diego")
-        self._sender_label.setObjectName("responseSender")
-        layout.addWidget(self._sender_label)
+        # Header row: "DIEGO" + speaking indicator
+        header_row = QHBoxLayout()
+        header_row.setSpacing(10)
 
-        # Text label
+        self._header = QLabel("DIEGO")
+        self._header.setObjectName("responseHeader")
+        header_row.addWidget(self._header)
+
+        header_row.addStretch()
+
+        # Speaking indicator (animated dots + text)
+        self._speaking_widget = SpeakingIndicator()
+        self._speaking_widget.hide()
+        header_row.addWidget(self._speaking_widget)
+
+        layout.addLayout(header_row)
+
+        # Response text
         self._text_label = QLabel("")
         self._text_label.setObjectName("responseText")
         self._text_label.setWordWrap(True)
         self._text_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self._text_label.setMinimumHeight(28)
         layout.addWidget(self._text_label)
 
-        self.setStyleSheet(f"""
-            ResponseLabel {{
-                background-color: {COLORS['bg_secondary']};
-                border-radius: 12px;
-                border: 1px solid {COLORS['accent_primary']}44;
-            }}
-            #responseSender {{
-                color: {COLORS['accent_secondary']};
-                font-size: 11px;
-                font-weight: 600;
-                text-transform: uppercase;
-                letter-spacing: 0.5px;
-            }}
-            #responseText {{
-                color: {COLORS['text_primary']};
-                font-size: 16px;
-                font-weight: 500;
-            }}
-        """)
+        # Mini waveform (shown during speaking)
+        self._mini_waveform = MiniWaveform()
+        self._mini_waveform.setFixedHeight(24)
+        self._mini_waveform.hide()
+        layout.addWidget(self._mini_waveform)
 
     def set_response(self, text: str) -> None:
         """Set Diego's response text."""
@@ -381,8 +249,9 @@ class ResponseLabel(QFrame):
         self._text_label.setStyleSheet(f"""
             #responseText {{
                 color: {COLORS['text_primary']};
-                font-size: 16px;
+                font-size: {FONTS['size_xl']};
                 font-weight: 500;
+                background: transparent;
             }}
         """)
 
@@ -392,55 +261,490 @@ class ResponseLabel(QFrame):
         self._text_label.setStyleSheet(f"""
             #responseText {{
                 color: {COLORS['accent_error']};
-                font-size: 15px;
+                font-size: {FONTS['size_lg']};
+                background: transparent;
             }}
         """)
+
+    def set_speaking(self, speaking: bool) -> None:
+        """Show/hide the speaking indicator."""
+        self._speaking_widget.setVisible(speaking)
+        self._mini_waveform.setVisible(speaking)
+        if speaking:
+            self._speaking_widget.start()
+            self._mini_waveform.start()
+        else:
+            self._speaking_widget.stop()
+            self._mini_waveform.stop()
+
+    def set_output_level(self, level: float) -> None:
+        """Set the TTS output level for the mini waveform."""
+        self._mini_waveform.set_level(level)
 
     def clear(self) -> None:
         """Clear the response."""
         self._text_label.setText("")
 
+    def text(self) -> str:
+        """Get the current response text."""
+        return self._text_label.text()
 
-class LatencyMetrics(QWidget):
+
+class SpeakingIndicator(QWidget):
+    """Animated "Speaking" indicator with pulsing dots."""
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.setObjectName("speakingIndicator")
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+
+        self._label = QLabel("Speaking")
+        self._label.setStyleSheet(f"""
+            color: {COLORS['accent_primary']};
+            font-size: {FONTS['size_sm']};
+            font-weight: 600;
+            background: transparent;
+        """)
+        layout.addWidget(self._label)
+
+        self._dots = QLabel("···")
+        self._dots.setStyleSheet(f"""
+            color: {COLORS['accent_primary']};
+            font-size: {FONTS['size_sm']};
+            background: transparent;
+        """)
+        layout.addWidget(self._dots)
+
+        self._phase = 0
+        self._timer = QTimer(self)
+        self._timer.setInterval(300)
+        self._timer.timeout.connect(self._animate)
+
+    def start(self) -> None:
+        """Start the animation."""
+        if not self._timer.isActive():
+            self._timer.start()
+
+    def stop(self) -> None:
+        """Stop the animation."""
+        self._timer.stop()
+        self._dots.setText("···")
+
+    def _animate(self) -> None:
+        """Animate the dots."""
+        self._phase = (self._phase + 1) % 4
+        dots = "·" * (self._phase + 1)
+        self._dots.setText(dots)
+
+
+class MiniWaveform(QWidget):
+    """Small waveform display for speaking/output indication."""
+
+    NUM_BARS = 24
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.setObjectName("miniWaveform")
+        self._level = 0.0
+        self._target_level = 0.0
+        self._phase = 0.0
+        self._bar_values = [0.0] * self.NUM_BARS
+
+        self._timer = QTimer(self)
+        self._timer.setInterval(33)  # ~30 FPS
+        self._timer.timeout.connect(self._animate)
+
+    def set_level(self, level: float) -> None:
+        """Set the output level (0-1)."""
+        self._target_level = max(0.0, min(1.0, level))
+
+    def start(self) -> None:
+        """Start the animation."""
+        if not self._timer.isActive():
+            self._timer.start()
+
+    def stop(self) -> None:
+        """Stop the animation."""
+        self._timer.stop()
+        self._bar_values = [0.0] * self.NUM_BARS
+        self.update()
+
+    def _animate(self) -> None:
+        """Animate the waveform."""
+        self._level += (self._target_level - self._level) * 0.3
+        self._phase += 0.15
+
+        for i in range(self.NUM_BARS):
+            # Smooth wave pattern
+            wave = math.sin(i * 0.5 + self._phase) * 0.5 + 0.5
+            target = max(0.05, self._level * wave)
+            self._bar_values[i] += (target - self._bar_values[i]) * 0.4
+
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        """Draw the mini waveform."""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        w = self.width()
+        h = self.height()
+        bar_width = w / (self.NUM_BARS * 1.8)
+        spacing = bar_width * 0.8
+
+        color = QColor(COLORS["accent_primary"])
+
+        for i, value in enumerate(self._bar_values):
+            bar_height = max(2, value * (h - 4))
+            x = i * (bar_width + spacing) + spacing
+            y = (h - bar_height) / 2
+
+            bar_color = QColor(color)
+            bar_color.setAlphaF(0.4 + value * 0.6)
+            painter.setBrush(QBrush(bar_color))
+            painter.setPen(Qt.NoPen)
+            painter.drawRoundedRect(
+                x, y, bar_width, bar_height,
+                bar_width / 2, bar_width / 2
+            )
+
+        painter.end()
+
+
+# ═══════════════════════════════════════════════════════════════
+# Activity Panel
+# ═══════════════════════════════════════════════════════════════
+
+class ActivityPanel(QFrame):
     """
-    Optional small diagnostics display for latency metrics.
+    Right-side panel showing human-readable high-level activity.
 
-    Shows STT / agent / TTS / total turn latency in milliseconds.
+    Shows only: Voice detected, Transcribing, Thinking, Planning,
+    Executing, Observing, Verifying, Responding.
+
+    Does NOT show: paths, JSON, scores, stack traces, etc.
+    """
+
+    # Ordered activity steps
+    ACTIVITIES = [
+        "Voice detected",
+        "Transcribing",
+        "Thinking",
+        "Planning",
+        "Executing",
+        "Observing",
+        "Verifying",
+        "Responding",
+    ]
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.setObjectName("activityPanel")
+        self.setFixedWidth(160)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(2)
+
+        # Title
+        self._title = QLabel("Activity")
+        self._title.setObjectName("activityTitle")
+        layout.addWidget(self._title)
+        layout.addSpacing(12)
+
+        # Activity items
+        self._items: List[QLabel] = []
+        for activity in self.ACTIVITIES:
+            item = QLabel(activity)
+            item.setObjectName("activityItem")
+            item.setStyleSheet(f"""
+                color: {COLORS['text_muted']};
+                font-size: {FONTS['size_md']};
+                padding: 4px 0px;
+                background: transparent;
+            """)
+            layout.addWidget(item)
+            self._items.append(item)
+
+        layout.addStretch()
+
+        self._active_index = -1
+
+    def set_active(self, activity: str) -> None:
+        """Set the currently active activity."""
+        # Map state names to activity names
+        activity_lower = activity.lower()
+
+        if "listen" in activity_lower or "voice" in activity_lower:
+            self._set_active_index(0)
+        elif "transcrib" in activity_lower or "partial" in activity_lower:
+            self._set_active_index(1)
+        elif "think" in activity_lower:
+            self._set_active_index(2)
+        elif "plan" in activity_lower and "replan" not in activity_lower:
+            self._set_active_index(3)
+        elif "execut" in activity_lower:
+            self._set_active_index(4)
+        elif "observ" in activity_lower:
+            self._set_active_index(5)
+        elif "verif" in activity_lower:
+            self._set_active_index(6)
+        elif "speak" in activity_lower or "respond" in activity_lower:
+            self._set_active_index(7)
+        elif "replan" in activity_lower:
+            self._set_active_index(3)  # Replanning → Planning
+        else:
+            self._set_active_index(-1)
+
+    def _set_active_index(self, index: int) -> None:
+        """Update item styles based on active index."""
+        self._active_index = index
+
+        for i, item in enumerate(self._items):
+            if i == index:
+                # Active: cyan, bold
+                item.setStyleSheet(f"""
+                    color: {COLORS['accent_primary']};
+                    font-size: {FONTS['size_md']};
+                    font-weight: 600;
+                    padding: 4px 0px;
+                    background: transparent;
+                """)
+            elif i < index:
+                # Done: secondary color
+                item.setStyleSheet(f"""
+                    color: {COLORS['text_secondary']};
+                    font-size: {FONTS['size_md']};
+                    padding: 4px 0px;
+                    background: transparent;
+                """)
+            else:
+                # Pending: muted
+                item.setStyleSheet(f"""
+                    color: {COLORS['text_muted']};
+                    font-size: {FONTS['size_md']};
+                    padding: 4px 0px;
+                    background: transparent;
+                """)
+
+    def reset(self) -> None:
+        """Reset all activities to pending."""
+        self._set_active_index(-1)
+
+    def active_activity(self) -> str:
+        """Get the currently active activity name."""
+        if 0 <= self._active_index < len(self.ACTIVITIES):
+            return self.ACTIVITIES[self._active_index]
+        return ""
+
+
+# ═══════════════════════════════════════════════════════════════
+# Metrics Cards
+# ═══════════════════════════════════════════════════════════════
+
+class MetricsCards(QFrame):
+    """
+    Compact latency metrics cards: STT, Agent, TTS, Total.
+
+    Uses existing latency/event data.
     """
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
-        self.setObjectName("latencyMetrics")
+        self.setObjectName("metricsPanel")
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
+        layout.setContentsMargins(16, 10, 16, 10)
+        layout.setSpacing(12)
 
-        self._stt_label = QLabel("STT: --ms")
-        self._agent_label = QLabel("Agent: --ms")
-        self._tts_label = QLabel("TTS: --ms")
-        self._total_label = QLabel("Total: --ms")
+        self._cards = {}
+        for name in ("STT", "Agent", "TTS", "Total"):
+            card = self._create_card(name)
+            layout.addWidget(card)
 
-        for label in (self._stt_label, self._agent_label,
-                      self._tts_label, self._total_label):
-            label.setObjectName("latencyMetric")
-            label.setStyleSheet(f"""
-                #latencyMetric {{
-                    color: {COLORS['text_muted']};
-                    font-size: 11px;
-                    font-family: 'JetBrains Mono', 'Fira Code', monospace;
-                }}
-            """)
-            layout.addWidget(label)
+        layout.addStretch()
+
+    def _create_card(self, name: str) -> QFrame:
+        """Create a single metric card."""
+        card = QFrame()
+        card.setObjectName("metricCard")
+
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(12, 8, 12, 8)
+        card_layout.setSpacing(2)
+
+        label = QLabel(name)
+        label.setObjectName("metricLabel")
+        label.setStyleSheet(f"""
+            color: {COLORS['text_muted']};
+            font-size: {FONTS['size_xs']};
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            background: transparent;
+        """)
+        card_layout.addWidget(label)
+
+        value = QLabel("--")
+        value.setObjectName("metricValue")
+        value.setStyleSheet(f"""
+            color: {COLORS['text_primary']};
+            font-size: {FONTS['size_lg']};
+            font-weight: 600;
+            font-family: {FONTS['mono']};
+            background: transparent;
+        """)
+        card_layout.addWidget(value)
+
+        self._cards[name] = value
+        return card
 
     def set_stt_latency(self, ms: float) -> None:
-        self._stt_label.setText(f"STT: {ms:.0f}ms")
+        """Set STT latency in milliseconds."""
+        self._cards["STT"].setText(f"{ms:.0f}ms")
 
     def set_agent_latency(self, ms: float) -> None:
-        self._agent_label.setText(f"Agent: {ms:.0f}ms")
+        """Set Agent latency in milliseconds."""
+        self._cards["Agent"].setText(f"{ms:.0f}ms")
 
     def set_tts_latency(self, ms: float) -> None:
-        self._tts_label.setText(f"TTS: {ms:.0f}ms")
+        """Set TTS latency in milliseconds."""
+        self._cards["TTS"].setText(f"{ms:.0f}ms")
 
     def set_total_latency(self, ms: float) -> None:
-        self._total_label.setText(f"Total: {ms:.0f}ms")
+        """Set Total latency in milliseconds."""
+        self._cards["Total"].setText(f"{ms:.0f}ms")
+
+    def reset(self) -> None:
+        """Reset all metrics."""
+        for value in self._cards.values():
+            value.setText("--")
+
+
+# ═══════════════════════════════════════════════════════════════
+# System Status
+# ═══════════════════════════════════════════════════════════════
+
+class SystemStatus(QFrame):
+    """
+    Footer system health display.
+
+    Shows: STT ✓, Agent ✓, TTS ✓, Tools ✓
+    Only shows current health, not logs.
+    """
+
+    COMPONENTS = ("STT", "Agent", "TTS", "Tools")
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.setObjectName("systemStatus")
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(16, 8, 16, 8)
+        layout.setSpacing(16)
+
+        self._items = {}
+        for name in self.COMPONENTS:
+            item = QLabel(f"{name} —")
+            item.setObjectName("statusItem")
+            item.setStyleSheet(f"""
+                color: {COLORS['text_muted']};
+                font-size: {FONTS['size_sm']};
+                background: transparent;
+            """)
+            layout.addWidget(item)
+            self._items[name] = item
+
+        layout.addStretch()
+
+    def set_status(self, component: str, ok: bool) -> None:
+        """Set the health status of a component."""
+        if component not in self._items:
+            return
+
+        item = self._items[component]
+        if ok:
+            item.setText(f"{component} ✓")
+            item.setStyleSheet(f"""
+                color: {COLORS['accent_success']};
+                font-size: {FONTS['size_sm']};
+                background: transparent;
+            """)
+        else:
+            item.setText(f"{component} ✗")
+            item.setStyleSheet(f"""
+                color: {COLORS['accent_error']};
+                font-size: {FONTS['size_sm']};
+                background: transparent;
+            """)
+
+    def set_all_ok(self) -> None:
+        """Set all components to OK status."""
+        for name in self.COMPONENTS:
+            self.set_status(name, True)
+
+    def status(self, component: str) -> bool:
+        """Get the status of a component (True = OK)."""
+        if component in self._items:
+            return "✓" in self._items[component].text()
+        return False
+
+
+# ═══════════════════════════════════════════════════════════════
+# History Panel (collapsed/minimal)
+# ═══════════════════════════════════════════════════════════════
+
+class HistoryPanel(QFrame):
+    """
+    Minimal collapsed history of previous interactions.
+
+    The current turn dominates the UI; history is kept minimal.
+    """
+
+    MAX_ITEMS = 3
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.setObjectName("historyPanel")
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 8, 20, 8)
+        layout.setSpacing(2)
+
+        self._items: List[QLabel] = []
+        self._history: List[str] = []
+
+    def add_turn(self, user_text: str, response_text: str) -> None:
+        """Add a completed turn to history."""
+        # Keep only the summary
+        summary = f"You: {user_text[:40]}{'...' if len(user_text) > 40 else ''}"
+        self._history.insert(0, summary)
+        self._history = self._history[:self.MAX_ITEMS]
+        self._refresh()
+
+    def _refresh(self) -> None:
+        """Refresh the displayed history."""
+        # Clear existing
+        for item in self._items:
+            item.deleteLater()
+        self._items.clear()
+
+        layout = self.layout()
+        for text in self._history:
+            item = QLabel(text)
+            item.setObjectName("historyItem")
+            item.setStyleSheet(f"""
+                color: {COLORS['text_muted']};
+                font-size: {FONTS['size_sm']};
+                padding: 2px 0px;
+                background: transparent;
+            """)
+            layout.addWidget(item)
+            self._items.append(item)
+
+    def clear(self) -> None:
+        """Clear all history."""
+        self._history.clear()
+        self._refresh()

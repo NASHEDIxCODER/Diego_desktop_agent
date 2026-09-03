@@ -1,48 +1,70 @@
 """
-Diego UI Styles — Dark modern futuristic assistant theme.
+Diego UI Styles — Premium dark glass/HUD assistant theme.
 
-Provides QSS styles for a polished, accessible dark UI.
-Colors are chosen for good contrast and low eye strain.
+Design language:
+    - Deep dark background with subtle glass panels
+    - Neon cyan/blue primary accent, restrained purple secondary
+    - Thin borders, soft shadows, rounded panels
+    - Strong typographic hierarchy
+    - Futuristic but professional
 """
 
-# Color palette
+# ── Color palette ──────────────────────────────────────────────
 COLORS = {
-    # Backgrounds
-    "bg_primary": "#0f1117",      # Main window background (darker)
-    "bg_secondary": "#1a1d27",    # Cards, panels
-    "bg_tertiary": "#242836",     # Hover states
-    "bg_input": "#1a1d27",        # Input fields
+    # Backgrounds (deep dark)
+    "bg_primary": "#08090d",       # Main window background
+    "bg_secondary": "#0d0f14",     # Panel backgrounds
+    "bg_tertiary": "#12151c",      # Card backgrounds
+    "bg_glass": "#0f1219",         # Glass panel base
+    "bg_elevated": "#161a23",      # Elevated surfaces
 
     # Text
-    "text_primary": "#c0caf5",    # Main text
-    "text_secondary": "#a9b1d6",  # Secondary text
-    "text_muted": "#565f89",      # Muted/disabled text
-    "text_inverse": "#0f1117",    # Text on accent backgrounds
+    "text_primary": "#e2e8f0",     # Main text (high contrast)
+    "text_secondary": "#94a3b8",   # Secondary text
+    "text_muted": "#475569",       # Muted/disabled text
+    "text_inverse": "#08090d",     # Text on accent backgrounds
 
     # Accents
-    "accent_primary": "#7aa2f7",   # Primary accent (blue)
-    "accent_secondary": "#bb9af7", # Secondary accent (purple)
-    "accent_success": "#9ece6a",   # Success (green)
-    "accent_warning": "#e0af68",   # Warning (yellow)
-    "accent_error": "#f7768e",     # Error (red)
+    "accent_primary": "#22d3ee",   # Neon cyan (primary)
+    "accent_blue": "#3b82f6",      # Blue
+    "accent_secondary": "#a78bfa", # Soft purple (secondary)
+    "accent_success": "#34d399",   # Success (emerald)
+    "accent_warning": "#fbbf24",   # Warning (amber)
+    "accent_error": "#f87171",     # Error (red)
 
-    # User/Diego message colors
-    "user_bubble": "#3d59a1",      # User message background
-    "diego_bubble": "#242836",     # Diego message background
+    # Borders
+    "border": "#1e293b",           # Default border
+    "border_subtle": "#162032",    # Subtle border
+    "border_accent": "#22d3ee",    # Accent border
 
-    # Borders and dividers
-    "border": "#3b4261",
-    "border_focus": "#7aa2f7",
+    # State colors
+    "state_idle": "#475569",
+    "state_listening": "#22d3ee",
+    "state_speech": "#34d399",
+    "state_thinking": "#a78bfa",
+    "state_executing": "#3b82f6",
+    "state_speaking": "#22d3ee",
+    "state_error": "#f87171",
 
-    # State indicator colors
-    "state_listening": "#9ece6a",
-    "state_thinking": "#e0af68",
-    "state_executing": "#7aa2f7",
-    "state_error": "#f7768e",
-    "state_idle": "#565f89",
+    # Glow effects
+    "glow_cyan": "#22d3ee",
+    "glow_purple": "#a78bfa",
 }
 
-# Main window stylesheet
+# ── Typography ─────────────────────────────────────────────────
+FONTS = {
+    "family": "'Inter', 'Segoe UI', 'Ubuntu', 'Helvetica Neue', sans-serif",
+    "mono": "'JetBrains Mono', 'Fira Code', 'SF Mono', monospace",
+    "size_xs": "10px",
+    "size_sm": "11px",
+    "size_md": "13px",
+    "size_lg": "15px",
+    "size_xl": "18px",
+    "size_2xl": "22px",
+    "size_3xl": "28px",
+}
+
+# ── Main window stylesheet ─────────────────────────────────────
 MAIN_WINDOW_QSS = f"""
 QMainWindow {{
     background-color: {COLORS['bg_primary']};
@@ -51,131 +73,41 @@ QMainWindow {{
 QWidget {{
     background-color: transparent;
     color: {COLORS['text_primary']};
-    font-family: 'Inter', 'Segoe UI', 'Ubuntu', sans-serif;
-    font-size: 14px;
+    font-family: {FONTS['family']};
+    font-size: {FONTS['size_md']};
 }}
 
-/* Header */
+/* ── Header ─────────────────────────────────────────────── */
 #header {{
     background-color: {COLORS['bg_secondary']};
     border-bottom: 1px solid {COLORS['border']};
-    padding: 12px 20px;
 }}
 
 #titleLabel {{
-    font-size: 24px;
+    font-size: {FONTS['size_2xl']};
     font-weight: 700;
     color: {COLORS['text_primary']};
-    letter-spacing: 2px;
+    letter-spacing: 3px;
 }}
 
-#statusLabel {{
-    font-size: 13px;
-    color: {COLORS['text_secondary']};
-}}
-
-/* State indicator */
-#stateIndicator {{
-    background-color: {COLORS['bg_tertiary']};
-    border-radius: 16px;
-    padding: 6px 14px;
-    font-size: 13px;
-    font-weight: 500;
-}}
-
-/* Waveform / audio area */
-#waveformArea {{
-    background-color: {COLORS['bg_primary']};
-}}
-
-#waveformWidget {{
-    background-color: {COLORS['bg_secondary']};
-    border-radius: 12px;
-}}
-
-#speakingLabel {{
-    color: {COLORS['accent_secondary']};
-    font-size: 13px;
-    font-weight: 600;
-}}
-
-/* Transcript area */
-#transcriptArea {{
-    background-color: {COLORS['bg_primary']};
-    border-top: 1px solid {COLORS['border']};
-}}
-
-#transcriptLabel {{
-    background-color: {COLORS['bg_tertiary']};
-    border-radius: 12px;
-    border: 1px solid {COLORS['border']};
-}}
-
-#transcriptSender {{
-    color: {COLORS['accent_primary']};
-    font-size: 11px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-}}
-
-#transcriptText {{
-    color: {COLORS['text_primary']};
-    font-size: 15px;
-}}
-
-/* Response area */
-#responseArea {{
-    background-color: {COLORS['bg_primary']};
-    border-top: 1px solid {COLORS['border']};
-}}
-
-#responseLabel {{
-    background-color: {COLORS['bg_secondary']};
-    border-radius: 12px;
-    border: 1px solid {COLORS['accent_primary']}44;
-}}
-
-#responseSender {{
-    color: {COLORS['accent_secondary']};
-    font-size: 11px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-}}
-
-#responseText {{
-    color: {COLORS['text_primary']};
-    font-size: 16px;
-    font-weight: 500;
-}}
-
-/* Footer */
-#footer {{
-    background-color: {COLORS['bg_secondary']};
-    border-top: 1px solid {COLORS['border']};
-    padding: 8px 20px;
-}}
-
-#statusLabel {{
-    font-size: 12px;
+#subtitleLabel {{
+    font-size: {FONTS['size_sm']};
     color: {COLORS['text_muted']};
+    letter-spacing: 1px;
+    text-transform: uppercase;
 }}
 
-/* Window controls */
+/* ── Window controls ────────────────────────────────────── */
 #minimizeButton, #closeButton {{
     background-color: transparent;
     border: none;
-    border-radius: 6px;
-    padding: 8px;
-    min-width: 32px;
-    min-height: 32px;
+    border-radius: 8px;
     color: {COLORS['text_muted']};
     font-size: 14px;
 }}
 
 #minimizeButton:hover {{
-    background-color: {COLORS['bg_tertiary']};
+    background-color: {COLORS['bg_elevated']};
     color: {COLORS['text_primary']};
 }}
 
@@ -184,32 +116,196 @@ QWidget {{
     color: white;
 }}
 
-/* Mic indicator */
-#micIndicator {{
-    border-radius: 8px;
-    padding: 8px;
+/* ── Central voice core area ────────────────────────────── */
+#voiceCoreArea {{
+    background-color: {COLORS['bg_primary']};
 }}
 
-#micIndicator[active="true"] {{
-    background-color: rgba(158, 206, 106, 0.2);
+#stateLabel {{
+    font-size: {FONTS['size_md']};
+    font-weight: 600;
+    color: {COLORS['text_secondary']};
+    letter-spacing: 2px;
+    text-transform: uppercase;
 }}
 
-/* Latency metrics */
-#latencyMetrics {{
-    font-size: 11px;
+/* ── Transcript panel ───────────────────────────────────── */
+#transcriptPanel {{
+    background-color: {COLORS['bg_glass']};
+    border: 1px solid {COLORS['border_subtle']};
+    border-radius: 16px;
+}}
+
+#transcriptHeader {{
+    font-size: {FONTS['size_xs']};
+    font-weight: 600;
+    color: {COLORS['text_muted']};
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+}}
+
+#transcriptText {{
+    font-size: {FONTS['size_xl']};
+    color: {COLORS['text_primary']};
+    line-height: 1.4;
+}}
+
+#transcriptTextPartial {{
+    font-size: {FONTS['size_xl']};
+    color: {COLORS['text_secondary']};
+    font-style: italic;
+}}
+
+/* ── Response panel ─────────────────────────────────────── */
+#responsePanel {{
+    background-color: {COLORS['bg_glass']};
+    border: 1px solid {COLORS['border_accent']}33;
+    border-radius: 16px;
+}}
+
+#responseHeader {{
+    font-size: {FONTS['size_xs']};
+    font-weight: 700;
+    color: {COLORS['accent_primary']};
+    letter-spacing: 2px;
+    text-transform: uppercase;
+}}
+
+#responseText {{
+    font-size: {FONTS['size_xl']};
+    font-weight: 500;
+    color: {COLORS['text_primary']};
+    line-height: 1.4;
+}}
+
+#speakingIndicator {{
+    font-size: {FONTS['size_sm']};
+    color: {COLORS['accent_primary']};
+    font-weight: 600;
+}}
+
+/* ── Activity panel ─────────────────────────────────────── */
+#activityPanel {{
+    background-color: {COLORS['bg_secondary']};
+    border-left: 1px solid {COLORS['border']};
+}}
+
+#activityTitle {{
+    font-size: {FONTS['size_xs']};
+    font-weight: 600;
+    color: {COLORS['text_muted']};
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+}}
+
+#activityItem {{
+    font-size: {FONTS['size_md']};
+    color: {COLORS['text_muted']};
+    padding: 6px 0px;
+}}
+
+#activityItemActive {{
+    font-size: {FONTS['size_md']};
+    color: {COLORS['accent_primary']};
+    font-weight: 600;
+    padding: 6px 0px;
+}}
+
+#activityItemDone {{
+    font-size: {FONTS['size_md']};
+    color: {COLORS['text_secondary']};
+    padding: 6px 0px;
+}}
+
+/* ── Metrics cards ──────────────────────────────────────── */
+#metricsPanel {{
+    background-color: {COLORS['bg_secondary']};
+    border-top: 1px solid {COLORS['border']};
+}}
+
+#metricCard {{
+    background-color: {COLORS['bg_tertiary']};
+    border: 1px solid {COLORS['border_subtle']};
+    border-radius: 10px;
+    padding: 8px 12px;
+}}
+
+#metricLabel {{
+    font-size: {FONTS['size_xs']};
+    color: {COLORS['text_muted']};
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}}
+
+#metricValue {{
+    font-size: {FONTS['size_lg']};
+    font-weight: 600;
+    color: {COLORS['text_primary']};
+    font-family: {FONTS['mono']};
+}}
+
+/* ── System status ──────────────────────────────────────── */
+#systemStatus {{
+    background-color: {COLORS['bg_secondary']};
+    border-top: 1px solid {COLORS['border']};
+}}
+
+#statusItem {{
+    font-size: {FONTS['size_sm']};
     color: {COLORS['text_muted']};
 }}
 
-/* Scrollbars */
+#statusItemOk {{
+    font-size: {FONTS['size_sm']};
+    color: {COLORS['accent_success']};
+}}
+
+#statusItemError {{
+    font-size: {FONTS['size_sm']};
+    color: {COLORS['accent_error']};
+}}
+
+/* ── Connection indicator ───────────────────────────────── */
+#connectionIndicator {{
+    background-color: {COLORS['bg_tertiary']};
+    border: 1px solid {COLORS['border']};
+    border-radius: 12px;
+    padding: 4px 10px;
+}}
+
+#connectionDot {{
+    font-size: 8px;
+}}
+
+#connectionText {{
+    font-size: {FONTS['size_xs']};
+    color: {COLORS['text_secondary']};
+    font-weight: 500;
+}}
+
+/* ── History (collapsed) ────────────────────────────────── */
+#historyPanel {{
+    background-color: {COLORS['bg_secondary']};
+    border-top: 1px solid {COLORS['border_subtle']};
+}}
+
+#historyItem {{
+    font-size: {FONTS['size_sm']};
+    color: {COLORS['text_muted']};
+    padding: 4px 0px;
+}}
+
+/* ── Scrollbars ─────────────────────────────────────────── */
 QScrollBar:vertical {{
     background-color: {COLORS['bg_primary']};
-    width: 10px;
+    width: 8px;
     margin: 0;
+    border-radius: 4px;
 }}
 
 QScrollBar::handle:vertical {{
-    background-color: {COLORS['bg_tertiary']};
-    border-radius: 5px;
+    background-color: {COLORS['bg_elevated']};
+    border-radius: 4px;
     min-height: 30px;
 }}
 
@@ -224,34 +320,48 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
     background: none;
 }}
+
+QScrollBar:horizontal {{
+    background-color: {COLORS['bg_primary']};
+    height: 8px;
+    margin: 0;
+    border-radius: 4px;
+}}
+
+QScrollBar::handle:horizontal {{
+    background-color: {COLORS['bg_elevated']};
+    border-radius: 4px;
+    min-width: 30px;
+}}
+
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
+    width: 0;
+}}
+
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{
+    background: none;
+}}
 """
 
-# State-specific colors for the indicator
+# ── State color mapping ────────────────────────────────────────
 STATE_COLORS = {
+    "Idle": COLORS["state_idle"],
+    "Waiting for wake word": COLORS["state_idle"],
     "Listening": COLORS["state_listening"],
-    "Speech Detected": COLORS["state_listening"],
+    "Speech Detected": COLORS["state_speech"],
     "Thinking": COLORS["state_thinking"],
     "Planning": COLORS["state_thinking"],
+    "Replanning": COLORS["state_thinking"],
     "Executing": COLORS["state_executing"],
     "Observing": COLORS["state_executing"],
     "Verifying": COLORS["state_executing"],
-    "Replanning": COLORS["state_thinking"],
-    "Speaking": COLORS["accent_secondary"],
-    "Responding": COLORS["accent_secondary"],
-    "Idle": COLORS["state_idle"],
-    "Error": COLORS["state_error"],
-    "Waiting for wake word": COLORS["state_idle"],
+    "Speaking": COLORS["state_speaking"],
+    "Responding": COLORS["state_speaking"],
     "Authenticating": COLORS["accent_warning"],
+    "Error": COLORS["state_error"],
 }
 
 
-def state_indicator_qss(state: str) -> str:
-    """Generate QSS for the state indicator based on current state."""
-    color = STATE_COLORS.get(state, COLORS["state_idle"])
-    return f"""
-        #stateIndicator {{
-            background-color: {color}22;
-            color: {color};
-            border: 1px solid {color}44;
-        }}
-    """
+def state_color(state: str) -> str:
+    """Get the color for a given state."""
+    return STATE_COLORS.get(state, COLORS["state_idle"])

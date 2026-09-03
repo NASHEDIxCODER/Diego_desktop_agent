@@ -61,13 +61,18 @@ class IntentCategory(str, Enum):
 
 
 # Categories that may reach the dispatcher / planner.
+# BUG-FIX (2026-09-03, runtime pass): LOCAL_KNOWLEDGE was previously
+# actionable — "find my Diego project" reached the planner, which
+# generated a web_search action and Diego web-searched "my project"
+# (reproduced live: "Opened https://www.google.com/search?q=my+project").
+# Local project/file/code references must be answered from the LOCAL
+# knowledge index (LLM + local context) — NEVER desktop/web tools.
 ACTIONABLE_CATEGORIES = frozenset({
     IntentCategory.DETERMINISTIC_COMMAND,
     IntentCategory.VISION_COMMAND,
     IntentCategory.SEARCH_REQUEST,
     IntentCategory.FOLLOW_UP,
     IntentCategory.MULTI_STEP_TASK,
-    IntentCategory.LOCAL_KNOWLEDGE,
 })
 
 # Categories that may reach the LLM for a spoken answer (never tools).
@@ -201,6 +206,9 @@ _LOCAL_KNOWLEDGE_PATTERNS: Tuple[str, ...] = (
     r"\bmy\s+project\b",
     r"\bmy\s+projects\b",
     r"\bproject\s+i\s+worked\s+on\b",
+    r"\bprojects?\s+i\s+(?:was\s+|am\s+|have\s+|had\s+)?working\s+on\b",
+    r"\bprojects?\s+i\s+(?:was\s+|am\s+)?(?:using|editing|building|developing|coding)\b",
+    r"\bwhat\s+projects?\s+(?:was|am|were)\s+i\s+(?:working\s+on|using)\b",
     r"\brecently\s+worked\s+on\b",
     r"\bmy\s+recent\s+project\b",
     r"\bwhat\s+project\s+was\s+i\s+working\s+on\b",

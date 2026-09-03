@@ -1,19 +1,21 @@
 """
-Tests for the Diego Desktop Voice-First UI.
+Tests for the Diego Desktop Voice-First HUD UI.
 
 Covers:
     - UI startup
     - Event bridge thread safety
+    - Voice visualizer states
+    - Real audio level updates
+    - Listening animation
+    - Speaking animation
     - Partial transcript update (no duplication)
     - Final transcript replacement
-    - User transcript rendering
-    - Diego response rendering
-    - State changes
-    - Error rendering
-    - Voice-first layout (no chat composer)
-    - Speaking indicator
-    - Long-running operations do not block UI
-    - No duplicate transcript messages
+    - Response rendering
+    - State transitions
+    - Resize behavior
+    - No chat composer
+    - UI non-blocking
+    - Event bridge integration
 """
 
 import asyncio
@@ -109,18 +111,28 @@ class TestUIStartup:
     def test_main_window_initial_state(self, window):
         """Window starts in Idle state."""
         process_events()
-        assert window._state_indicator.state() == "Idle"
+        assert window._visualizer.state.name == "IDLE"
 
     def test_voice_first_layout(self, window):
         """The UI is voice-first: no chat composer, no text input."""
         assert not hasattr(window, '_text_input')
         assert not hasattr(window, '_send_btn')
         # Voice-first widgets are present
-        assert hasattr(window, '_state_indicator')
-        assert hasattr(window, '_waveform')
-        assert hasattr(window, '_transcript_label')
-        assert hasattr(window, '_response_label')
-        assert hasattr(window, '_speaking_label')
+        assert hasattr(window, '_visualizer')
+        assert hasattr(window, '_transcript_panel')
+        assert hasattr(window, '_response_panel')
+        assert hasattr(window, '_activity_panel')
+        assert hasattr(window, '_metrics')
+        assert hasattr(window, '_system_status')
+
+    def test_no_chat_composer(self, window):
+        """The UI does not have a chat composer or send button."""
+        # Check that there's no text input widget
+        from PySide6.QtWidgets import QLineEdit, QTextEdit
+        line_edits = window.findChildren(QLineEdit)
+        text_edits = window.findChildren(QTextEdit)
+        assert len(line_edits) == 0, "UI should not have QLineEdit (chat composer)"
+        assert len(text_edits) == 0, "UI should not have QTextEdit (chat composer)"
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -205,6 +217,28 @@ class TestEventBridge:
 
         assert received == [True]
 
+    def test_emit_audio_level(self, bridge, qapp):
+        """Audio level events are delivered."""
+        received = []
+        bridge.audio_level.connect(lambda l: received.append(l))
+
+        bridge.emit_audio_level(0.5)
+        process_events(100)
+
+        assert len(received) == 1
+        assert abs(received[0] - 0.5) < 0.01
+
+    def test_emit_tts_level(self, bridge, qapp):
+        """TTS level events are delivered."""
+        received = []
+        bridge.tts_level.connect(lambda l: received.append(l))
+
+        bridge.emit_tts_level(0.7)
+        process_events(100)
+
+        assert len(received) == 1
+        assert abs(received[0] - 0.7) < 0.01
+
     def test_all_event_types(self, bridge, qapp):
         """All required event types can be emitted."""
         from ui.event_bridge import UIEvent, UIEventType
@@ -253,6 +287,158 @@ class TestEventBridge:
 
         process_events(200)
         assert count[0] >= 50  # Most events should be delivered
+
+
+# ═══════════════════════════════════════════════════════════════
+# Voice Visualizer Tests
+# ═══════════════════════════════════════════════════════════════
+
+class TestVoiceVisualizer:
+    """Tests for the VoiceCoreVisualizer."""
+
+    def test_visualizer_creation(self, qapp):
+        """VoiceCoreVisualizer can be created."""
+        from ui.visualizer import VoiceCoreVisualizer, VisualizerState
+        viz = VoiceCoreVisualizer()
+        assert viz is not None
+        assert viz.state == VisualizerState.IDLE
+
+    def test_visualizer_states(self, qapp):
+        """Visualizer supports all required states."""
+        from ui.visualizer import VoiceCoreVisualizer, VisualizerState
+        viz = VoiceCoreVisualizer()
+
+        viz.set_state(VisualizerState.IDLE)
+        assert viz.state == VisualizerState.IDLE
+
+        viz.set_state(VisualizerState.LISTENING)
+        assert viz.state == VisualizerState.LISTENING
+
+        viz.set_state(VisualizerState.SPEECH_DETECTED)
+        assert viz.state == VisualizerState.SPEECH_DETECTED
+
+        viz.set_state(VisualizerState.THINKING)
+        assert viz.state == VisualizerState.THINKING
+
+        viz.set_state(VisualizerState.EXECUTING)
+        assert viz.state == VisualizerState.EXECUTING
+
+        viz.set_state(VisualizerState.SPEAKING)
+        assert viz.state == VisualizerState.SPEAKING
+
+        viz.set_state(VisualizerState.ERROR)
+        assert viz.state == VisualizerState.ERROR
+
+    def test_visualizer_state_by_name(self, qapp):
+        """Visualizer can set state from string names."""
+        from ui.visualizer import VoiceCoreVisualizer, VisualizerState
+        viz = VoiceCoreVisualizer()
+
+        viz.set_state_by_name("Listening")
+        assert viz.state == VisualizerState.LISTENING
+
+        viz.set_state_by_name("Thinking")
+        assert viz.state == VisualizerState.THINKING
+
+        viz.set_state_by_name("Speaking")
+        assert viz.state == VisualizerState.SPEAKING
+
+        viz.set_state_by_name("Executing")
+        assert viz.state == VisualizerState.EXECUTING
+
+        viz.set_state_by_name("Idle")
+        assert viz.state == VisualizerState.IDLE
+
+    def test_visualizer_input_level(self, qapp):
+        """Visualizer accepts real audio input levels."""
+        from ui.visualizer import VoiceCoreVisualizer
+        viz = VoiceCoreVisualizer()
+
+        viz.set_input_level(0.5)
+        assert viz._target_input_level == 0.5
+
+        viz.set_input_level(1.5)  # Should clamp
+        assert viz._target_input_level == 1.0
+
+        viz.set_input_level(-0.5)  # Should clamp
+        assert viz._target_input_level == 0.0
+
+    def test_visualizer_output_level(self, qapp):
+        """Visualizer accepts TTS output levels."""
+        from ui.visualizer import VoiceCoreVisualizer
+        viz = VoiceCoreVisualizer()
+
+        viz.set_output_level(0.6)
+        assert viz._target_output_level == 0.6
+
+    def test_listening_animation(self, window, bridge):
+        """Listening state triggers listening animation."""
+        from ui.visualizer import VisualizerState
+
+        bridge.emit_listening()
+        process_events(100)
+
+        assert window._visualizer.state == VisualizerState.LISTENING
+
+    def test_speaking_animation(self, window, bridge):
+        """Speaking state triggers speaking animation."""
+        from ui.visualizer import VisualizerState
+
+        bridge.emit_speaking()
+        process_events(100)
+
+        assert window._visualizer.state == VisualizerState.SPEAKING
+
+    def test_thinking_animation(self, window, bridge):
+        """Thinking state triggers thinking animation."""
+        from ui.visualizer import VisualizerState
+
+        bridge.emit_thinking()
+        process_events(100)
+
+        assert window._visualizer.state == VisualizerState.THINKING
+
+    def test_audio_level_updates_visualizer(self, window, bridge):
+        """Real audio levels update the visualizer."""
+        bridge.emit_listening()
+        process_events(50)
+
+        bridge.emit_audio_level(0.7)
+        process_events(100)
+
+        # The visualizer should have received the level
+        assert window._visualizer._target_input_level == pytest.approx(0.7, abs=0.01)
+
+    def test_visualizer_smooth_interpolation(self, qapp):
+        """Visualizer uses smooth interpolation, not jittery jumps."""
+        from ui.visualizer import VoiceCoreVisualizer, VisualizerState
+        viz = VoiceCoreVisualizer()
+        viz.set_state(VisualizerState.LISTENING)
+
+        # Set a target level
+        viz.set_input_level(0.8)
+
+        # Run a few animation frames
+        for _ in range(5):
+            viz._animate()
+
+        # Level should be smoothed (not instantly at target)
+        assert viz._input_level < 0.8
+        assert viz._input_level > 0.0
+
+    def test_visualizer_idle_subtle(self, qapp):
+        """Idle animation is extremely subtle."""
+        from ui.visualizer import VoiceCoreVisualizer, VisualizerState
+        viz = VoiceCoreVisualizer()
+        viz.set_state(VisualizerState.IDLE)
+
+        # Run idle animation
+        for _ in range(10):
+            viz._animate()
+
+        # Bar values should be very small (subtle)
+        max_bar = max(viz._bar_values)
+        assert max_bar < 0.1, "Idle animation should be extremely subtle"
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -352,9 +538,27 @@ class TestTranscript:
         bridge.emit_error("I couldn't find that application.")
         process_events(100)
 
-        assert window._state_indicator.state() == "Error"
+        assert window._visualizer.state.name == "ERROR"
         assert "couldn't find" in window.get_response_text() or \
-               "couldn't find" in window._response_label._text_label.text()
+               "couldn't find" in window._response_panel._text_label.text()
+
+    def test_transcript_panel_partial_style(self, qapp):
+        """Transcript panel shows partial text with appropriate style."""
+        from ui.widgets import TranscriptPanel
+        panel = TranscriptPanel()
+
+        panel.set_partial("hel")
+        assert panel.text() == "hel"
+        assert panel.is_partial()
+
+    def test_transcript_panel_final_style(self, qapp):
+        """Transcript panel shows final text with appropriate style."""
+        from ui.widgets import TranscriptPanel
+        panel = TranscriptPanel()
+
+        panel.set_final("hello world")
+        assert panel.text() == "hello world"
+        assert not panel.is_partial()
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -369,7 +573,7 @@ class TestStateChanges:
         bridge.emit_listening()
         process_events(100)
 
-        assert window._state_indicator.state() == "Listening"
+        assert window._state_label.text() == "LISTENING"
         assert window._mic_indicator._active
 
     def test_thinking_state(self, window, bridge):
@@ -377,7 +581,7 @@ class TestStateChanges:
         bridge.emit_thinking()
         process_events(100)
 
-        assert window._state_indicator.state() == "Thinking"
+        assert window._state_label.text() == "THINKING"
         assert not window._mic_indicator._active
 
     def test_speaking_state(self, window, bridge):
@@ -385,7 +589,7 @@ class TestStateChanges:
         bridge.emit_speaking()
         process_events(100)
 
-        assert window._state_indicator.state() == "Speaking"
+        assert window._state_label.text() == "SPEAKING"
         assert window._speaking_label.isVisible()
 
     def test_executing_state(self, window, bridge):
@@ -393,8 +597,8 @@ class TestStateChanges:
         bridge.emit_executing("desktop_open")
         process_events(100)
 
-        state = window._state_indicator.state()
-        assert "Executing" in state
+        state = window._state_label.text()
+        assert "EXECUTING" in state
 
     def test_idle_state(self, window, bridge):
         """Idle state is displayed."""
@@ -403,7 +607,7 @@ class TestStateChanges:
         bridge.emit_idle()
         process_events(100)
 
-        assert window._state_indicator.state() == "Idle"
+        assert window._state_label.text() == "IDLE"
         assert not window._mic_indicator._active
         assert not window._speaking_label.isVisible()
 
@@ -412,7 +616,7 @@ class TestStateChanges:
         bridge.emit_error("Test error")
         process_events(100)
 
-        assert window._state_indicator.state() == "Error"
+        assert window._state_label.text() == "ERROR"
 
     def test_all_high_level_states(self, window, bridge):
         """All required high-level states can be displayed."""
@@ -425,7 +629,158 @@ class TestStateChanges:
         for state in states:
             bridge.emit_state(state)
             process_events(50)
-            assert window._state_indicator.state() == state
+            assert window._state_label.text() == state.upper()
+
+    def test_state_transition_sequence(self, window, bridge):
+        """Test a realistic state transition sequence."""
+        from ui.visualizer import VisualizerState
+
+        # Idle → Listening → Thinking → Speaking → Idle
+        bridge.emit_idle()
+        process_events(30)
+        assert window._visualizer.state == VisualizerState.IDLE
+
+        bridge.emit_listening()
+        process_events(30)
+        assert window._visualizer.state == VisualizerState.LISTENING
+
+        bridge.emit_thinking()
+        process_events(30)
+        assert window._visualizer.state == VisualizerState.THINKING
+
+        bridge.emit_speaking()
+        process_events(30)
+        assert window._visualizer.state == VisualizerState.SPEAKING
+
+        bridge.emit_idle()
+        process_events(30)
+        assert window._visualizer.state == VisualizerState.IDLE
+
+
+# ═══════════════════════════════════════════════════════════════
+# Activity Panel Tests
+# ═══════════════════════════════════════════════════════════════
+
+class TestActivityPanel:
+    """Tests for the activity panel."""
+
+    def test_activity_panel_creation(self, qapp):
+        """ActivityPanel can be created."""
+        from ui.widgets import ActivityPanel
+        panel = ActivityPanel()
+        assert panel is not None
+
+    def test_activity_panel_shows_human_readable(self, qapp):
+        """Activity panel shows only human-readable activities."""
+        from ui.widgets import ActivityPanel
+        panel = ActivityPanel()
+
+        # All activities should be human-readable
+        for activity in panel.ACTIVITIES:
+            assert not any(c in activity.lower() for c in ['_', '{', '}', '/'])
+            assert activity[0].isupper()
+
+    def test_activity_panel_state_mapping(self, qapp):
+        """Activity panel maps states to activities correctly."""
+        from ui.widgets import ActivityPanel
+        panel = ActivityPanel()
+
+        panel.set_active("Listening")
+        assert panel.active_activity() == "Voice detected"
+
+        panel.set_active("Thinking")
+        assert panel.active_activity() == "Thinking"
+
+        panel.set_active("Executing")
+        assert panel.active_activity() == "Executing"
+
+        panel.set_active("Speaking")
+        assert panel.active_activity() == "Responding"
+
+    def test_activity_panel_reset(self, qapp):
+        """Activity panel can be reset."""
+        from ui.widgets import ActivityPanel
+        panel = ActivityPanel()
+
+        panel.set_active("Thinking")
+        assert panel.active_activity() == "Thinking"
+
+        panel.reset()
+        assert panel.active_activity() == ""
+
+
+# ═══════════════════════════════════════════════════════════════
+# Metrics Tests
+# ═══════════════════════════════════════════════════════════════
+
+class TestMetrics:
+    """Tests for latency metrics."""
+
+    def test_metrics_cards_creation(self, qapp):
+        """MetricsCards can be created."""
+        from ui.widgets import MetricsCards
+        metrics = MetricsCards()
+        assert metrics is not None
+
+    def test_metrics_display(self, qapp):
+        """Metrics display latency values."""
+        from ui.widgets import MetricsCards
+        metrics = MetricsCards()
+
+        metrics.set_stt_latency(600)
+        assert "600" in metrics._cards["STT"].text()
+
+        metrics.set_agent_latency(1200)
+        assert "1200" in metrics._cards["Agent"].text()
+
+        metrics.set_tts_latency(2000)
+        assert "2000" in metrics._cards["TTS"].text()
+
+        metrics.set_total_latency(3800)
+        assert "3800" in metrics._cards["Total"].text()
+
+    def test_metrics_reset(self, qapp):
+        """Metrics can be reset."""
+        from ui.widgets import MetricsCards
+        metrics = MetricsCards()
+
+        metrics.set_stt_latency(600)
+        metrics.reset()
+        assert metrics._cards["STT"].text() == "--"
+
+
+# ═══════════════════════════════════════════════════════════════
+# System Status Tests
+# ═══════════════════════════════════════════════════════════════
+
+class TestSystemStatus:
+    """Tests for system status display."""
+
+    def test_system_status_creation(self, qapp):
+        """SystemStatus can be created."""
+        from ui.widgets import SystemStatus
+        status = SystemStatus()
+        assert status is not None
+
+    def test_system_status_ok(self, qapp):
+        """System status shows OK state."""
+        from ui.widgets import SystemStatus
+        status = SystemStatus()
+
+        status.set_status("STT", True)
+        assert status.status("STT")
+
+        status.set_all_ok()
+        for comp in SystemStatus.COMPONENTS:
+            assert status.status(comp)
+
+    def test_system_status_error(self, qapp):
+        """System status shows error state."""
+        from ui.widgets import SystemStatus
+        status = SystemStatus()
+
+        status.set_status("TTS", False)
+        assert not status.status("TTS")
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -493,91 +848,60 @@ class TestThreading:
 
         assert ui_responsive[0], "UI was blocked by long operation"
 
+    def test_audio_level_updates_non_blocking(self, window, bridge):
+        """Rapid audio level updates don't block the UI."""
+        start = time.time()
+
+        # Simulate rapid audio level updates (like real mic callback)
+        for i in range(100):
+            bridge.emit_audio_level(i / 100.0)
+
+        process_events(100)
+        elapsed = time.time() - start
+
+        assert elapsed < 1.0, "Audio level updates should not block UI"
+
 
 # ═══════════════════════════════════════════════════════════════
-# Widget Tests
+# Resize Tests
 # ═══════════════════════════════════════════════════════════════
 
-class TestWidgets:
-    """Tests for custom widgets."""
+class TestResize:
+    """Tests for window resize behavior."""
 
-    def test_voice_state_indicator(self, qapp):
-        """Voice state indicator shows correct states."""
-        from ui.widgets import VoiceStateIndicator
-        indicator = VoiceStateIndicator()
+    def test_window_resize(self, window):
+        """Window can be resized."""
+        window.resize(800, 700)
+        process_events(50)
+        assert window.width() == 800
+        assert window.height() == 700
 
-        indicator.set_state("Listening")
-        assert indicator.state() == "Listening"
+    def test_visualizer_scales_with_window(self, window):
+        """Visualizer scales gracefully with window resize."""
+        window.resize(900, 800)
+        process_events(50)
 
-        indicator.set_state("Thinking")
-        assert indicator.state() == "Thinking"
+        # Visualizer should still be visible and have reasonable size
+        assert window._visualizer.width() > 100
+        assert window._visualizer.height() > 100
 
-        indicator.set_state("Speaking")
-        assert indicator.state() == "Speaking"
+    def test_minimum_size(self, window):
+        """Window respects minimum size."""
+        window.resize(400, 300)  # Below minimum
+        process_events(50)
 
-    def test_waveform_level(self, qapp):
-        """Waveform widget accepts audio levels."""
-        from ui.widgets import WaveformWidget
-        waveform = WaveformWidget()
+        # Should be clamped to minimum
+        assert window.width() >= 680
+        assert window.height() >= 620
 
-        waveform.set_level(0.5)
-        assert waveform._target_level == 0.5
+    def test_small_window_readability(self, window):
+        """Transcript/response remain readable at smaller sizes."""
+        window.resize(680, 620)  # Minimum size
+        process_events(50)
 
-        waveform.set_level(1.5)  # Should clamp
-        assert waveform._target_level == 1.0
-
-        waveform.set_level(-0.5)  # Should clamp
-        assert waveform._target_level == 0.0
-
-    def test_mic_indicator(self, qapp):
-        """Mic indicator toggles active state."""
-        from ui.widgets import MicIndicator
-        mic = MicIndicator()
-
-        assert not mic._active
-        mic.set_active(True)
-        assert mic._active
-        mic.set_active(False)
-        assert not mic._active
-
-    def test_transcript_label(self, qapp):
-        """Transcript label supports partial and final."""
-        from ui.widgets import TranscriptLabel
-        label = TranscriptLabel()
-
-        label.set_partial("hel")
-        assert label._text_label.text() == "hel"
-
-        label.set_final("hello world")
-        assert label._text_label.text() == "hello world"
-
-    def test_response_label(self, qapp):
-        """Response label supports response and error."""
-        from ui.widgets import ResponseLabel
-        label = ResponseLabel()
-
-        label.set_response("Done.")
-        assert label._text_label.text() == "Done."
-
-        label.set_error("Failed.")
-        assert label._text_label.text() == "Failed."
-
-    def test_latency_metrics(self, qapp):
-        """Latency metrics widget displays values."""
-        from ui.widgets import LatencyMetrics
-        metrics = LatencyMetrics()
-
-        metrics.set_stt_latency(600)
-        assert "600" in metrics._stt_label.text()
-
-        metrics.set_agent_latency(1200)
-        assert "1200" in metrics._agent_label.text()
-
-        metrics.set_tts_latency(2000)
-        assert "2000" in metrics._tts_label.text()
-
-        metrics.set_total_latency(3800)
-        assert "3800" in metrics._total_label.text()
+        # Panels should still be visible
+        assert window._transcript_panel.isVisible()
+        assert window._response_panel.isVisible()
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -631,13 +955,34 @@ class TestIntegration:
         bridge.emit_error("I couldn't open that app.")
         process_events(50)
 
-        assert window._state_indicator.state() == "Error"
+        assert window._state_label.text() == "ERROR"
 
         # Recovery
         bridge.emit_idle()
         process_events(50)
 
-        assert window._state_indicator.state() == "Idle"
+        assert window._state_label.text() == "IDLE"
+
+    def test_audio_reactive_flow(self, window, bridge):
+        """Test audio-reactive visualization flow."""
+        from ui.visualizer import VisualizerState
+
+        # Start listening
+        bridge.emit_listening()
+        process_events(30)
+
+        # Simulate real mic audio levels
+        for level in [0.1, 0.3, 0.5, 0.7, 0.5, 0.3, 0.1]:
+            bridge.emit_audio_level(level)
+            process_events(20)
+
+        # Visualizer should be in listening state with some activity
+        assert window._visualizer.state == VisualizerState.LISTENING
+
+        # Speech detected (stronger pulse)
+        bridge.emit_partial("hello")
+        process_events(30)
+        assert window._visualizer.state == VisualizerState.SPEECH_DETECTED
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -665,17 +1010,24 @@ class TestImports:
         from ui.main_window import DiegoMainWindow
         assert DiegoMainWindow is not None
 
+    def test_import_visualizer(self):
+        """visualizer module can be imported."""
+        from ui.visualizer import VoiceCoreVisualizer, VisualizerState
+        assert VoiceCoreVisualizer is not None
+        assert VisualizerState is not None
+
     def test_import_widgets(self):
         """widgets module can be imported."""
         from ui.widgets import (
-            VoiceStateIndicator, WaveformWidget, MicIndicator,
-            TranscriptLabel, ResponseLabel, LatencyMetrics,
+            ConnectionIndicator, TranscriptPanel, ResponsePanel,
+            ActivityPanel, MetricsCards, SystemStatus,
         )
-        assert VoiceStateIndicator is not None
-        assert TranscriptLabel is not None
+        assert TranscriptPanel is not None
+        assert ResponsePanel is not None
 
     def test_import_styles(self):
         """styles module can be imported."""
-        from ui.styles import COLORS, MAIN_WINDOW_QSS
+        from ui.styles import COLORS, MAIN_WINDOW_QSS, FONTS
         assert "bg_primary" in COLORS
         assert "QMainWindow" in MAIN_WINDOW_QSS
+        assert "family" in FONTS

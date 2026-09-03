@@ -183,6 +183,89 @@ class DiegoRuntime:
         logger.info("[UI-RUNTIME] Diego pipeline stopped")
 
 
+class AudioLevelPoller:
+    """
+    Polls real audio levels from the existing pipeline for UI visualization.
+
+    Uses the AudioManager's last_frame_rms (microphone) and StreamingTTS's
+    is_speaking (TTS activity). Does NOT create a second audio pipeline.
+    """
+
+    # RMS normalization: int16 scale (0-32768) → 0-1 for UI
+    # Typical speech RMS is 500-3000 on int16 scale
+    RMS_MAX = 4000.0
+
+    def __init__(self, bridge):
+        self._bridge = bridge
+        self._timer = None
+        self._audio_manager = None
+        self._streaming_tts = None
+
+    def start(self) -> None:
+        """Start polling audio levels (call from Qt thread)."""
+        from PySide6.QtCore import QTimer
+
+        # Try to get the audio manager and TTS from the pipeline
+        try:
+            from voice.audio_manager import AudioManager
+            # The conversation engine creates the audio manager;
+            # we access it via the global instance if available
+            from core.conversation_engine import conversation_engine
+            if hasattr(conversation_engine, '_audio_manager'):
+                self._audio_manager = conversation_engine._audio_manager
+        except Exception as e:
+            logger.debug("[UI-AUDIO] Could not access AudioManager: %s", e)
+
+        try:
+            from voice.streaming_tts import streaming_tts
+            self._streaming_tts = streaming_tts
+        except Exception as e:
+            logger.debug("[UI-AUDIO] Could not access StreamingTTS: %s", e)
+
+        # Poll at ~30 FPS (33ms) — matches audio callback rate
+        self._timer = QTimer()
+        self._timer.setInterval(33)
+        self._timer.timeout.connect(self._poll)
+        self._timer.start()
+        logger.info("[UI-AUDIO] Audio level poller started")
+
+    def stop(self) -> None:
+        """Stop polling."""
+        if self._timer:
+            self._timer.stop()
+            self._timer = None
+
+    def _poll(self) -> None:
+        """Poll audio levels and emit to the bridge."""
+        # Microphone input level
+        if self._audio_manager is not None:
+            try:
+                rms = self._audio_manager.last_frame_rms
+                # Normalize to 0-1
+                level = min(1.0, rms / self.RMS_MAX)
+                self._bridge.emit_audio_level(level)
+            except Exception:
+                pass
+
+        # TTS output level
+        if self._streaming_tts is not None:
+            try:
+                if self._streaming_tts.is_speaking:
+                    # While speaking, emit a simulated output level
+                    # based on TTS activity. Real per-sample output
+                    # level would require hooking into the audio stream.
+                    import math
+                    import time
+                    # Smooth pulsing level while speaking
+                    phase = time.time() * 4
+                    level = 0.4 + 0.3 * math.sin(phase)
+                    self._bridge.emit_tts_level(max(0.1, level))
+                else:
+                    self._bridge.emit_tts_level(0.0)
+            except Exception:
+                pass
+
+
 def main() -> int:
     """Main entry point for the Diego UI."""
     parser = argparse.ArgumentParser(description="Diego Desktop UI")
@@ -200,7 +283,7 @@ def main() -> int:
 
     # Import Qt after environment setup
     from PySide6.QtWidgets import QApplication
-    from PySide6.QtCore import Qt
+    from PySide6.QtCore import Qt, QTimer
 
     # High DPI support
     QApplication.setHighDpiScaleFactorRoundingPolicy(
@@ -219,17 +302,32 @@ def main() -> int:
     from ui.main_window import DiegoMainWindow
     window = DiegoMainWindow(bridge=bridge, loop=None)
 
+    # Connect TTS level to the window
+    bridge.tts_level.connect(window.set_output_level)
+
+    # Audio level poller (uses existing pipeline, no second capture)
+    audio_poller: Optional[AudioLevelPoller] = None
+
     # Start the pipeline (unless UI-only mode)
     runtime: Optional[DiegoRuntime] = None
     if not args.ui_only:
         runtime = DiegoRuntime(no_wake=args.no_wake, no_auth=args.no_auth)
         runtime.start(bridge)
+
         # Update window with the runtime's loop once it's created
         def update_loop():
             if runtime.loop:
                 window._loop = runtime.loop
-        from PySide6.QtCore import QTimer
+
         QTimer.singleShot(500, update_loop)
+
+        # Start audio level polling after the pipeline initializes
+        def start_audio_poller():
+            nonlocal audio_poller
+            audio_poller = AudioLevelPoller(bridge)
+            audio_poller.start()
+
+        QTimer.singleShot(2000, start_audio_poller)
     else:
         # UI-only mode: emit idle state
         bridge.emit_idle()

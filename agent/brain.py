@@ -471,8 +471,12 @@ class AgentBrain:
                 return result
             if auth.category == IntentCategory.CONVERSATIONAL:
                 from agent.personality import personality as _auth_personality
-                response = (_auth_personality.contextual_response(text)
-                            or _auth_personality.greeting())
+                response = _auth_personality.contextual_response(text)
+                # BUG-FIX (2026-09-03, runtime pass): do NOT substitute a
+                # greeting when no canned response applies. "tell me a joke"
+                # (small talk, not a greeting) was answered with "Hey." —
+                # a fabricated non-answer. Fall through to the LLM instead
+                # so small talk gets a real response.
                 if response:
                     result.path = "CONVERSATION"
                     result.used_llm = False
@@ -488,6 +492,14 @@ class AgentBrain:
                 # Factual questions reach the LLM for an answer —
                 # never desktop actions.
                 tool_execution_allowed = False
+            # BUG-FIX (2026-09-03, runtime pass): honor the authorizer's
+            # actionable flag for ALL categories. Previously only
+            # CONVERSATIONAL and KNOWLEDGE_QUESTION disabled tool
+            # execution, so a LOCAL_KNOWLEDGE transcript ("find my Diego
+            # project") still reached the planner — the planner generated
+            # a web_search action and Diego web-searched "my project"
+            # (reproduced live: "Opened .../search?q=my+project").
+            tool_execution_allowed = auth.actionable
 
         if tool_execution_allowed:
             # Defense in depth: the original intent gate still applies
@@ -689,10 +701,21 @@ class AgentBrain:
                     # At least one action failed — be honest about the failure.
                     # The decision's response ("Opening.") must NOT be spoken
                     # when the action did not actually open anything.
+                    #
+                    # FALSE-SUCCESS FIX (2026-09-03, runtime bug-fix pass):
+                    # The immediate response for media actions asserts a
+                    # COMPLETED result ("Paused.", "Resumed."). Spoken BEFORE
+                    # dispatch, the user heard "Paused." even when the action
+                    # FAILED and verification was False. An unverified
+                    # completion claim must never reach the speaker: replace
+                    # it with the honest outcome and cancel the followup.
+                    failure_response = self._default_response(result)
                     if result.speak_immediately:
-                        result.followup_response = self._default_response(result)
+                        result.response = failure_response
+                        result.followup_response = ""
+                        result.speak_immediately = False
                     else:
-                        result.response = self._default_response(result)
+                        result.response = failure_response
             else:
                 # No actions dispatched — conversational/cached responses are fine
                 result.response = decision.response or self._default_response(result)
@@ -1436,6 +1459,18 @@ class AgentBrain:
             # raw paths, filename dumps, scores, or chunk metadata.
             local_ctx = ""
             allow_paths = False
+            # SMALL-TALK GUARD (2026-09-03, runtime pass): pure
+            # conversational utterances ("tell me a joke") must not be
+            # answered from spurious local-document matches. Reproduced
+            # live: "tell me a joke" answered "According to
+            # hacking_artofexploitation.pdf, page 130 ...". Skip the whole
+            # local-knowledge block for CONVERSATIONAL transcripts.
+            _auth_obj = getattr(self, "_last_intent_authorization", None)
+            _is_smalltalk = (
+                _auth_obj is not None
+                and getattr(_auth_obj, "category", None) is not None
+                and _auth_obj.category.value == "CONVERSATIONAL"
+            )
             try:
                 from knowledge.service import knowledge_service
                 from knowledge.presentation import (
@@ -1443,6 +1478,8 @@ class AgentBrain:
                     is_explicit_listing_request,
                     sanitize_spoken,
                 )
+                if _is_smalltalk:
+                    raise LookupError("small-talk — skip local knowledge")
                 # EXPLICIT LISTING GUARD: "list the files", "what files
                 # are in this folder?", "what is the path to X?" must be
                 # answered with real filenames/paths via the LLM context —
@@ -1465,6 +1502,9 @@ class AgentBrain:
                             len(answer), len(k_results))
                         return sanitize_spoken(answer, allow_paths=False)
                 local_ctx = knowledge_service.context_for_llm(text) or ""
+            except LookupError:
+                logger.debug("[Brain] local knowledge skipped (small-talk "
+                             "transcript): '%s'", text[:50])
             except Exception as e:
                 logger.debug("[Brain] local knowledge retrieval skipped: %s", e)
             try:
@@ -1670,6 +1710,10 @@ class AgentBrain:
             return personality.acknowledgment()
         if result.actions_failed == 0:
             return personality.task_confirmation()
+        # TRUTHFULNESS FIX (2026-09-03): a fully-failed single action is
+        # NOT "mostly done" — say so plainly.
+        if result.actions_succeeded == 0:
+            return "I couldn't complete that."
         return f"Mostly done, but {result.actions_failed} step(s) had issues."
 
     @staticmethod

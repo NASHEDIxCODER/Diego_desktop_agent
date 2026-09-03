@@ -8637,7 +8637,7 @@
       "source": "/usr/share/doc/python-bluepy/scanner.txt",
       "summary": "Scans for devices for the given *timeout* in seconds. During this\n   period, callbacks to the *delegate* object will be called.",
       "created_at": 1788434886.8757372,
-      "access_count": 0,
+      "access_count": 2,
       "confidence": 1.0
     },
     {
@@ -12857,7 +12857,7 @@
       "source": "/usr/share/doc/arptools/README.md",
       "summary": "It allows you to select a victim and transmit his or her data to your machine, and you can use wireshark or other packet capture tools to see what he or she doing. But once you select this option, the attack will not stop UNLESS you cancel the program.",
       "created_at": 1788434886.8835254,
-      "access_count": 0,
+      "access_count": 2,
       "confidence": 1.0
     },
     {
@@ -47397,7 +47397,7 @@
       "source": "/usr/share/doc/libao-1.2.2/overview.html",
       "summary": "<p>\nLibao is designed to make it easy to do simple audio output using\nvarious audio devices and libraries. For this reason, complex audio\ncontrol features are missing and will probably never be added.",
       "created_at": 1788434886.937749,
-      "access_count": 3,
+      "access_count": 4,
       "confidence": 1.0
     },
     {
@@ -49317,7 +49317,7 @@
       "source": "/usr/share/doc/davscan/README.md",
       "summary": "## Contributing:\nDid you know that you can help fix my bad code for me? It could be like your day job but with no pay and a smidge more recognition since I gain almost nothing from your hard work here.",
       "created_at": 1788434886.940142,
-      "access_count": 3,
+      "access_count": 4,
       "confidence": 1.0
     },
     {
@@ -49452,19 +49452,19 @@
     }
   ],
   "crawled_sources": [
+    "https://archlinux.org/packages/",
+    "https://docs.python.org/3/",
+    "https://developer.mozilla.org/en-US/docs/Web/",
+    "https://docs.docker.com/",
+    "https://nodejs.org/docs/latest/api/",
     "https://docs.github.com/en",
     "https://doc.rust-lang.org/book/",
-    "https://kubernetes.io/docs/",
-    "https://archlinux.org/packages/",
-    "https://nodejs.org/docs/latest/api/",
-    "https://docs.docker.com/",
     "https://git-scm.com/docs",
-    "https://developer.mozilla.org/en-US/docs/Web/",
-    "https://docs.python.org/3/"
+    "https://kubernetes.io/docs/"
   ],
   "action_successes": {},
   "action_failures": {},
   "workflow_patterns": {},
   "learn_count": 502,
-  "updated_at": 1788439749.0494804
+  "updated_at": 1788450370.6964092
 }

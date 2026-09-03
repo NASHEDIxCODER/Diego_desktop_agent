@@ -528,8 +528,14 @@ class ConversationMemory:
                 return f"undo {self._last_action}"
 
         # "continue" / "finish what you started" → reference last goal
+        # BUG-FIX (2026-09-03, runtime pass): "resume" was hijacked into
+        # "continue <last goal>". Standalone "resume" is a MEDIA command
+        # (resume playback) with a deterministic music_resume route — it
+        # must never be rewritten as a task continuation. Users who mean
+        # the task say "continue" or "resume the task" (the task-state
+        # FollowUpResolver matches "resume the task" explicitly).
         if text_lower in ("continue", "finish what you started", "finish that",
-                          "keep going", "carry on", "resume"):
+                          "keep going", "carry on"):
             if self._last_goal:
                 logger.info("[MEMORY] Pronoun resolved: '%s' → continue '%s'", text, self._last_goal)
                 return f"continue {self._last_goal}"
