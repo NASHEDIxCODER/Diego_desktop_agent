@@ -468,6 +468,14 @@ Diego_desktop_agent/
 │   ├── benchmark.py                  #    Benchmarking utilities
 │   └── manual_session_recorder.py    #    Session recording for debugging
 │
+├── ui/                               # 🖥️ Desktop UI (PySide6 — event bridge + main window)
+│   ├── __init__.py                   #    Package exports
+│   ├── __main__.py                   #    Entry point: python -m ui
+│   ├── event_bridge.py               #    Thread-safe pipeline → Qt event bridge
+│   ├── main_window.py                #    Main Diego window (transcript, state, input)
+│   ├── widgets.py                    #    Message bubbles, waveform, indicators
+│   └── styles.py                     #    Dark modern theme (QSS)
+│
 ├── vision/                           # 👁️ Computer vision
 │   ├── action_verifier.py            #    Pre/post screen comparison for action verification
 │   ├── perception.py                 #    Visual perception
@@ -548,7 +556,8 @@ Diego_desktop_agent/
 ├── runtime/                          # 🖥️ Runtime UI
 │   └── status_popup.py               #    Status popup overlay
 │
-├── tests/                            # 🧪 Test suite (550+ tests)
+├── tests/                            # 🧪 Test suite (600+ tests)
+│   ├── test_ui.py                    #    Desktop UI tests (47 tests)
 │   ├── test_system_info.py           #    System-info query handling tests
 │   ├── test_knowledge_index.py       #    Knowledge indexing tests
 │   ├── test_knowledge_response_ux.py #    Knowledge response UX tests
@@ -613,6 +622,7 @@ Diego_desktop_agent/
 │
 ├── docs/                             # 📖 Documentation
 │   ├── architecture.md               #    Architecture documentation
+│   ├── ui.md                         #    Desktop UI documentation
 │   ├── Database.md                   #    Database documentation
 │   ├── ASR_BENCHMARK.md              #    ASR benchmark results
 │   ├── ASR_ALTERNATIVES_BENCHMARK.md #    ASR alternatives benchmark
@@ -679,6 +689,10 @@ cp .env.example .env
 python Diego.py              # Start conversational Diego (recommended)
 python Diego.py --no-auth    # Skip face auth (development only)
 python Diego.py --status     # Show subsystem status
+
+# Or launch the native desktop UI (PySide6)
+python -m ui                     # Full Diego UI (production)
+python -m ui --no-wake --no-auth # Diego UI in dev mode
 ```
 
 ---
@@ -694,6 +708,29 @@ python Diego.py --status        # Check subsystem health
 python Diego.py debug vision    # Live vision debug overlay
 python Diego.py inspect screen  # Comprehensive screen inspection report
 ```
+
+### Desktop UI: `python -m ui`
+
+Native PySide6 conversational interface on top of the production pipeline:
+
+```bash
+python -m ui                     # Full production mode (wake + auth)
+python -m ui --no-wake           # Skip wake detection (dev)
+python -m ui --no-auth           # Skip face auth (dev)
+python -m ui --no-wake --no-auth # Full dev mode
+python -m ui --ui-only           # UI without the voice pipeline (testing)
+```
+
+The desktop UI provides:
+- Conversation transcript with user/Diego message bubbles
+- Live STT partials (updates in place — no duplication)
+- Current state indicator (Listening, Thinking, Planning, Executing, Observing, Verifying, Replanning, Responding, Idle, Error)
+- Microphone/listening indicator + audio waveform
+- Text input through the **same** `Brain.process_command()` path as voice
+- Clear conversation button
+- Dark modern theme with subtle animations
+
+See [`docs/ui.md`](docs/ui.md) for full UI documentation.
 
 ### Utility Entry Point: `main.py`
 
