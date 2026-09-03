@@ -1406,6 +1406,27 @@ class AgentBrain:
             except Exception as e:
                 logger.debug("[Brain] system-info check skipped: %s", e)
 
+            # ── DIAGNOSTIC GUARD (2026-09-03) ──
+            # Self-diagnostic queries ("is Diego healthy?", "why is Diego
+            # slow?", "what's wrong?") are answered deterministically from
+            # live read-only diagnostics. NEVER executes repair actions.
+            # NEVER exposes raw logs, paths, JSON, stack traces, database
+            # rows, scores, or internal retrieval metadata in speech.
+            try:
+                from knowledge.diagnostics import (
+                    is_diagnostic_query,
+                    answer_diagnostic_query,
+                )
+                if is_diagnostic_query(text):
+                    answer = answer_diagnostic_query(text)
+                    if answer:
+                        logger.info(
+                            "[Brain] Answered from DIAGNOSTIC live collectors "
+                            "(%d chars)", len(answer))
+                        return answer
+            except Exception as e:
+                logger.debug("[Brain] diagnostic check skipped: %s", e)
+
             # ── LOCAL KNOWLEDGE FIRST (2026-09-02, UX-hardened) ──
             # Factual questions about the user's PC, documents, projects,
             # files, configuration, or indexed local knowledge are answered

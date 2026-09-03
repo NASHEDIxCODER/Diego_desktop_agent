@@ -51,6 +51,7 @@ class DecisionPath(str, Enum):
     VISION = "VISION"
     SEARCH = "SEARCH"
     SYSTEM_INFO = "SYSTEM_INFO"
+    DIAGNOSTIC = "DIAGNOSTIC"
     LLM = "LLM"
 
 
@@ -357,6 +358,29 @@ class DecisionEngine:
                 cache_key,
                 result,
             )
+
+            return result
+
+        # ──────────────────────────────────────────────────────
+        # DIAGNOSTIC — Self-health and latency analysis
+        #
+        # Diagnostic queries ("is Diego healthy?", "why is Diego
+        # slow?", "what's wrong?") are answered deterministically
+        # from live read-only diagnostics. They take precedence
+        # over document retrieval and the LLM.
+        # ──────────────────────────────────────────────────────
+
+        result = await self._check_diagnostic(normalized)
+
+        if result is not None:
+            self._record(
+                DecisionPath.DIAGNOSTIC,
+                t_start,
+            )
+
+            # NOTE: Diagnostic decisions are NOT cached because
+            # they must reflect LIVE system state. Caching would
+            # return stale health information.
 
             return result
 
@@ -948,6 +972,63 @@ class DecisionEngine:
 
         except Exception as e:
             logger.debug("[DECIDE:SYSTEM-INFO] check failed: %s", e)
+
+        return None
+
+    # ──────────────────────────────────────────────────────────
+    # DIAGNOSTIC — Self-health and latency analysis
+    # ──────────────────────────────────────────────────────────
+
+    async def _check_diagnostic(
+        self,
+        text: str,
+    ) -> Optional[Decision]:
+        """
+        Check if this is a self-diagnostic query and answer it
+        deterministically from live read-only diagnostics.
+
+        Diagnostic queries ("is Diego healthy?", "why is Diego slow?",
+        "what's wrong?") are answered from live collectors:
+          - runtime_health (component status)
+          - metrics/benchmark (measured latencies)
+          - system resources (CPU/RAM)
+
+        NEVER executes repair actions. NEVER exposes raw logs, paths,
+        JSON, stack traces, database rows, scores, or internal
+        retrieval metadata in speech.
+        """
+        try:
+            from knowledge.diagnostics import (
+                detect_diagnostic_query,
+                DiagnosticTopic,
+                answer_diagnostic_query,
+            )
+
+            query = detect_diagnostic_query(text)
+            if query.topic == DiagnosticTopic.NONE:
+                return None
+
+            # Answer from live diagnostics (deterministic, no LLM)
+            response = answer_diagnostic_query(text)
+            if response:
+                logger.info(
+                    "[DECIDE:DIAGNOSTIC] Answered from live diagnostics: "
+                    "topic=%s response_len=%d",
+                    query.topic.value, len(response),
+                )
+                return Decision(
+                    path=DecisionPath.DIAGNOSTIC,
+                    needs_llm=False,
+                    response=response,
+                    confidence=0.95,
+                    debug={
+                        "source": "live_diagnostics",
+                        "topic": query.topic.value,
+                    },
+                )
+
+        except Exception as e:
+            logger.debug("[DECIDE:DIAGNOSTIC] check failed: %s", e)
 
         return None
 
