@@ -1,156 +1,119 @@
-# Diego Desktop UI
+# Diego UI — Voice-First Desktop Assistant HUD
 
-A native PySide6 conversational interface for Diego that sits on top of the
-existing production assistant pipeline.
+## Design
 
-## Launch
+The Diego UI is a **voice-first desktop assistant HUD**, NOT a chat application.
+The primary interaction model is:
+
+```
+MICROPHONE → LIVE TRANSCRIPT → DIEGO RESPONSE PRINTED
+→ DIEGO RESPONSE SPOKEN → LISTEN AGAIN
+```
+
+No mouse/keyboard interaction is required for normal operation.
+
+## Layout
+
+```
+┌──────────────────────────────────────────────────┐
+│ HEADER                                           │
+│   ● DIEGO                    [Listening]  ─  ✕  │
+├──────────────────────────────────────────────────┤
+│ CENTER                                           │
+│   Large animated waveform / audio visualizer     │
+│   ● Diego is speaking  (visible during TTS)      │
+├──────────────────────────────────────────────────┤
+│ TRANSCRIPT AREA                                  │
+│   YOU                                            │
+│   "open firefox"                                 │
+├──────────────────────────────────────────────────┤
+│ RESPONSE AREA                                    │
+│   DIEGO                                          │
+│   "Opening Firefox for you."                     │
+├──────────────────────────────────────────────────┤
+│ FOOTER                                           │
+│   Listening...  STT: 600ms Agent: 1.2s TTS: 2.1s│
+└──────────────────────────────────────────────────┘
+```
+
+## Voice States
+
+The header displays the current voice state:
+
+| State | Meaning |
+|---|---|
+| IDLE | Waiting for wake word |
+| LISTENING | Microphone active, capturing |
+| SPEECH DETECTED | VAD detected speech onset |
+| THINKING | Brain processing |
+| PLANNING | Planner creating a plan |
+| EXECUTING | Actions being dispatched |
+| OBSERVING | Environment observation |
+| VERIFYING | Action verification |
+| REPLANNING | Re-planning after failure |
+| SPEAKING | TTS playback active |
+| ERROR | Friendly error displayed |
+
+## Transcript Behaviour
+
+- **LIVE TRANSCRIPT**: While the user speaks, the partial STT transcript
+  updates a single live region in real time.
+- **FINAL TRANSCRIPT**: When speech finalizes, the partial region is
+  **replaced** (never duplicated) with the final recognized sentence.
+- **DIEGO RESPONSE**: The response is printed prominently **before/during**
+  TTS and remains visible after TTS completes.
+- **SPEAKING INDICATOR**: Clearly shows Diego is speaking through TTS.
+
+## Latency Metrics (footer, optional)
+
+Small monospace diagnostics show measured latencies:
+- STT latency
+- Agent (Brain) latency
+- TTS latency
+- Total turn latency
+
+Internal logs, planner traces, embeddings, scores, paths, JSON, and database
+information are NEVER exposed in the UI.
+
+## Event-Driven Architecture
+
+The UI never blocks the Qt main thread. All pipeline work (STT, LLM, agent,
+tools, perception, TTS) runs off-thread. Events arrive via the thread-safe
+`EventBridge` (queue + Qt signal dispatch):
+
+`LISTENING, PARTIAL_TRANSCRIPT, FINAL_TRANSCRIPT, THINKING, PLANNING,
+EXECUTING, OBSERVING, VERIFYING, REPLANNING, SPEAKING, RESPONSE, ERROR, IDLE`
+
+The bridge reuses the production ConversationEngine / Brain pipeline — there
+is no second voice pipeline.
+
+## Modules
+
+```
+ui/
+├── __init__.py       # Package exports
+├── __main__.py       # Entry point: python -m ui
+├── event_bridge.py   # Thread-safe bridge from pipeline events to Qt signals
+├── main_window.py    # Voice-first HUD main window
+├── widgets.py        # VoiceStateIndicator, WaveformWidget, TranscriptLabel,
+│                     # ResponseLabel, LatencyMetrics, MicIndicator
+└── styles.py         # Dark futuristic theme QSS
+```
+
+## Performance
+
+- Animations are subtle and low CPU (waveform timer only runs when active).
+- When idle: calm state, no unnecessary animation.
+- When listening: waveform active, mic indicator pulsing.
+- When speaking: waveform/output indicator active.
+- When thinking: clear processing indicator.
+
+## Running
 
 ```bash
-# Full production mode (wake word + face auth)
-python -m ui
-
-# Development mode — skip wake detection
-python -m ui --no-wake
-
-# Development mode — skip face auth
-python -m ui --no-auth
-
-# Full dev mode (both flags)
-python -m ui --no-wake --no-auth
-
-# UI-only mode (no voice pipeline — for testing the interface)
-python -m ui --ui-only
+python -m ui                     # Full production mode (wake + auth)
+python -m ui --no-wake           # Skip wake word (dev)
+python -m ui --no-auth           # Skip face auth (dev)
+python -m ui --no-wake --no-auth # Full dev mode
+python -m ui --ui-only           # UI only, no voice pipeline (testing)
 ```
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    Qt Event Loop (main thread)              │
-│                                                             │
-│  ┌──────────────────┐    ┌──────────────────────────────┐  │
-│  │  DiegoMainWindow │◄───│        EventBridge           │  │
-│  │  - transcript    │    │  (QObject + thread-safe queue)│  │
-│  │  - state display │    └──────────┬───────────────────┘  │
-│  │  - mic indicator │               │ Qt signals           │
-│  │  - waveform      │               │                      │
-│  │  - text input    │               │                      │
-│  └──────────────────┘               │                      │
-└──────────────────────────────────────┼──────────────────────┘
-                                       │
-                    ┌──────────────────┼──────────────────┐
-                    │                  │                  │
-                    ▼                  ▼                  ▼
-        ┌─────────────────┐  ┌──────────────┐  ┌──────────────────┐
-        │ ConversationEngine│  │   EventBus   │  │  Brain pipeline  │
-        │  (state machine) │  │ (existing)   │  │  (process_command)│
-        └─────────────────┘  └──────────────┘  └──────────────────┘
-                    │
-        ┌───────────┼───────────┐
-        ▼           ▼           ▼
-     Wake/VAD    STT/Whisper   TTS
-     (unchanged) (unchanged)  (unchanged)
-```
-
-### Key Design Decisions
-
-1. **No second assistant pipeline.** The UI subscribes to the existing
-   `ConversationEngine` state machine and `Brain.process_command()`.
-   Typed input goes through the **same** `Brain.process_command()` path
-   as voice commands.
-
-2. **Event bridge, not logic duplication.** The `EventBridge` patches
-   only add *event emission* alongside existing state transitions:
-   - `conversation_engine._set_state()` → emits UI state events
-   - `conversation_engine._stt_event_pump()` → emits partial/final transcripts
-   - `EventBus` wildcard subscription → forwards task/planning events
-
-3. **Thread safety.** The Qt event loop runs on the main thread. The
-   asyncio pipeline (ConversationEngine, Brain, voice) runs in a
-   background thread. All events are marshalled through a thread-safe
-   queue + QTimer polling — never direct cross-thread signal emission.
-
-4. **Low CPU when idle.** The event bridge timer runs at 30ms intervals
-   but only processes events when the queue is non-empty. The waveform
-   animation timer only runs when audio is active.
-
-## Event Types
-
-| Event | UI Signal | Display |
-|---|---|---|
-| `LISTENING` | `listening` | Mic indicator pulses, state = "Listening" |
-| `PARTIAL_TRANSCRIPT` | `partial_transcript` | Dashed partial bubble (updates in place) |
-| `FINAL_TRANSCRIPT` | `final_transcript` | Partial bubble → user message (no duplication) |
-| `THINKING` | `thinking` | Typing indicator, state = "Thinking" |
-| `PLANNING` | `planning` | State = "Planning" |
-| `EXECUTING` | `executing` | State = "Executing" |
-| `OBSERVING` | `observing` | State = "Observing" |
-| `VERIFYING` | `verifying` | State = "Verifying" |
-| `REPLANNING` | `replanning` | State = "Replanning" |
-| `RESPONSE` | `response` | Diego message bubble |
-| `RESPONSE_CHUNK` | `response_chunk` | Streaming text in one bubble |
-| `ERROR` | `error` | Red error bubble (friendly message) |
-| `IDLE` | `idle` | State = "Idle" |
-
-## Text Input
-
-Typed commands are submitted through the **same** production path as voice:
-
-```python
-# In ui/main_window.py
-result = await agent_brain.process_command(text)
-```
-
-This means typed input benefits from all existing guards:
-- Intent authorization
-- Transcript quality gate
-- Decision engine routing
-- Planner / dispatcher / verifier
-- Learning engine
-
-## Development Mode
-
-```bash
-python -m ui --no-wake --no-auth
-```
-
-This bypasses wake detection and face authentication, entering LISTEN
-directly — identical to `python Diego.py --no-wake --no-auth`.
-
-## Testing
-
-```bash
-# Run UI tests only
-python -m pytest tests/test_ui.py -v
-
-# Run full test suite
-python -m pytest
-```
-
-The UI test suite covers:
-- UI startup
-- Event bridge thread safety
-- Partial transcript update (no duplication)
-- Final transcript replacement
-- User message rendering
-- Diego response rendering
-- State changes
-- Error rendering
-- Typed input uses ConversationEngine/Brain
-- Long-running operations do not block UI
-- No duplicate transcript messages
-
-## Production Compatibility
-
-The UI does **not** modify:
-- Wake/VAD thresholds
-- Audio architecture
-- Face authentication
-- Vision
-- Knowledge indexing
-- Embeddings
-- System-info subsystem
-- Diagnostics subsystem
-- Autonomous task controller
-
-Only event/UI integration is added.

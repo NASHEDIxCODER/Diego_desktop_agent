@@ -47,6 +47,7 @@ class UIEventType(Enum):
     OBSERVING = auto()
     VERIFYING = auto()
     REPLANNING = auto()
+    SPEAKING = auto()
     RESPONSE = auto()
     RESPONSE_CHUNK = auto()  # Streaming response chunk
     ERROR = auto()
@@ -99,6 +100,7 @@ class EventBridge(QObject):
     observing = Signal()
     verifying = Signal()
     replanning = Signal()
+    speaking = Signal()               # Diego is speaking (TTS active)
     response = Signal(str)            # complete response
     response_chunk = Signal(str)      # streaming chunk
     error = Signal(str)               # friendly error message
@@ -189,6 +191,9 @@ class EventBridge(QObject):
     def emit_replanning(self) -> None:
         self.emit(UIEvent(UIEventType.REPLANNING))
 
+    def emit_speaking(self) -> None:
+        self.emit(UIEvent(UIEventType.SPEAKING))
+
     def emit_response(self, text: str) -> None:
         self.emit(UIEvent(UIEventType.RESPONSE, {"text": text}))
 
@@ -272,6 +277,10 @@ class EventBridge(QObject):
             elif event.type == UIEventType.REPLANNING:
                 self.replanning.emit()
                 self.state_changed.emit("Replanning")
+
+            elif event.type == UIEventType.SPEAKING:
+                self.speaking.emit()
+                self.state_changed.emit("Speaking")
 
             elif event.type == UIEventType.RESPONSE:
                 self.response.emit(event.data.get("text", ""))

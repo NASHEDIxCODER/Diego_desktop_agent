@@ -1,11 +1,13 @@
 """
-Diego UI Widgets — Custom widgets for the conversational interface.
+Diego UI Widgets — Custom widgets for the voice-first assistant HUD.
 
 Includes:
-    - MessageBubble: Chat-style message display (user/Diego)
+    - VoiceStateIndicator: Current Diego voice state display
     - WaveformWidget: Audio activity visualization
     - MicIndicator: Microphone/listening state indicator
-    - StateIndicator: Current Diego state display
+    - TranscriptLabel: Live partial/final user transcript display
+    - ResponseLabel: Diego response display
+    - LatencyMetrics: Optional latency diagnostics
 """
 
 from __future__ import annotations
@@ -23,123 +25,75 @@ from PySide6.QtWidgets import (
 from ui.styles import COLORS
 
 
-class MessageBubble(QFrame):
+class VoiceStateIndicator(QFrame):
     """
-    A chat-style message bubble for user or Diego messages.
+    Displays the current Diego voice state with color coding.
 
-    Supports:
-        - User messages (right-aligned, blue)
-        - Diego messages (left-aligned, dark)
-        - Partial transcripts (dashed border, muted)
-        - Error messages (red accent)
+    States: Idle, Listening, Speech Detected, Thinking, Planning,
+            Executing, Observing, Verifying, Replanning, Speaking, Error
     """
 
-    def __init__(
-        self,
-        text: str,
-        sender: str = "diego",  # "user" | "diego" | "partial" | "error"
-        parent: Optional[QWidget] = None,
-    ):
+    def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
-        self._sender = sender
-        self._setup_ui(text)
+        self.setObjectName("stateIndicator")
+        self._state = "Idle"
 
-    def _setup_ui(self, text: str) -> None:
-        # Layout
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 10, 14, 10)
-        layout.setSpacing(4)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(12, 6, 12, 6)
+        layout.setSpacing(6)
 
-        # Sender label
-        sender_label = QLabel(self._sender_name())
-        sender_label.setObjectName("messageSender")
-        sender_class = "userSender" if self._sender == "user" else "diegoSender"
-        sender_label.setProperty("class", sender_class)
-        layout.addWidget(sender_label)
+        self._dot = QLabel("●")
+        self._dot.setFixedWidth(14)
+        layout.addWidget(self._dot)
 
-        # Message text
-        self._text_label = QLabel(text)
-        self._text_label.setObjectName("messageLabel")
-        self._text_label.setWordWrap(True)
-        self._text_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        layout.addWidget(self._text_label)
+        self._label = QLabel("Idle")
+        layout.addWidget(self._label)
 
-        # Styling based on sender type
-        bubble_class = {
-            "user": "userBubble",
-            "diego": "diegoBubble",
-            "partial": "partialBubble",
-            "error": "errorBubble",
-        }.get(self._sender, "diegoBubble")
+        self.set_state("Idle")
 
-        self.setProperty("class", f"messageBubble {bubble_class}")
-        self._apply_style()
+    def set_state(self, state: str) -> None:
+        """Update the displayed state."""
+        self._state = state
+        self._label.setText(state)
 
-        # Size policy
-        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
-        self.setMaximumWidth(500)
+        color = self._state_color(state)
+        self._dot.setStyleSheet(f"color: {color}; font-size: 10px;")
+        self.setStyleSheet(f"""
+            VoiceStateIndicator {{
+                background-color: {color}22;
+                border-radius: 14px;
+                border: 1px solid {color}44;
+            }}
+            QLabel {{
+                color: {color};
+                font-size: 13px;
+                font-weight: 500;
+                background: transparent;
+            }}
+        """)
 
-    def _sender_name(self) -> str:
-        return {
-            "user": "You",
-            "diego": "Diego",
-            "partial": "Listening...",
-            "error": "Error",
-        }.get(self._sender, "Diego")
+    def _state_color(self, state: str) -> str:
+        """Get the color for a state."""
+        state_lower = state.lower()
+        if "listen" in state_lower:
+            return COLORS['state_listening']
+        elif "speech" in state_lower:
+            return COLORS['state_listening']
+        elif any(s in state_lower for s in ("think", "plan", "replan")):
+            return COLORS['state_thinking']
+        elif any(s in state_lower for s in ("execut", "observ", "verif")):
+            return COLORS['state_executing']
+        elif "speak" in state_lower or "respond" in state_lower:
+            return COLORS['accent_secondary']
+        elif "error" in state_lower:
+            return COLORS['state_error']
+        elif "auth" in state_lower:
+            return COLORS['accent_warning']
+        return COLORS['state_idle']
 
-    def _apply_style(self) -> None:
-        """Apply inline styles based on sender type."""
-        styles = {
-            "user": f"""
-                MessageBubble {{
-                    background-color: {COLORS['user_bubble']};
-                    border-radius: 12px;
-                }}
-                #messageLabel {{ color: white; font-size: 14px; }}
-                #messageSender {{ color: rgba(255,255,255,0.7); font-size: 11px; font-weight: 600; }}
-            """,
-            "diego": f"""
-                MessageBubble {{
-                    background-color: {COLORS['diego_bubble']};
-                    border-radius: 12px;
-                }}
-                #messageLabel {{ color: {COLORS['text_primary']}; font-size: 14px; }}
-                #messageSender {{ color: {COLORS['accent_primary']}; font-size: 11px; font-weight: 600; }}
-            """,
-            "partial": f"""
-                MessageBubble {{
-                    background-color: {COLORS['bg_tertiary']};
-                    border-radius: 12px;
-                    border: 1px dashed {COLORS['border']};
-                }}
-                #messageLabel {{ color: {COLORS['text_muted']}; font-size: 14px; font-style: italic; }}
-                #messageSender {{ color: {COLORS['text_muted']}; font-size: 11px; }}
-            """,
-            "error": f"""
-                MessageBubble {{
-                    background-color: rgba(247, 118, 142, 0.15);
-                    border-radius: 12px;
-                    border: 1px solid {COLORS['accent_error']};
-                }}
-                #messageLabel {{ color: {COLORS['accent_error']}; font-size: 14px; }}
-                #messageSender {{ color: {COLORS['accent_error']}; font-size: 11px; font-weight: 600; }}
-            """,
-        }
-        self.setStyleSheet(styles.get(self._sender, styles["diego"]))
-
-    def update_text(self, text: str) -> None:
-        """Update the message text (for partial → final transitions)."""
-        self._text_label.setText(text)
-
-    def set_final(self, text: str) -> None:
-        """Convert a partial bubble to a final user message."""
-        self._sender = "user"
-        self._text_label.setText(text)
-        # Update sender label
-        sender_label = self.findChild(QLabel, "messageSender")
-        if sender_label:
-            sender_label.setText("You")
-        self._apply_style()
+    def state(self) -> str:
+        """Get the current state."""
+        return self._state
 
 
 class WaveformWidget(QWidget):
@@ -154,11 +108,11 @@ class WaveformWidget(QWidget):
         super().__init__(parent)
         self.setObjectName("waveformWidget")
         self.setMinimumHeight(40)
-        self.setMaximumHeight(60)
+        self.setMaximumHeight(120)
 
         self._level = 0.0
         self._target_level = 0.0
-        self._bars = 24
+        self._bars = 32
         self._bar_values = [0.0] * self._bars
         self._active = False
 
@@ -170,7 +124,7 @@ class WaveformWidget(QWidget):
         self.setStyleSheet(f"""
             WaveformWidget {{
                 background-color: {COLORS['bg_secondary']};
-                border-radius: 8px;
+                border-radius: 12px;
             }}
         """)
 
@@ -301,121 +255,192 @@ class MicIndicator(QWidget):
         painter.end()
 
 
-class StateIndicator(QFrame):
+class TranscriptLabel(QFrame):
     """
-    Displays the current Diego state with color coding.
+    Displays the user's transcript.
 
-    States: Listening, Thinking, Planning, Executing, Observing,
-            Verifying, Replanning, Responding, Idle, Error
+    Shows "You: ..." with live partial updates while speaking,
+    then the final recognized sentence once.
     """
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
-        self.setObjectName("stateIndicator")
-        self._state = "Idle"
+        self.setObjectName("transcriptLabel")
 
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(12, 6, 12, 6)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 10, 16, 10)
+        layout.setSpacing(2)
 
-        self._dot = QLabel("●")
-        self._dot.setFixedWidth(16)
-        layout.addWidget(self._dot)
+        # Sender label
+        self._sender_label = QLabel("You")
+        self._sender_label.setObjectName("transcriptSender")
+        layout.addWidget(self._sender_label)
 
-        self._label = QLabel("Idle")
-        layout.addWidget(self._label)
+        # Text label
+        self._text_label = QLabel("")
+        self._text_label.setObjectName("transcriptText")
+        self._text_label.setWordWrap(True)
+        self._text_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        layout.addWidget(self._text_label)
 
-        self.set_state("Idle")
-
-    def set_state(self, state: str) -> None:
-        """Update the displayed state."""
-        self._state = state
-        self._label.setText(state)
-
-        color = self._state_color(state)
-        self._dot.setStyleSheet(f"color: {color}; font-size: 10px;")
         self.setStyleSheet(f"""
-            StateIndicator {{
-                background-color: {color}22;
-                border-radius: 14px;
-                border: 1px solid {color}44;
+            TranscriptLabel {{
+                background-color: {COLORS['bg_tertiary']};
+                border-radius: 12px;
+                border: 1px solid {COLORS['border']};
             }}
-            QLabel {{
-                color: {color};
-                font-size: 13px;
-                font-weight: 500;
-                background: transparent;
+            #transcriptSender {{
+                color: {COLORS['accent_primary']};
+                font-size: 11px;
+                font-weight: 600;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+            }}
+            #transcriptText {{
+                color: {COLORS['text_primary']};
+                font-size: 15px;
             }}
         """)
 
-    def _state_color(self, state: str) -> str:
-        """Get the color for a state."""
-        state_lower = state.lower()
-        if "listen" in state_lower:
-            return COLORS['state_listening']
-        elif any(s in state_lower for s in ("think", "plan", "replan")):
-            return COLORS['state_thinking']
-        elif any(s in state_lower for s in ("execut", "observ", "verif")):
-            return COLORS['state_executing']
-        elif "respond" in state_lower or "speak" in state_lower:
-            return COLORS['accent_secondary']
-        elif "error" in state_lower:
-            return COLORS['state_error']
-        elif "auth" in state_lower:
-            return COLORS['accent_warning']
-        return COLORS['state_idle']
+    def set_partial(self, text: str) -> None:
+        """Update the live partial transcript."""
+        self._text_label.setText(text)
+        self._text_label.setStyleSheet(f"""
+            #transcriptText {{
+                color: {COLORS['text_secondary']};
+                font-size: 15px;
+                font-style: italic;
+            }}
+        """)
 
-    def state(self) -> str:
-        """Get the current state."""
-        return self._state
+    def set_final(self, text: str) -> None:
+        """Set the final recognized sentence (replaces partial)."""
+        self._text_label.setText(text)
+        self._text_label.setStyleSheet(f"""
+            #transcriptText {{
+                color: {COLORS['text_primary']};
+                font-size: 15px;
+            }}
+        """)
+
+    def clear(self) -> None:
+        """Clear the transcript."""
+        self._text_label.setText("")
 
 
-class TypingIndicator(QWidget):
+class ResponseLabel(QFrame):
     """
-    Animated typing indicator for when Diego is thinking/responding.
+    Displays Diego's response prominently.
+
+    The response appears before/during TTS and remains visible after.
     """
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
-        self.setFixedHeight(30)
-        self._phase = 0.0
-        self._visible = False
+        self.setObjectName("responseLabel")
 
-        self._timer = QTimer(self)
-        self._timer.setInterval(100)
-        self._timer.timeout.connect(self._animate)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 10, 16, 10)
+        layout.setSpacing(2)
 
-    def set_visible(self, visible: bool) -> None:
-        """Show/hide the typing indicator."""
-        self._visible = visible
-        if visible:
-            self._timer.start()
-        else:
-            self._timer.stop()
-        self.update()
+        # Sender label
+        self._sender_label = QLabel("Diego")
+        self._sender_label.setObjectName("responseSender")
+        layout.addWidget(self._sender_label)
 
-    def _animate(self) -> None:
-        self._phase += 0.3
-        self.update()
+        # Text label
+        self._text_label = QLabel("")
+        self._text_label.setObjectName("responseText")
+        self._text_label.setWordWrap(True)
+        self._text_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        layout.addWidget(self._text_label)
 
-    def paintEvent(self, event) -> None:
-        if not self._visible:
-            return
+        self.setStyleSheet(f"""
+            ResponseLabel {{
+                background-color: {COLORS['bg_secondary']};
+                border-radius: 12px;
+                border: 1px solid {COLORS['accent_primary']}44;
+            }}
+            #responseSender {{
+                color: {COLORS['accent_secondary']};
+                font-size: 11px;
+                font-weight: 600;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+            }}
+            #responseText {{
+                color: {COLORS['text_primary']};
+                font-size: 16px;
+                font-weight: 500;
+            }}
+        """)
 
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
+    def set_response(self, text: str) -> None:
+        """Set Diego's response text."""
+        self._text_label.setText(text)
+        self._text_label.setStyleSheet(f"""
+            #responseText {{
+                color: {COLORS['text_primary']};
+                font-size: 16px;
+                font-weight: 500;
+            }}
+        """)
 
-        dot_radius = 4
-        spacing = 12
-        start_x = 20
+    def set_error(self, message: str) -> None:
+        """Display an error message."""
+        self._text_label.setText(message)
+        self._text_label.setStyleSheet(f"""
+            #responseText {{
+                color: {COLORS['accent_error']};
+                font-size: 15px;
+            }}
+        """)
 
-        for i in range(3):
-            bounce = math.sin(self._phase + i * 0.5)
-            y = 15 - bounce * 4
-            alpha = int(150 + bounce * 100)
-            color = QColor(COLORS['accent_primary'])
-            color.setAlpha(max(50, min(255, alpha)))
-            painter.setBrush(QBrush(color))
-            painter.setPen(Qt.NoPen)
-            painter.drawEllipse(QPointF(start_x + i * spacing, y), dot_radius, dot_radius)
+    def clear(self) -> None:
+        """Clear the response."""
+        self._text_label.setText("")
 
-        painter.end()
+
+class LatencyMetrics(QWidget):
+    """
+    Optional small diagnostics display for latency metrics.
+
+    Shows STT / agent / TTS / total turn latency in milliseconds.
+    """
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.setObjectName("latencyMetrics")
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        self._stt_label = QLabel("STT: --ms")
+        self._agent_label = QLabel("Agent: --ms")
+        self._tts_label = QLabel("TTS: --ms")
+        self._total_label = QLabel("Total: --ms")
+
+        for label in (self._stt_label, self._agent_label,
+                      self._tts_label, self._total_label):
+            label.setObjectName("latencyMetric")
+            label.setStyleSheet(f"""
+                #latencyMetric {{
+                    color: {COLORS['text_muted']};
+                    font-size: 11px;
+                    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+                }}
+            """)
+            layout.addWidget(label)
+
+    def set_stt_latency(self, ms: float) -> None:
+        self._stt_label.setText(f"STT: {ms:.0f}ms")
+
+    def set_agent_latency(self, ms: float) -> None:
+        self._agent_label.setText(f"Agent: {ms:.0f}ms")
+
+    def set_tts_latency(self, ms: float) -> None:
+        self._tts_label.setText(f"TTS: {ms:.0f}ms")
+
+    def set_total_latency(self, ms: float) -> None:
+        self._total_label.setText(f"Total: {ms:.0f}ms")

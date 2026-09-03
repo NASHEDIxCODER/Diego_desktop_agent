@@ -1,5 +1,5 @@
 """
-Diego UI Styles — Dark modern assistant theme.
+Diego UI Styles — Dark modern futuristic assistant theme.
 
 Provides QSS styles for a polished, accessible dark UI.
 Colors are chosen for good contrast and low eye strain.
@@ -8,16 +8,16 @@ Colors are chosen for good contrast and low eye strain.
 # Color palette
 COLORS = {
     # Backgrounds
-    "bg_primary": "#1a1b26",      # Main window background
-    "bg_secondary": "#24283b",    # Cards, panels
-    "bg_tertiary": "#2f3349",     # Hover states
-    "bg_input": "#1f2335",        # Input fields
+    "bg_primary": "#0f1117",      # Main window background (darker)
+    "bg_secondary": "#1a1d27",    # Cards, panels
+    "bg_tertiary": "#242836",     # Hover states
+    "bg_input": "#1a1d27",        # Input fields
 
     # Text
     "text_primary": "#c0caf5",    # Main text
     "text_secondary": "#a9b1d6",  # Secondary text
     "text_muted": "#565f89",      # Muted/disabled text
-    "text_inverse": "#1a1b26",    # Text on accent backgrounds
+    "text_inverse": "#0f1117",    # Text on accent backgrounds
 
     # Accents
     "accent_primary": "#7aa2f7",   # Primary accent (blue)
@@ -28,7 +28,7 @@ COLORS = {
 
     # User/Diego message colors
     "user_bubble": "#3d59a1",      # User message background
-    "diego_bubble": "#2f3349",     # Diego message background
+    "diego_bubble": "#242836",     # Diego message background
 
     # Borders and dividers
     "border": "#3b4261",
@@ -63,9 +63,10 @@ QWidget {{
 }}
 
 #titleLabel {{
-    font-size: 22px;
+    font-size: 24px;
     font-weight: 700;
     color: {COLORS['text_primary']};
+    letter-spacing: 2px;
 }}
 
 #statusLabel {{
@@ -82,127 +83,83 @@ QWidget {{
     font-weight: 500;
 }}
 
-/* Transcript area */
-#transcriptScroll {{
-    background-color: {COLORS['bg_primary']};
-    border: none;
-}}
-
-#transcriptContainer {{
+/* Waveform / audio area */
+#waveformArea {{
     background-color: {COLORS['bg_primary']};
 }}
 
-/* Message bubbles */
-.messageBubble {{
+#waveformWidget {{
+    background-color: {COLORS['bg_secondary']};
     border-radius: 12px;
-    padding: 12px 16px;
-    margin: 4px 0px;
 }}
 
-.userBubble {{
-    background-color: {COLORS['user_bubble']};
-    color: white;
+#speakingLabel {{
+    color: {COLORS['accent_secondary']};
+    font-size: 13px;
+    font-weight: 600;
 }}
 
-.diegoBubble {{
-    background-color: {COLORS['diego_bubble']};
-    color: {COLORS['text_primary']};
+/* Transcript area */
+#transcriptArea {{
+    background-color: {COLORS['bg_primary']};
+    border-top: 1px solid {COLORS['border']};
 }}
 
-.partialBubble {{
+#transcriptLabel {{
     background-color: {COLORS['bg_tertiary']};
-    color: {COLORS['text_muted']};
-    border: 1px dashed {COLORS['border']};
+    border-radius: 12px;
+    border: 1px solid {COLORS['border']};
 }}
 
-.errorBubble {{
-    background-color: rgba(247, 118, 142, 0.15);
-    color: {COLORS['accent_error']};
-    border: 1px solid {COLORS['accent_error']};
-}}
-
-.messageLabel {{
-    font-size: 14px;
-    line-height: 1.5;
-}}
-
-.messageSender {{
+#transcriptSender {{
+    color: {COLORS['accent_primary']};
     font-size: 11px;
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.5px;
-    margin-bottom: 4px;
 }}
 
-.userSender {{
-    color: rgba(255, 255, 255, 0.7);
+#transcriptText {{
+    color: {COLORS['text_primary']};
+    font-size: 15px;
 }}
 
-.diegoSender {{
-    color: {COLORS['accent_primary']};
+/* Response area */
+#responseArea {{
+    background-color: {COLORS['bg_primary']};
+    border-top: 1px solid {COLORS['border']};
 }}
 
-/* Input area */
-#inputArea {{
+#responseLabel {{
+    background-color: {COLORS['bg_secondary']};
+    border-radius: 12px;
+    border: 1px solid {COLORS['accent_primary']}44;
+}}
+
+#responseSender {{
+    color: {COLORS['accent_secondary']};
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}}
+
+#responseText {{
+    color: {COLORS['text_primary']};
+    font-size: 16px;
+    font-weight: 500;
+}}
+
+/* Footer */
+#footer {{
     background-color: {COLORS['bg_secondary']};
     border-top: 1px solid {COLORS['border']};
-    padding: 12px 20px;
+    padding: 8px 20px;
 }}
 
-#textInput {{
-    background-color: {COLORS['bg_input']};
-    border: 1px solid {COLORS['border']};
-    border-radius: 10px;
-    padding: 12px 16px;
-    font-size: 14px;
-    color: {COLORS['text_primary']};
-    selection-background-color: {COLORS['accent_primary']};
-    selection-color: {COLORS['text_inverse']};
-}}
-
-#textInput:focus {{
-    border: 1px solid {COLORS['border_focus']};
-}}
-
-#textInput::placeholder {{
+#statusLabel {{
+    font-size: 12px;
     color: {COLORS['text_muted']};
-}}
-
-/* Buttons */
-QPushButton {{
-    background-color: {COLORS['accent_primary']};
-    color: {COLORS['text_inverse']};
-    border: none;
-    border-radius: 10px;
-    padding: 12px 24px;
-    font-size: 14px;
-    font-weight: 600;
-}}
-
-QPushButton:hover {{
-    background-color: #89b4fa;
-}}
-
-QPushButton:pressed {{
-    background-color: #5d87e8;
-}}
-
-QPushButton:disabled {{
-    background-color: {COLORS['bg_tertiary']};
-    color: {COLORS['text_muted']};
-}}
-
-#clearButton {{
-    background-color: transparent;
-    color: {COLORS['text_secondary']};
-    border: 1px solid {COLORS['border']};
-    padding: 8px 16px;
-    font-size: 13px;
-}}
-
-#clearButton:hover {{
-    background-color: {COLORS['bg_tertiary']};
-    color: {COLORS['text_primary']};
 }}
 
 /* Window controls */
@@ -213,21 +170,18 @@ QPushButton:disabled {{
     padding: 8px;
     min-width: 32px;
     min-height: 32px;
+    color: {COLORS['text_muted']};
+    font-size: 14px;
 }}
 
 #minimizeButton:hover {{
     background-color: {COLORS['bg_tertiary']};
+    color: {COLORS['text_primary']};
 }}
 
 #closeButton:hover {{
     background-color: {COLORS['accent_error']};
     color: white;
-}}
-
-/* Waveform / audio indicator */
-#waveformWidget {{
-    background-color: {COLORS['bg_secondary']};
-    border-radius: 8px;
 }}
 
 /* Mic indicator */
@@ -238,6 +192,12 @@ QPushButton:disabled {{
 
 #micIndicator[active="true"] {{
     background-color: rgba(158, 206, 106, 0.2);
+}}
+
+/* Latency metrics */
+#latencyMetrics {{
+    font-size: 11px;
+    color: {COLORS['text_muted']};
 }}
 
 /* Scrollbars */
@@ -264,26 +224,19 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
     background: none;
 }}
-
-/* Status bar */
-#statusBar {{
-    background-color: {COLORS['bg_secondary']};
-    border-top: 1px solid {COLORS['border']};
-    padding: 4px 12px;
-    font-size: 12px;
-    color: {COLORS['text_muted']};
-}}
 """
 
 # State-specific colors for the indicator
 STATE_COLORS = {
     "Listening": COLORS["state_listening"],
+    "Speech Detected": COLORS["state_listening"],
     "Thinking": COLORS["state_thinking"],
     "Planning": COLORS["state_thinking"],
     "Executing": COLORS["state_executing"],
     "Observing": COLORS["state_executing"],
     "Verifying": COLORS["state_executing"],
     "Replanning": COLORS["state_thinking"],
+    "Speaking": COLORS["accent_secondary"],
     "Responding": COLORS["accent_secondary"],
     "Idle": COLORS["state_idle"],
     "Error": COLORS["state_error"],

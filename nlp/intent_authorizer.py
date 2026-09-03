@@ -56,6 +56,7 @@ class IntentCategory(str, Enum):
     KNOWLEDGE_QUESTION = "KNOWLEDGE_QUESTION"
     FOLLOW_UP = "FOLLOW_UP"
     MULTI_STEP_TASK = "MULTI_STEP_TASK"
+    LOCAL_KNOWLEDGE = "LOCAL_KNOWLEDGE"
     UNCERTAIN = "UNCERTAIN"
 
 
@@ -66,6 +67,7 @@ ACTIONABLE_CATEGORIES = frozenset({
     IntentCategory.SEARCH_REQUEST,
     IntentCategory.FOLLOW_UP,
     IntentCategory.MULTI_STEP_TASK,
+    IntentCategory.LOCAL_KNOWLEDGE,
 })
 
 # Categories that may reach the LLM for a spoken answer (never tools).
@@ -77,6 +79,7 @@ LLM_CATEGORIES = frozenset({
     IntentCategory.VISION_COMMAND,
     IntentCategory.SEARCH_REQUEST,
     IntentCategory.FOLLOW_UP,
+    IntentCategory.LOCAL_KNOWLEDGE,
 })
 
 
@@ -189,6 +192,63 @@ _SEARCH_PATTERNS: Tuple[Tuple[str, str], ...] = (
     (r"^how\s+to\s+(.+)$", "query"),
 )
 
+# ── LOCAL KNOWLEDGE / PROJECT / FILESYSTEM patterns (2026-09-03) ──
+# Requests referring to the user's local projects, files, code, or
+# PC knowledge must be routed to LOCAL knowledge — NEVER web search.
+# These are checked BEFORE the generic search patterns so "find my
+# project" is never classified as a web search.
+_LOCAL_KNOWLEDGE_PATTERNS: Tuple[str, ...] = (
+    r"\bmy\s+project\b",
+    r"\bmy\s+projects\b",
+    r"\bproject\s+i\s+worked\s+on\b",
+    r"\brecently\s+worked\s+on\b",
+    r"\bmy\s+recent\s+project\b",
+    r"\bwhat\s+project\s+was\s+i\s+working\s+on\b",
+    r"\bfind\s+my\s+code\b",
+    r"\bfind\s+my\s+project\b",
+    r"\bmy\s+local\s+files\b",
+    r"\bmy\s+local\s+projects\b",
+    r"\bmy\s+files\b",
+    r"\bmy\s+code\b",
+    r"\bmy\s+documents\b",
+    r"\bmy\s+workspace\b",
+    r"\bmy\s+workspaces\b",
+    r"\bmy\s+repos?\b",
+    r"\bmy\s+repositories?\b",
+    r"\bmy\s+folders?\b",
+    r"\bmy\s+directories?\b",
+    r"\bmy\s+desktop\b",
+    r"\bmy\s+downloads\b",
+    r"\bmy\s+home\s+folder\b",
+    r"\bmy\s+home\s+directory\b",
+    r"\bwhat\s+am\s+i\s+working\s+on\b",
+    r"\bwhat\s+was\s+i\s+working\s+on\b",
+    r"\bwhat\s+did\s+i\s+work\s+on\b",
+    r"\bwhat\s+have\s+i\s+been\s+working\s+on\b",
+    r"\bwhat\s+projects?\s+(?:am|was|have)\s+i\b",
+    r"\bwhere\s+is\s+my\s+project\b",
+    r"\bwhere\s+are\s+my\s+projects\b",
+    r"\bshow\s+me\s+my\s+projects?\b",
+    r"\blist\s+my\s+projects?\b",
+    r"\bopen\s+my\s+project\b",
+    r"\bopen\s+my\s+projects?\b",
+    r"\bmy\s+recent\s+work\b",
+    r"\bmy\s+recent\s+files\b",
+    r"\bmy\s+recent\s+projects?\b",
+    r"\bmy\s+recent\s+code\b",
+    r"\bmy\s+recent\s+documents\b",
+    r"\bmy\s+recent\s+workspace\b",
+    r"\bmy\s+recent\s+workspaces\b",
+    r"\bmy\s+recent\s+repos?\b",
+    r"\bmy\s+recent\s+repositories?\b",
+    r"\bmy\s+recent\s+folders?\b",
+    r"\bmy\s+recent\s+directories?\b",
+    r"\bmy\s+recent\s+downloads\b",
+    r"\bmy\s+recent\s+desktop\b",
+    r"\bmy\s+recent\s+home\s+folder\b",
+    r"\bmy\s+recent\s+home\s+directory\b",
+)
+
 # ── Question cues (knowledge questions) ────────────────────────
 _QUESTION_CUES = frozenset({
     "what", "whats", "what's", "who", "whos", "who's", "when", "whens",
@@ -269,6 +329,20 @@ def _match_search(text: str) -> Optional[str]:
             except (IndexError, AttributeError):
                 return t
     return None
+
+
+def _match_local_knowledge(text: str) -> bool:
+    """True when the request refers to local projects/files/code.
+
+    These must be routed to LOCAL knowledge — never web search.
+    """
+    t = " ".join(text.lower().strip().strip(".,!?").split())
+    if not t:
+        return False
+    for pattern in _LOCAL_KNOWLEDGE_PATTERNS:
+        if re.search(pattern, t):
+            return True
+    return False
 
 
 def _match_deterministic_query(text: str) -> bool:
@@ -354,6 +428,8 @@ class IntentAuthorization:
             return "follow_up"
         if self.category == IntentCategory.MULTI_STEP_TASK:
             return "planner"
+        if self.category == IntentCategory.LOCAL_KNOWLEDGE:
+            return "local_knowledge"
         return "dispatcher"
 
     @property
@@ -378,6 +454,7 @@ def _base_confidence(category: IntentCategory, text: str) -> float:
         IntentCategory.MULTI_STEP_TASK: 0.80,
         IntentCategory.KNOWLEDGE_QUESTION: 0.70,
         IntentCategory.CONVERSATIONAL: 0.65,
+        IntentCategory.LOCAL_KNOWLEDGE: 0.85,
         IntentCategory.UNCERTAIN: 0.20,
     }[category]
     # Very short actionable fragments are weaker evidence.
@@ -424,6 +501,15 @@ def _classify(text: str) -> Tuple[IntentCategory, str, Dict[str, Any]]:
     if _match_deterministic_query(t):
         return (IntentCategory.DETERMINISTIC_COMMAND,
                 "deterministic live query", {})
+
+    # 4b. LOCAL KNOWLEDGE / PROJECT / FILESYSTEM requests.
+    # CRITICAL FIX (2026-09-03): "find my project which I have worked on
+    # recently" was classified as SEARCH_REQUEST and routed to web search.
+    # Local project/file/code references must be routed to LOCAL knowledge
+    # — checked BEFORE the generic search patterns.
+    if _match_local_knowledge(t):
+        return (IntentCategory.LOCAL_KNOWLEDGE,
+                "local project/filesystem reference", {})
 
     # 5. Explicit search requests.
     query = _match_search(t)

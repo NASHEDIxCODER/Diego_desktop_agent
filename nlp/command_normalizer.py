@@ -8,6 +8,7 @@ Normalizes spoken commands before they reach the Brain. Handles:
   - Noise word removal ("please", "can you", "would you")
   - Contraction expansion ("what's" → "what is")
   - Follow-up command resolution ("open it", "continue", "go back")
+  - Wake-name removal ("Diego, open Firefox" → "open Firefox")
 
 This is the SINGLE place where raw transcripts become canonical commands.
 The Brain calls normalize() before planning or dispatching.
@@ -233,6 +234,18 @@ _NOISE_WORDS = {
     "later", "soon", "eventually", "finally", "at last", "at once",
 }
 
+# ── Wake-name variants (assistant name + common prefixes) ─────
+# These are removed FIRST with clean punctuation handling so the
+# transcript never starts with a stray comma or punctuation.
+_WAKE_NAME_PATTERNS = [
+    r"\bhey\s+diego\b",
+    r"\bhi\s+diego\b",
+    r"\bhello\s+diego\b",
+    r"\bok\s+diego\b",
+    r"\bokay\s+diego\b",
+    r"\bdiego\b",
+]
+
 # ── Contraction expansion ──────────────────────────────────────
 _CONTRACTIONS = {
     "what's": "what is",
@@ -363,6 +376,67 @@ _RADIO_PATTERNS = [
 ]
 
 
+def remove_wake_name(text: str) -> str:
+    """
+    Remove the assistant wake name ("Diego") cleanly from a transcript.
+
+    Handles:
+      - "Diego, open Firefox"  → "open Firefox"
+      - "Diego open Firefox"   → "open Firefox"
+      - "Hey Diego, open Firefox" → "open Firefox"
+      - "okay Diego open Firefox" → "open Firefox"
+
+    Rules:
+      - Removes the wake name ONLY when it appears at the START of the
+        sentence as a wake word (with optional "hey"/"hi"/"hello"/"ok"/
+        "okay" prefix)
+      - Removes adjacent punctuation/spaces cleanly
+      - Never leaves leading commas or punctuation
+      - Preserves the rest of the sentence exactly
+      - Is idempotent (safe to call multiple times)
+      - Does NOT alter legitimate content containing the word "Diego"
+        in the middle of a sentence (e.g. "tell me about Diego" stays
+        unchanged)
+
+    Args:
+        text: Raw transcript.
+
+    Returns:
+        Cleaned transcript with the wake name removed.
+    """
+    if not text or not text.strip():
+        return text
+
+    original = text
+    result = text.strip()
+
+    # Only remove the wake name when it appears at the START of the
+    # sentence (as a wake word). "Diego" in the middle of a sentence
+    # ("tell me about Diego") is legitimate content and must be preserved.
+    # CRITICAL FIX (2026-09-03): The old implementation removed "Diego"
+    # anywhere in the text, corrupting legitimate content.
+    result = re.sub(
+        r'^(?:hey|hi|hello|ok|okay|please)?\s*diego\b',
+        '', result, flags=re.IGNORECASE)
+
+    # Clean up any punctuation/spaces left behind by the removal.
+    # This handles "Diego, open Firefox" → ", open Firefox" → "open Firefox".
+    result = re.sub(r'^[\s,.;:!?]+', '', result)
+    result = re.sub(r'[\s,.;:!?]+$', '', result)
+    result = re.sub(r'\s+', ' ', result).strip()
+
+    # Idempotency: if the result still starts with a wake name, remove it again.
+    if result.lower() != original.lower():
+        result = re.sub(
+            r'^(?:hey|hi|hello|ok|okay|please)?\s*diego\b',
+            '', result, flags=re.IGNORECASE)
+        result = re.sub(r'^[\s,.;:!?]+', '', result)
+        result = re.sub(r'[\s,.;:!?]+$', '', result)
+        result = re.sub(r'\s+', ' ', result).strip()
+
+    return result
+
+
 class CommandNormalizer:
     """Normalizes spoken commands into canonical form."""
 
@@ -377,6 +451,7 @@ class CommandNormalizer:
             "search": 0,
             "screen": 0,
             "radio": 0,
+            "wake_name_removed": 0,
         }
 
     def normalize(self, text: str) -> str:
@@ -384,6 +459,7 @@ class CommandNormalizer:
         Normalize a spoken command into canonical form.
 
         Pipeline:
+          0. Remove wake name ("Diego") cleanly
           1. Clean whitespace/punctuation
           2. Expand contractions
           3. Remove noise words
@@ -403,6 +479,15 @@ class CommandNormalizer:
 
         self._stats["normalized"] += 1
         original = text
+
+        # 0. Remove wake name FIRST with clean punctuation handling.
+        # CRITICAL FIX (2026-09-03): "Diego, open Firefox" was becoming
+        # ", open Firefox" because the noise-word removal stripped "Diego"
+        # but left the comma. The dedicated wake-name remover handles
+        # adjacent punctuation cleanly.
+        text = remove_wake_name(text)
+        if text != original:
+            self._stats["wake_name_removed"] += 1
 
         # 1. Clean
         text = text.strip()

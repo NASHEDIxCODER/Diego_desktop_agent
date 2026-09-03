@@ -1,21 +1,21 @@
 """
-DiegoMainWindow — The main Diego desktop UI window.
+DiegoMainWindow — Voice-first desktop assistant HUD.
 
-Features:
-    - Diego title/header with connection/runtime state
-    - Conversation transcript (user + Diego messages)
-    - Live partial transcript display (no duplication)
-    - Current activity/status indicator
-    - Microphone/listening indicator
-    - Audio waveform area
-    - Text input + send button (uses ConversationEngine)
-    - Clear conversation button
-    - Minimize/close controls
+This is NOT a chat application. The primary interaction is:
+    MICROPHONE → LIVE TRANSCRIPT → DIEGO RESPONSE PRINTED
+    → DIEGO RESPONSE SPOKEN → LISTEN AGAIN
+
+Layout:
+    HEADER: Diego identity + current voice state
+    CENTER: Large animated waveform / audio visualizer
+    TRANSCRIPT AREA: "You: ..." (live partial → final)
+    RESPONSE AREA: "Diego: ..." (printed before/during TTS)
+    FOOTER: Listening / Speaking / Processing + optional latency
 
 Threading:
     - All pipeline events arrive via EventBridge (thread-safe)
-    - Text input is sent to ConversationEngine/Brain via asyncio
     - The Qt event loop is NEVER blocked
+    - No mouse/keyboard interaction required for normal operation
 """
 
 from __future__ import annotations
@@ -23,20 +23,20 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+import time
 from typing import Optional
 
 from PySide6.QtCore import Qt, QTimer, Signal, Slot
-from PySide6.QtGui import QFont, QIcon
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QPushButton, QLineEdit, QScrollArea, QFrame, QSizePolicy,
-    QApplication, QSpacerItem,
+    QFrame, QSizePolicy, QApplication,
 )
 
 from ui.event_bridge import EventBridge
 from ui.styles import MAIN_WINDOW_QSS, COLORS
 from ui.widgets import (
-    MessageBubble, WaveformWidget, MicIndicator, StateIndicator, TypingIndicator,
+    VoiceStateIndicator, WaveformWidget, TranscriptLabel, ResponseLabel,
+    LatencyMetrics, MicIndicator,
 )
 
 logger = logging.getLogger(__name__)
@@ -44,14 +44,15 @@ logger = logging.getLogger(__name__)
 
 class DiegoMainWindow(QMainWindow):
     """
-    Main Diego conversational desktop window.
+    Voice-first Diego desktop assistant HUD.
 
     The window subscribes to EventBridge signals and displays:
-    - User messages (from FINAL_TRANSCRIPT events)
-    - Diego responses (from RESPONSE events)
-    - Partial transcripts (live STT updates)
-    - State changes (Listening, Thinking, etc.)
-    - Errors (friendly messages)
+    - Current voice state (IDLE, LISTENING, THINKING, SPEAKING, etc.)
+    - Live partial STT transcript (updating in real time)
+    - Final user transcript (replaces partial)
+    - Diego's response (printed before/during TTS, remains visible)
+    - Speaking indicator (Diego is currently speaking)
+    - Optional latency metrics
     """
 
     # Signal for scheduling asyncio work from the Qt thread
@@ -68,13 +69,16 @@ class DiegoMainWindow(QMainWindow):
         self._loop = loop
 
         # Transcript state
-        self._partial_bubble: Optional[MessageBubble] = None
         self._partial_text: str = ""
-        self._messages: list[MessageBubble] = []
+        self._final_text: str = ""
+        self._response_text: str = ""
 
-        # Current Diego response being streamed
-        self._streaming_bubble: Optional[MessageBubble] = None
-        self._streaming_text: str = ""
+        # Latency tracking
+        self._stt_latency_ms: float = 0.0
+        self._agent_latency_ms: float = 0.0
+        self._tts_latency_ms: float = 0.0
+        self._total_latency_ms: float = 0.0
+        self._turn_start_time: Optional[float] = None
 
         self._setup_ui()
         self._connect_signals()
@@ -83,10 +87,10 @@ class DiegoMainWindow(QMainWindow):
         self._bridge.start()
 
     def _setup_ui(self) -> None:
-        """Build the UI layout."""
+        """Build the voice-first HUD layout."""
         self.setWindowTitle("Diego")
-        self.setMinimumSize(480, 640)
-        self.resize(520, 720)
+        self.setMinimumSize(420, 560)
+        self.resize(480, 680)
 
         # Remove native title bar for custom controls
         self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
@@ -103,10 +107,10 @@ class DiegoMainWindow(QMainWindow):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        # ── Header ──────────────────────────────────────────────
+        # ── HEADER: Diego identity + state ─────────────────────
         header = QFrame()
         header.setObjectName("header")
-        header.setFixedHeight(64)
+        header.setFixedHeight(72)
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(20, 12, 20, 12)
         header_layout.setSpacing(12)
@@ -116,102 +120,95 @@ class DiegoMainWindow(QMainWindow):
         header_layout.addWidget(self._mic_indicator)
 
         # Title
-        title_label = QLabel("Diego")
+        title_label = QLabel("DIEGO")
         title_label.setObjectName("titleLabel")
         header_layout.addWidget(title_label)
 
         header_layout.addStretch()
 
-        # State indicator
-        self._state_indicator = StateIndicator()
+        # Voice state indicator
+        self._state_indicator = VoiceStateIndicator()
         header_layout.addWidget(self._state_indicator)
 
         header_layout.addSpacing(16)
 
         # Window controls
-        self._minimize_btn = QPushButton("─")
+        self._minimize_btn = QLabel("─")
         self._minimize_btn.setObjectName("minimizeButton")
         self._minimize_btn.setFixedSize(32, 32)
-        self._minimize_btn.clicked.connect(self.showMinimized)
+        self._minimize_btn.mousePressEvent = lambda e: self.showMinimized()
         header_layout.addWidget(self._minimize_btn)
 
-        self._close_btn = QPushButton("✕")
+        self._close_btn = QLabel("✕")
         self._close_btn.setObjectName("closeButton")
         self._close_btn.setFixedSize(32, 32)
-        self._close_btn.clicked.connect(self.close)
+        self._close_btn.mousePressEvent = lambda e: self.close()
         header_layout.addWidget(self._close_btn)
 
         main_layout.addWidget(header)
 
-        # ── Transcript area ─────────────────────────────────────
-        self._transcript_scroll = QScrollArea()
-        self._transcript_scroll.setObjectName("transcriptScroll")
-        self._transcript_scroll.setWidgetResizable(True)
-        self._transcript_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self._transcript_scroll.setFrameShape(QFrame.NoFrame)
+        # ── CENTER: Large waveform / audio visualizer ──────────
+        waveform_area = QFrame()
+        waveform_area.setObjectName("waveformArea")
+        waveform_layout = QVBoxLayout(waveform_area)
+        waveform_layout.setContentsMargins(20, 20, 20, 20)
+        waveform_layout.setSpacing(8)
 
-        self._transcript_container = QWidget()
-        self._transcript_container.setObjectName("transcriptContainer")
-        self._transcript_layout = QVBoxLayout(self._transcript_container)
-        self._transcript_layout.setContentsMargins(20, 20, 20, 20)
-        self._transcript_layout.setSpacing(12)
-        self._transcript_layout.addStretch()
-
-        self._transcript_scroll.setWidget(self._transcript_container)
-        main_layout.addWidget(self._transcript_scroll, 1)
-
-        # ── Audio/status area ───────────────────────────────────
-        audio_area = QFrame()
-        audio_area.setObjectName("audioArea")
-        audio_layout = QHBoxLayout(audio_area)
-        audio_layout.setContentsMargins(20, 8, 20, 8)
-        audio_layout.setSpacing(12)
-
-        # Waveform
         self._waveform = WaveformWidget()
-        audio_layout.addWidget(self._waveform, 1)
+        self._waveform.setMinimumHeight(80)
+        self._waveform.setMaximumHeight(120)
+        waveform_layout.addWidget(self._waveform, 1)
 
-        # Typing indicator (hidden by default)
-        self._typing_indicator = TypingIndicator()
-        self._typing_indicator.set_visible(False)
-        audio_layout.addWidget(self._typing_indicator)
+        # Speaking indicator (hidden by default)
+        self._speaking_label = QLabel("● Diego is speaking")
+        self._speaking_label.setObjectName("speakingLabel")
+        self._speaking_label.setAlignment(Qt.AlignCenter)
+        self._speaking_label.hide()
+        waveform_layout.addWidget(self._speaking_label)
 
-        main_layout.addWidget(audio_area)
+        main_layout.addWidget(waveform_area, 1)
 
-        # ── Input area ──────────────────────────────────────────
-        input_area = QFrame()
-        input_area.setObjectName("inputArea")
-        input_layout = QHBoxLayout(input_area)
-        input_layout.setContentsMargins(20, 12, 20, 16)
-        input_layout.setSpacing(12)
+        # ── TRANSCRIPT AREA: "You: ..." ─────────────────────────
+        transcript_area = QFrame()
+        transcript_area.setObjectName("transcriptArea")
+        transcript_layout = QVBoxLayout(transcript_area)
+        transcript_layout.setContentsMargins(20, 8, 20, 8)
+        transcript_layout.setSpacing(4)
 
-        # Clear button
-        self._clear_btn = QPushButton("Clear")
-        self._clear_btn.setObjectName("clearButton")
-        self._clear_btn.clicked.connect(self.clear_conversation)
-        input_layout.addWidget(self._clear_btn)
+        self._transcript_label = TranscriptLabel()
+        transcript_layout.addWidget(self._transcript_label)
 
-        # Text input
-        self._text_input = QLineEdit()
-        self._text_input.setObjectName("textInput")
-        self._text_input.setPlaceholderText("Type a message to Diego...")
-        self._text_input.returnPressed.connect(self._on_send_clicked)
-        input_layout.addWidget(self._text_input, 1)
+        main_layout.addWidget(transcript_area)
 
-        # Send button
-        self._send_btn = QPushButton("Send")
-        self._send_btn.setObjectName("sendButton")
-        self._send_btn.clicked.connect(self._on_send_clicked)
-        input_layout.addWidget(self._send_btn)
+        # ── RESPONSE AREA: "Diego: ..." ─────────────────────────
+        response_area = QFrame()
+        response_area.setObjectName("responseArea")
+        response_layout = QVBoxLayout(response_area)
+        response_layout.setContentsMargins(20, 8, 20, 8)
+        response_layout.setSpacing(4)
 
-        main_layout.addWidget(input_area)
+        self._response_label = ResponseLabel()
+        response_layout.addWidget(self._response_label)
 
-        # ── Initial welcome message ─────────────────────────────
-        self._add_message(
-            "Hi! I'm Diego, your desktop assistant. "
-            "You can talk to me or type a message below.",
-            "diego"
-        )
+        main_layout.addWidget(response_area, 1)
+
+        # ── FOOTER: status + latency ────────────────────────────
+        footer = QFrame()
+        footer.setObjectName("footer")
+        footer_layout = QHBoxLayout(footer)
+        footer_layout.setContentsMargins(20, 8, 20, 12)
+        footer_layout.setSpacing(12)
+
+        self._status_label = QLabel("Listening for wake word...")
+        self._status_label.setObjectName("statusLabel")
+        footer_layout.addWidget(self._status_label)
+
+        footer_layout.addStretch()
+
+        self._latency_metrics = LatencyMetrics()
+        footer_layout.addWidget(self._latency_metrics)
+
+        main_layout.addWidget(footer)
 
     def _connect_signals(self) -> None:
         """Connect EventBridge signals to UI handlers."""
@@ -221,12 +218,17 @@ class DiegoMainWindow(QMainWindow):
         bridge.partial_transcript.connect(self._on_partial_transcript)
         bridge.final_transcript.connect(self._on_final_transcript)
         bridge.response.connect(self._on_response)
-        bridge.response_chunk.connect(self._on_response_chunk)
 
         # State events
         bridge.state_changed.connect(self._on_state_changed)
         bridge.listening.connect(self._on_listening)
         bridge.thinking.connect(self._on_thinking)
+        bridge.planning.connect(self._on_planning)
+        bridge.executing.connect(self._on_executing)
+        bridge.observing.connect(self._on_observing)
+        bridge.verifying.connect(self._on_verifying)
+        bridge.replanning.connect(self._on_replanning)
+        bridge.speaking.connect(self._on_speaking)
         bridge.idle.connect(self._on_idle)
         bridge.error.connect(self._on_error)
 
@@ -247,79 +249,51 @@ class DiegoMainWindow(QMainWindow):
         """
         Handle partial STT transcript.
 
-        Updates the existing partial bubble instead of creating duplicates.
+        Updates the single live transcript region in real time.
         """
         if not text.strip():
             return
 
         self._partial_text = text
-
-        if self._partial_bubble is None:
-            # Create new partial bubble
-            self._partial_bubble = MessageBubble(text, "partial")
-            self._insert_before_stretch(self._partial_bubble)
-        else:
-            # Update existing bubble (no duplication)
-            self._partial_bubble.update_text(text)
-
-        self._scroll_to_bottom()
+        self._transcript_label.set_partial(text)
 
     @Slot(str)
     def _on_final_transcript(self, text: str) -> None:
         """
         Handle final STT transcript.
 
-        Converts the partial bubble to a user message (no duplication).
+        Replaces the partial region with the final recognized sentence.
         """
         if not text.strip():
             return
 
-        # Remove/convert the partial bubble
-        if self._partial_bubble is not None:
-            # Convert partial to final user message
-            self._partial_bubble.set_final(text)
-            # Track it as a message now
-            self._messages.append(self._partial_bubble)
-            self._partial_bubble = None
-        else:
-            # No partial bubble — add as new user message
-            self._add_message(text, "user")
-
+        self._final_text = text
         self._partial_text = ""
-        self._scroll_to_bottom()
+        self._transcript_label.set_final(text)
+
+        # Start turn latency tracking
+        self._turn_start_time = time.time()
 
     @Slot(str)
     def _on_response(self, text: str) -> None:
-        """Handle complete Diego response."""
+        """
+        Handle complete Diego response.
+
+        The response is printed prominently and remains visible
+        after TTS completes.
+        """
         if not text.strip():
             return
 
-        # If we were streaming, finalize the streaming bubble
-        if self._streaming_bubble is not None:
-            self._streaming_bubble.update_text(text)
-            self._streaming_bubble = None
-            self._streaming_text = ""
-        else:
-            self._add_message(text, "diego")
+        self._response_text = text
+        self._response_label.set_response(text)
 
-        self._typing_indicator.set_visible(False)
-        self._scroll_to_bottom()
-
-    @Slot(str)
-    def _on_response_chunk(self, chunk: str) -> None:
-        """Handle streaming response chunk."""
-        if not chunk:
-            return
-
-        self._streaming_text += chunk
-
-        if self._streaming_bubble is None:
-            self._streaming_bubble = MessageBubble(self._streaming_text, "diego")
-            self._insert_before_stretch(self._streaming_bubble)
-        else:
-            self._streaming_bubble.update_text(self._streaming_text)
-
-        self._scroll_to_bottom()
+        # Record agent latency
+        if self._turn_start_time is not None:
+            self._agent_latency_ms = (time.time() - self._turn_start_time) * 1000
+            self._total_latency_ms = self._agent_latency_ms
+            self._latency_metrics.set_agent_latency(self._agent_latency_ms)
+            self._latency_metrics.set_total_latency(self._total_latency_ms)
 
     # ── State handlers ──────────────────────────────────────────
 
@@ -327,39 +301,96 @@ class DiegoMainWindow(QMainWindow):
     def _on_state_changed(self, state: str) -> None:
         """Handle state change."""
         self._state_indicator.set_state(state)
+        self._status_label.setText(state)
 
         # Update mic indicator
         listening = "listen" in state.lower()
         self._mic_indicator.set_active(listening)
 
-        # Show typing indicator when thinking/planning
-        thinking = any(s in state.lower() for s in ("think", "plan", "execut", "observ", "verif", "replan"))
-        self._typing_indicator.set_visible(thinking)
+        # Show/hide speaking indicator
+        speaking = "speak" in state.lower() or "respond" in state.lower()
+        self._speaking_label.setVisible(speaking)
 
     @Slot()
     def _on_listening(self) -> None:
         """Handle listening state."""
+        self._state_indicator.set_state("Listening")
+        self._status_label.setText("Listening...")
         self._mic_indicator.set_active(True)
-        self._typing_indicator.set_visible(False)
+        self._speaking_label.hide()
 
     @Slot()
     def _on_thinking(self) -> None:
         """Handle thinking state."""
+        self._state_indicator.set_state("Thinking")
+        self._status_label.setText("Thinking...")
         self._mic_indicator.set_active(False)
-        self._typing_indicator.set_visible(True)
+        self._speaking_label.hide()
+
+    @Slot()
+    def _on_planning(self) -> None:
+        """Handle planning state."""
+        self._state_indicator.set_state("Planning")
+        self._status_label.setText("Planning...")
+        self._mic_indicator.set_active(False)
+        self._speaking_label.hide()
+
+    @Slot()
+    def _on_executing(self) -> None:
+        """Handle executing state."""
+        self._state_indicator.set_state("Executing")
+        self._status_label.setText("Executing...")
+        self._mic_indicator.set_active(False)
+        self._speaking_label.hide()
+
+    @Slot()
+    def _on_observing(self) -> None:
+        """Handle observing state."""
+        self._state_indicator.set_state("Observing")
+        self._status_label.setText("Observing...")
+        self._mic_indicator.set_active(False)
+        self._speaking_label.hide()
+
+    @Slot()
+    def _on_verifying(self) -> None:
+        """Handle verifying state."""
+        self._state_indicator.set_state("Verifying")
+        self._status_label.setText("Verifying...")
+        self._mic_indicator.set_active(False)
+        self._speaking_label.hide()
+
+    @Slot()
+    def _on_replanning(self) -> None:
+        """Handle replanning state."""
+        self._state_indicator.set_state("Replanning")
+        self._status_label.setText("Replanning...")
+        self._mic_indicator.set_active(False)
+        self._speaking_label.hide()
+
+    @Slot()
+    def _on_speaking(self) -> None:
+        """Handle speaking state."""
+        self._state_indicator.set_state("Speaking")
+        self._status_label.setText("Speaking...")
+        self._mic_indicator.set_active(False)
+        self._speaking_label.show()
 
     @Slot()
     def _on_idle(self) -> None:
         """Handle idle state."""
+        self._state_indicator.set_state("Idle")
+        self._status_label.setText("Listening for wake word...")
         self._mic_indicator.set_active(False)
-        self._typing_indicator.set_visible(False)
+        self._speaking_label.hide()
 
     @Slot(str)
     def _on_error(self, message: str) -> None:
         """Handle error — display friendly message."""
-        self._add_message(message, "error")
-        self._typing_indicator.set_visible(False)
-        self._scroll_to_bottom()
+        self._state_indicator.set_state("Error")
+        self._status_label.setText("Error")
+        self._mic_indicator.set_active(False)
+        self._speaking_label.hide()
+        self._response_label.set_error(message)
 
     # ── Audio handlers ──────────────────────────────────────────
 
@@ -373,69 +404,28 @@ class DiegoMainWindow(QMainWindow):
     @Slot()
     def _on_auth_required(self) -> None:
         """Handle face auth required."""
-        self._add_message(
-            "Please look at the camera for authentication.",
-            "diego"
-        )
+        self._state_indicator.set_state("Authenticating")
+        self._status_label.setText("Authenticating...")
 
     @Slot(str)
     def _on_auth_completed(self, name: str) -> None:
         """Handle face auth completed."""
         if name:
-            self._add_message(f"Welcome back, {name}!", "diego")
+            self._response_label.set_response(f"Welcome back, {name}!")
 
-    # ── Text input ──────────────────────────────────────────────
+    # ── Latency metrics ─────────────────────────────────────────
 
-    def _on_send_clicked(self) -> None:
-        """Handle send button click or Enter key."""
-        text = self._text_input.text().strip()
-        if not text:
-            return
+    def set_stt_latency(self, ms: float) -> None:
+        """Set STT latency metric."""
+        self._stt_latency_ms = ms
+        self._latency_metrics.set_stt_latency(ms)
 
-        # Clear input
-        self._text_input.clear()
+    def set_tts_latency(self, ms: float) -> None:
+        """Set TTS latency metric."""
+        self._tts_latency_ms = ms
+        self._latency_metrics.set_tts_latency(ms)
 
-        # Add user message to transcript
-        self._add_message(text, "user")
-        self._scroll_to_bottom()
-
-        # Send to ConversationEngine/Brain via asyncio
-        self._submit_text_command(text)
-
-    def _submit_text_command(self, text: str) -> None:
-        """
-        Submit typed text to the production ConversationEngine/Brain pipeline.
-
-        This runs the Brain.process_command in the asyncio loop (off Qt thread).
-        """
-        async def process() -> None:
-            try:
-                from agent.brain import agent_brain
-
-                # Ensure brain is initialized
-                if not agent_brain._initialized:
-                    await agent_brain.initialize()
-
-                # Emit thinking state
-                self._bridge.emit_thinking()
-
-                # Process through the production pipeline
-                result = await agent_brain.process_command(text)
-
-                # Emit response
-                if result.response:
-                    self._bridge.emit_response(result.response)
-                else:
-                    self._bridge.emit_response("I'm not sure how to help with that.")
-
-                # Return to idle
-                self._bridge.emit_idle()
-
-            except Exception as e:
-                logger.error("[UI] Text command error: %s", e)
-                self._bridge.emit_error("I had trouble processing that. Please try again.")
-
-        self._schedule_async(process())
+    # ── Async scheduling ────────────────────────────────────────
 
     def _schedule_async(self, coro) -> None:
         """Schedule an async coroutine on the asyncio loop (thread-safe)."""
@@ -455,61 +445,13 @@ class DiegoMainWindow(QMainWindow):
         """Execute async work (connected to _run_async signal)."""
         self._schedule_async(coro)
 
-    # ── Message management ──────────────────────────────────────
-
-    def _add_message(self, text: str, sender: str) -> MessageBubble:
-        """Add a message bubble to the transcript."""
-        bubble = MessageBubble(text, sender)
-        self._messages.append(bubble)
-        self._insert_before_stretch(bubble)
-        return bubble
-
-    def _insert_before_stretch(self, widget: QWidget) -> None:
-        """Insert a widget before the trailing stretch."""
-        count = self._transcript_layout.count()
-        # Insert before the last item (stretch)
-        self._transcript_layout.insertWidget(count - 1, widget)
-
-    def _scroll_to_bottom(self) -> None:
-        """Scroll the transcript to the bottom."""
-        QTimer.singleShot(10, lambda: self._transcript_scroll.verticalScrollBar().setValue(
-            self._transcript_scroll.verticalScrollBar().maximum()
-        ))
-
-    def clear_conversation(self) -> None:
-        """Clear all messages from the transcript."""
-        # Remove all message bubbles
-        for bubble in self._messages:
-            self._transcript_layout.removeWidget(bubble)
-            bubble.deleteLater()
-        self._messages.clear()
-
-        # Clear partial/streaming state
-        if self._partial_bubble is not None:
-            self._transcript_layout.removeWidget(self._partial_bubble)
-            self._partial_bubble.deleteLater()
-            self._partial_bubble = None
-        self._partial_text = ""
-
-        if self._streaming_bubble is not None:
-            self._transcript_layout.removeWidget(self._streaming_bubble)
-            self._streaming_bubble.deleteLater()
-            self._streaming_bubble = None
-        self._streaming_text = ""
-
-        # Add fresh welcome message
-        self._add_message(
-            "Conversation cleared. How can I help?",
-            "diego"
-        )
-
     # ── Window dragging (frameless window) ──────────────────────
 
     def mousePressEvent(self, event) -> None:
         """Enable window dragging from the header."""
         if event.button() == Qt.LeftButton:
             # Check if click is in header area
-            if event.position().y() < 64:
+            if event.position().y() < 72:
                 self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
                 event.accept()
 
@@ -539,7 +481,17 @@ class DiegoMainWindow(QMainWindow):
 
     def get_transcript(self) -> list[dict]:
         """Get the current transcript as a list of messages."""
-        return [
-            {"sender": b._sender, "text": b._text_label.text()}
-            for b in self._messages
-        ]
+        messages = []
+        if self._final_text:
+            messages.append({"sender": "user", "text": self._final_text})
+        if self._response_text:
+            messages.append({"sender": "diego", "text": self._response_text})
+        return messages
+
+    def get_partial_text(self) -> str:
+        """Get the current partial transcript text."""
+        return self._partial_text
+
+    def get_response_text(self) -> str:
+        """Get the current Diego response text."""
+        return self._response_text

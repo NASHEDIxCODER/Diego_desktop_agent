@@ -1,16 +1,17 @@
 """
-Tests for the Diego Desktop UI.
+Tests for the Diego Desktop Voice-First UI.
 
 Covers:
     - UI startup
     - Event bridge thread safety
     - Partial transcript update (no duplication)
     - Final transcript replacement
-    - User message rendering
+    - User transcript rendering
     - Diego response rendering
     - State changes
     - Error rendering
-    - Typed input uses ConversationEngine/Brain
+    - Voice-first layout (no chat composer)
+    - Speaking indicator
     - Long-running operations do not block UI
     - No duplicate transcript messages
 """
@@ -105,18 +106,21 @@ class TestUIStartup:
         assert window.windowTitle() == "Diego"
         window.close()
 
-    def test_main_window_has_welcome_message(self, window):
-        """Window shows a welcome message on startup."""
-        process_events()
-        transcript = window.get_transcript()
-        assert len(transcript) >= 1
-        assert transcript[0]["sender"] == "diego"
-        assert "Diego" in transcript[0]["text"]
-
     def test_main_window_initial_state(self, window):
         """Window starts in Idle state."""
         process_events()
         assert window._state_indicator.state() == "Idle"
+
+    def test_voice_first_layout(self, window):
+        """The UI is voice-first: no chat composer, no text input."""
+        assert not hasattr(window, '_text_input')
+        assert not hasattr(window, '_send_btn')
+        # Voice-first widgets are present
+        assert hasattr(window, '_state_indicator')
+        assert hasattr(window, '_waveform')
+        assert hasattr(window, '_transcript_label')
+        assert hasattr(window, '_response_label')
+        assert hasattr(window, '_speaking_label')
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -191,6 +195,16 @@ class TestEventBridge:
 
         assert received == ["Something went wrong"]
 
+    def test_emit_speaking(self, bridge, qapp):
+        """Speaking events are delivered."""
+        received = []
+        bridge.speaking.connect(lambda: received.append(True))
+
+        bridge.emit_speaking()
+        process_events(100)
+
+        assert received == [True]
+
     def test_all_event_types(self, bridge, qapp):
         """All required event types can be emitted."""
         from ui.event_bridge import UIEvent, UIEventType
@@ -204,6 +218,7 @@ class TestEventBridge:
         bridge.observing.connect(lambda: events_received.append("OBSERVING"))
         bridge.verifying.connect(lambda: events_received.append("VERIFYING"))
         bridge.replanning.connect(lambda: events_received.append("REPLANNING"))
+        bridge.speaking.connect(lambda: events_received.append("SPEAKING"))
         bridge.idle.connect(lambda: events_received.append("IDLE"))
 
         bridge.emit_listening()
@@ -213,6 +228,7 @@ class TestEventBridge:
         bridge.emit_observing()
         bridge.emit_verifying()
         bridge.emit_replanning()
+        bridge.emit_speaking()
         bridge.emit_idle()
 
         process_events(150)
@@ -224,6 +240,7 @@ class TestEventBridge:
         assert "OBSERVING" in events_received
         assert "VERIFYING" in events_received
         assert "REPLANNING" in events_received
+        assert "SPEAKING" in events_received
         assert "IDLE" in events_received
 
     def test_rapid_events_no_crash(self, bridge, qapp):
@@ -245,16 +262,15 @@ class TestEventBridge:
 class TestTranscript:
     """Tests for transcript handling."""
 
-    def test_partial_transcript_creates_bubble(self, window, bridge):
-        """Partial transcript creates a partial bubble."""
+    def test_partial_transcript_updates_live_region(self, window, bridge):
+        """Partial transcript updates the single live region."""
         bridge.emit_partial("hel")
         process_events(100)
 
-        assert window._partial_bubble is not None
-        assert window._partial_bubble._text_label.text() == "hel"
+        assert window.get_partial_text() == "hel"
 
-    def test_partial_transcript_updates_same_bubble(self, window, bridge):
-        """Multiple partials update the same bubble (no duplication)."""
+    def test_partial_transcript_updates_same_region(self, window, bridge):
+        """Multiple partials update the same region (no duplication)."""
         bridge.emit_partial("hel")
         process_events(50)
         bridge.emit_partial("hello")
@@ -262,43 +278,34 @@ class TestTranscript:
         bridge.emit_partial("hello wor")
         process_events(50)
 
-        # Should still be only one partial bubble
-        assert window._partial_bubble is not None
-        assert window._partial_bubble._text_label.text() == "hello wor"
+        # Single live region with latest text
+        assert window.get_partial_text() == "hello wor"
 
-        # Count bubbles in layout (excluding stretch and welcome)
-        bubble_count = sum(
-            1 for i in range(window._transcript_layout.count())
-            if window._transcript_layout.itemAt(i).widget() is not None
-        )
-        # Welcome message + 1 partial bubble
-        assert bubble_count == 2
-
-    def test_final_transcript_converts_partial(self, window, bridge):
-        """Final transcript converts partial bubble to user message."""
+    def test_final_transcript_replaces_partial(self, window, bridge):
+        """Final transcript replaces the partial region."""
         bridge.emit_partial("hello")
         process_events(50)
         bridge.emit_final("hello world")
         process_events(100)
 
-        # Partial bubble should be gone
-        assert window._partial_bubble is None
+        # Partial is cleared
+        assert window.get_partial_text() == ""
 
-        # Should have a user message
+        # Final text is in the transcript
         transcript = window.get_transcript()
-        user_messages = [m for m in transcript if m["sender"] == "user"]
-        assert len(user_messages) == 1
-        assert user_messages[0]["text"] == "hello world"
+        user_msgs = [m for m in transcript if m["sender"] == "user"]
+        assert len(user_msgs) == 1
+        assert user_msgs[0]["text"] == "hello world"
 
     def test_final_without_partial_creates_user_message(self, window, bridge):
-        """Final transcript without partial creates a new user message."""
+        """Final transcript without partial creates a user message."""
         bridge.emit_final("typed command")
         process_events(100)
 
         transcript = window.get_transcript()
-        user_messages = [m for m in transcript if m["sender"] == "user"]
-        assert len(user_messages) == 1
-        assert user_messages[0]["text"] == "typed command"
+        user_msgs = [m for m in transcript if m["sender"] == "user"]
+        assert len(user_msgs) == 1
+        assert user_msgs[0]["text"] == "typed command"
 
     def test_no_duplicate_transcript_messages(self, window, bridge):
         """Partial + final doesn't create duplicate messages."""
@@ -313,11 +320,11 @@ class TestTranscript:
         process_events(100)
 
         transcript = window.get_transcript()
-        user_messages = [m for m in transcript if m["sender"] == "user"]
+        user_msgs = [m for m in transcript if m["sender"] == "user"]
 
         # Exactly one user message
-        assert len(user_messages) == 1
-        assert user_messages[0]["text"] == "open firefox"
+        assert len(user_msgs) == 1
+        assert user_msgs[0]["text"] == "open firefox"
 
     def test_diego_response_rendering(self, window, bridge):
         """Diego responses are rendered correctly."""
@@ -325,54 +332,29 @@ class TestTranscript:
         process_events(100)
 
         transcript = window.get_transcript()
-        diego_messages = [m for m in transcript if m["sender"] == "diego"]
+        diego_msgs = [m for m in transcript if m["sender"] == "diego"]
 
-        # Welcome + response
-        assert len(diego_messages) >= 2
-        assert any("Firefox" in m["text"] for m in diego_messages)
+        assert len(diego_msgs) >= 1
+        assert any("Firefox" in m["text"] for m in diego_msgs)
 
-    def test_streaming_response_chunks(self, window, bridge):
-        """Streaming response chunks accumulate in one bubble."""
-        bridge.emit_response_chunk("Opening ")
-        process_events(30)
-        bridge.emit_response_chunk("Firefox ")
-        process_events(30)
-        bridge.emit_response_chunk("now.")
-        process_events(30)
+    def test_response_displayed_once(self, window, bridge):
+        """Response is displayed once and remains visible."""
+        bridge.emit_response("Opening Firefox for you.")
+        process_events(100)
 
-        # Should have one streaming bubble
-        assert window._streaming_bubble is not None
-        assert window._streaming_bubble._text_label.text() == "Opening Firefox now."
-
-        # Finalize
-        bridge.emit_response("Opening Firefox now.")
-        process_events(50)
-
-        assert window._streaming_bubble is None
+        transcript = window.get_transcript()
+        diego_msgs = [m for m in transcript if m["sender"] == "diego"]
+        assert len(diego_msgs) == 1
+        assert diego_msgs[0]["text"] == "Opening Firefox for you."
 
     def test_error_rendering(self, window, bridge):
-        """Errors are rendered as error bubbles."""
+        """Errors are rendered with the error state."""
         bridge.emit_error("I couldn't find that application.")
         process_events(100)
 
-        transcript = window.get_transcript()
-        error_messages = [m for m in transcript if m["sender"] == "error"]
-        assert len(error_messages) == 1
-        assert "couldn't find" in error_messages[0]["text"]
-
-    def test_clear_conversation(self, window, bridge):
-        """Clear conversation removes all messages."""
-        bridge.emit_final("test message")
-        bridge.emit_response("test response")
-        process_events(100)
-
-        window.clear_conversation()
-        process_events(50)
-
-        transcript = window.get_transcript()
-        # Only the fresh welcome message
-        assert len(transcript) == 1
-        assert "cleared" in transcript[0]["text"].lower()
+        assert window._state_indicator.state() == "Error"
+        assert "couldn't find" in window.get_response_text() or \
+               "couldn't find" in window._response_label._text_label.text()
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -396,7 +378,15 @@ class TestStateChanges:
         process_events(100)
 
         assert window._state_indicator.state() == "Thinking"
-        assert window._typing_indicator._visible
+        assert not window._mic_indicator._active
+
+    def test_speaking_state(self, window, bridge):
+        """Speaking state is displayed with speaking indicator."""
+        bridge.emit_speaking()
+        process_events(100)
+
+        assert window._state_indicator.state() == "Speaking"
+        assert window._speaking_label.isVisible()
 
     def test_executing_state(self, window, bridge):
         """Executing state is displayed."""
@@ -415,7 +405,7 @@ class TestStateChanges:
 
         assert window._state_indicator.state() == "Idle"
         assert not window._mic_indicator._active
-        assert not window._typing_indicator._visible
+        assert not window._speaking_label.isVisible()
 
     def test_error_state(self, window, bridge):
         """Error state is displayed."""
@@ -428,7 +418,7 @@ class TestStateChanges:
         """All required high-level states can be displayed."""
         states = [
             "Listening", "Thinking", "Planning", "Executing",
-            "Observing", "Verifying", "Replanning", "Responding",
+            "Observing", "Verifying", "Replanning", "Speaking",
             "Idle", "Error"
         ]
 
@@ -436,52 +426,6 @@ class TestStateChanges:
             bridge.emit_state(state)
             process_events(50)
             assert window._state_indicator.state() == state
-
-
-# ═══════════════════════════════════════════════════════════════
-# Text Input Tests
-# ═══════════════════════════════════════════════════════════════
-
-class TestTextInput:
-    """Tests for typed input."""
-
-    def test_text_input_adds_user_message(self, window, bridge):
-        """Typed text appears as a user message."""
-        window._text_input.setText("hello diego")
-        window._on_send_clicked()
-        process_events(100)
-
-        transcript = window.get_transcript()
-        user_messages = [m for m in transcript if m["sender"] == "user"]
-        assert len(user_messages) == 1
-        assert user_messages[0]["text"] == "hello diego"
-
-    def test_text_input_cleared_after_send(self, window, bridge):
-        """Input field is cleared after sending."""
-        window._text_input.setText("test")
-        window._on_send_clicked()
-        process_events(50)
-
-        assert window._text_input.text() == ""
-
-    def test_empty_input_ignored(self, window, bridge):
-        """Empty input is not sent."""
-        window._text_input.setText("   ")
-        window._on_send_clicked()
-        process_events(50)
-
-        transcript = window.get_transcript()
-        user_messages = [m for m in transcript if m["sender"] == "user"]
-        assert len(user_messages) == 0
-
-    @patch("ui.main_window.DiegoMainWindow._submit_text_command")
-    def test_text_uses_production_pipeline(self, mock_submit, window, bridge):
-        """Typed text is submitted to the production pipeline."""
-        window._text_input.setText("open firefox")
-        window._on_send_clicked()
-        process_events(50)
-
-        mock_submit.assert_called_once_with("open firefox")
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -557,40 +501,19 @@ class TestThreading:
 class TestWidgets:
     """Tests for custom widgets."""
 
-    def test_message_bubble_user(self, qapp):
-        """User message bubble renders correctly."""
-        from ui.widgets import MessageBubble
-        bubble = MessageBubble("Hello!", "user")
-        assert bubble._sender == "user"
-        assert bubble._text_label.text() == "Hello!"
-
-    def test_message_bubble_diego(self, qapp):
-        """Diego message bubble renders correctly."""
-        from ui.widgets import MessageBubble
-        bubble = MessageBubble("Hi there!", "diego")
-        assert bubble._sender == "diego"
-        assert bubble._text_label.text() == "Hi there!"
-
-    def test_message_bubble_partial_to_final(self, qapp):
-        """Partial bubble can be converted to final user message."""
-        from ui.widgets import MessageBubble
-        bubble = MessageBubble("hel", "partial")
-        assert bubble._sender == "partial"
-
-        bubble.set_final("hello")
-        assert bubble._sender == "user"
-        assert bubble._text_label.text() == "hello"
-
-    def test_state_indicator_colors(self, qapp):
-        """State indicator shows correct states."""
-        from ui.widgets import StateIndicator
-        indicator = StateIndicator()
+    def test_voice_state_indicator(self, qapp):
+        """Voice state indicator shows correct states."""
+        from ui.widgets import VoiceStateIndicator
+        indicator = VoiceStateIndicator()
 
         indicator.set_state("Listening")
         assert indicator.state() == "Listening"
 
         indicator.set_state("Thinking")
         assert indicator.state() == "Thinking"
+
+        indicator.set_state("Speaking")
+        assert indicator.state() == "Speaking"
 
     def test_waveform_level(self, qapp):
         """Waveform widget accepts audio levels."""
@@ -617,6 +540,45 @@ class TestWidgets:
         mic.set_active(False)
         assert not mic._active
 
+    def test_transcript_label(self, qapp):
+        """Transcript label supports partial and final."""
+        from ui.widgets import TranscriptLabel
+        label = TranscriptLabel()
+
+        label.set_partial("hel")
+        assert label._text_label.text() == "hel"
+
+        label.set_final("hello world")
+        assert label._text_label.text() == "hello world"
+
+    def test_response_label(self, qapp):
+        """Response label supports response and error."""
+        from ui.widgets import ResponseLabel
+        label = ResponseLabel()
+
+        label.set_response("Done.")
+        assert label._text_label.text() == "Done."
+
+        label.set_error("Failed.")
+        assert label._text_label.text() == "Failed."
+
+    def test_latency_metrics(self, qapp):
+        """Latency metrics widget displays values."""
+        from ui.widgets import LatencyMetrics
+        metrics = LatencyMetrics()
+
+        metrics.set_stt_latency(600)
+        assert "600" in metrics._stt_label.text()
+
+        metrics.set_agent_latency(1200)
+        assert "1200" in metrics._agent_label.text()
+
+        metrics.set_tts_latency(2000)
+        assert "2000" in metrics._tts_label.text()
+
+        metrics.set_total_latency(3800)
+        assert "3800" in metrics._total_label.text()
+
 
 # ═══════════════════════════════════════════════════════════════
 # Integration Tests
@@ -625,8 +587,8 @@ class TestWidgets:
 class TestIntegration:
     """Integration tests for the full UI flow."""
 
-    def test_full_conversation_flow(self, window, bridge):
-        """Test a complete conversation flow."""
+    def test_full_voice_flow(self, window, bridge):
+        """Test a complete voice interaction flow."""
         # User speaks (partial → final)
         bridge.emit_listening()
         process_events(30)
@@ -642,8 +604,12 @@ class TestIntegration:
         bridge.emit_thinking()
         process_events(30)
 
-        # Diego responds
+        # Diego responds (printed)
         bridge.emit_response("It's 10:30 AM.")
+        process_events(50)
+
+        # Diego speaks
+        bridge.emit_speaking()
         process_events(50)
 
         # Back to idle
@@ -701,8 +667,12 @@ class TestImports:
 
     def test_import_widgets(self):
         """widgets module can be imported."""
-        from ui.widgets import MessageBubble, WaveformWidget, MicIndicator, StateIndicator
-        assert MessageBubble is not None
+        from ui.widgets import (
+            VoiceStateIndicator, WaveformWidget, MicIndicator,
+            TranscriptLabel, ResponseLabel, LatencyMetrics,
+        )
+        assert VoiceStateIndicator is not None
+        assert TranscriptLabel is not None
 
     def test_import_styles(self):
         """styles module can be imported."""

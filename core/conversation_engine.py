@@ -707,6 +707,19 @@ class ConversationEngine:
             True if at least one audio chunk was queued for playback,
             False if nothing was spoken (TTS unavailable or failed).
         """
+        # ── DUPLICATE TTS GUARD (2026-09-03) ──
+        # The runtime log showed "TTS end" immediately followed by another
+        # "TTS start" for the same turn. This happens when the immediate
+        # response and the followup confirmation are the same text (e.g.
+        # "Opening Firefox." spoken twice). Skip speaking the same text
+        # twice in a row.
+        text_key = (user_text or "").strip().lower()
+        if (hasattr(self, "_last_spoken_text")
+                and self._last_spoken_text == text_key
+                and text_key):
+            logger.info("[SPEAK] Duplicate TTS text skipped: '%s'", user_text[:50])
+            return True  # Already spoken — treat as success
+
         self._tts_interrupt.clear()
         interrupt = self._tts_interrupt
         t_start = time.time()
@@ -783,6 +796,8 @@ class ConversationEngine:
                 interrupt.set()
             await asyncio.gather(producer, monitor, return_exceptions=True)
         logger.info("TTS end (%.0fms)", (time.time() - t_start) * 1000)
+        # Record the last spoken text for duplicate-TTS prevention.
+        self._last_spoken_text = text_key
         return played
 
     async def _watch_interruption(

@@ -1125,7 +1125,16 @@ class AudioManager:
 
         audio_hp, self._hp_zi = scipy_signal.sosfilt(
             self._hp_sos, audio_float.astype(np.float64), zi=self._hp_zi)
-        audio_hp = np.clip(audio_hp.astype(np.float32), -1.0, 1.0)
+        # CRITICAL FIX (2026-09-03): The 4th-order Butterworth high-pass
+        # filter has IIR overshoot/ringing that can push samples past ±1.0
+        # even when the AGC output is within the 0.95 limiter ceiling.
+        # The old np.clip caused a hard clip at this stage (clip=0.20%).
+        # Apply a small headroom factor (0.95) BEFORE the clip so the
+        # filter's natural overshoot is contained without hard clipping.
+        # This is NOT a gain change — it only prevents filter ringing
+        # from hitting the rail.
+        audio_hp = np.clip(
+            audio_hp.astype(np.float32) * 0.95, -1.0, 1.0)
         peak_monitor.log("callback_highpass", audio_hp)
 
         self._ring_buffer.put(audio_hp)

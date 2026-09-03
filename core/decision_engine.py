@@ -1377,12 +1377,24 @@ class DecisionEngine:
         Determine whether the request likely needs web search.
 
         Explicit vision requests always take precedence.
+        Local project/file/code references NEVER default to web search.
         """
 
         if DecisionEngine._needs_vision(text):
             return False
 
         t = text.lower().strip()
+
+        # CRITICAL FIX (2026-09-03): "find my project which I have worked
+        # on recently" was classified as SEARCH_REQUEST and routed to web
+        # search. Local project/file/code references must be routed to
+        # LOCAL knowledge — never web search.
+        try:
+            from nlp.intent_authorizer import _match_local_knowledge
+            if _match_local_knowledge(t):
+                return False
+        except Exception:
+            pass
 
         keys = (
             "search",

@@ -424,8 +424,15 @@ _SIMPLE_COMMANDS = [
     (r"^(?:turn|switch)\s+(on|off)\s+(?:the\s+)?bluetooth$", "bluetooth_toggle", {}),
 
     # Music control
+    # CRITICAL FIX (2026-09-03): "play music" was being routed to
+    # music_resume because the resume pattern included "play". This
+    # caused verification failure and repeated retries. Now:
+    #   "play music" / "play something" / "start music" → PLAY action
+    #   "resume music" / "resume" → RESUME action
+    #   "pause" → PAUSE action
     (r"^(?:pause|stop)\s*(?:the\s+)?(?:music|song|track|playback)$", "music_pause", {}),
-    (r"^(?:resume|play|unpause)\s*(?:the\s+)?(?:music|song|track|playback)$", "music_resume", {}),
+    (r"^(?:resume|unpause)\s*(?:the\s+)?(?:music|song|track|playback)$", "music_resume", {}),
+    (r"^play\s*(?:the\s+)?(?:music|song|track|playback)$", "play_media", {"query": "music"}),
     (r"^next\s*(?:song|track|one)?$", "music_next", {}),
     (r"^(?:go\s+)?next$", "music_next", {}),
     (r"^(?:previous|prev)\s*(?:song|track|one)?$", "music_previous", {}),
