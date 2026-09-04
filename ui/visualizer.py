@@ -104,6 +104,20 @@ class VoiceCoreVisualizer(QWidget):
         self._bar_values = [0.0] * self.NUM_BARS  # Smoothed bar values
         self._bar_targets = [0.0] * self.NUM_BARS # Target bar values
 
+        # ── Particles (deterministic orbit) ──
+        self._particles = []
+        for i in range(14):
+            angle = (i / 14) * math.pi * 2 + (i * 0.7) % 1.0
+            radius_frac = 0.62 + ((i * 37) % 100) / 100 * 0.30
+            speed = 0.004 + ((i * 13) % 10) / 10 * 0.008
+            self._particles.append({
+                "angle": angle, "radius": radius_frac, "speed": speed,
+                "size": 1.2 + ((i * 7) % 10) / 10 * 1.6,
+            })
+
+        # ── Horizontal waveform (across panel) ──
+        self._wave_points = [0.0] * 48
+
         # ── Timer ──
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._animate)
@@ -259,6 +273,20 @@ class VoiceCoreVisualizer(QWidget):
         if state != VisualizerState.SPEECH_DETECTED:
             self._pulse *= 0.92
 
+        # ── Horizontal waveform update ──
+        level = max(self._input_level, self._output_level)
+        for i in range(len(self._wave_points)):
+            t = i / (len(self._wave_points) - 1)
+            env = math.sin(t * math.pi) ** 0.9
+            wave = (0.5 + 0.5 * math.sin(i * 0.7 + self._phase * 2.2)) \
+                 * (0.6 + 0.4 * math.sin(i * 1.9 - self._phase * 1.4))
+            target = (0.05 + 0.75 * level * wave) * env
+            self._wave_points[i] += (target - self._wave_points[i]) * 0.25
+
+        # ── Particle drift ──
+        for part in self._particles:
+            part["angle"] += part["speed"]
+
         # ── Check if we can stop animating ──
         if (state == VisualizerState.IDLE
                 and self._input_level < 0.01
@@ -368,16 +396,67 @@ class VoiceCoreVisualizer(QWidget):
         painter.setPen(Qt.NoPen)
         painter.drawEllipse(center, max_radius, max_radius)
 
-        # ── Radial waveform bars ──
-        self._draw_bars(painter, center, bar_inner, bar_max_len, color)
-
         # ── Concentric rings ──
         self._draw_rings(painter, center, ring_radius, core_radius, color, breath)
+
+        # ── Particles ──
+        self._draw_particles(painter, center, max_radius, color)
+
+        # ── Radial waveform bars ──
+        self._draw_bars(painter, center, bar_inner, bar_max_len, color)
 
         # ── Central core ──
         self._draw_core(painter, center, core_radius, color, breath)
 
+        # ── Horizontal waveform across the panel ──
+        wave_y = h - max_radius * 0.22
+        self._draw_horizontal_wave(painter, w, wave_y, color)
+
         painter.end()
+
+    def _draw_horizontal_wave(
+        self, painter: QPainter, width: float, y: float, color: QColor
+    ) -> None:
+        """Draw a subtle horizontal waveform near the bottom of the panel."""
+        n = len(self._wave_points)
+        margin = width * 0.06
+        span = width - margin * 2
+        color_line = QColor(color)
+        color_line.setAlphaF(0.45)
+
+        # Line through the wave points
+        painter.setPen(QPen(color_line, 1.4))
+        painter.setBrush(Qt.NoBrush)
+        points = []
+        for i, v in enumerate(self._wave_points):
+            x = margin + (i / (n - 1)) * span
+            points.append(QPointF(x, y - v * 9 + 4.5))
+        for i in range(n - 1):
+            painter.drawLine(points[i], points[i + 1])
+
+        # Mirror below for symmetric look
+        for i in range(n - 1):
+            a = QPointF(points[i].x(), y + self._wave_points[i] * 9 - 4.5 + 9)
+            b = QPointF(points[i + 1].x(), y + self._wave_points[i + 1] * 9 - 4.5 + 9)
+            faint = QColor(color)
+            faint.setAlphaF(0.18)
+            painter.setPen(QPen(faint, 1.0))
+            painter.drawLine(a, b)
+
+    def _draw_particles(
+        self, painter: QPainter, center: QPointF,
+        max_radius: float, color: QColor
+    ) -> None:
+        """Draw subtle orbiting particle dots."""
+        for part in self._particles:
+            r = part["radius"] * max_radius
+            x = center.x() + math.cos(part["angle"]) * r
+            y = center.y() + math.sin(part["angle"]) * r * 0.92
+            c = QColor(color)
+            c.setAlphaF(0.25 + 0.35 * self._input_level)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QBrush(c))
+            painter.drawEllipse(QPointF(x, y), part["size"], part["size"])
 
     def _draw_bars(
         self, painter: QPainter, center: QPointF,
@@ -504,6 +583,40 @@ class VoiceCoreVisualizer(QWidget):
         painter.setPen(pen)
         painter.setBrush(Qt.NoBrush)
         painter.drawEllipse(center, scaled_radius, scaled_radius)
+
+        # ── Central microphone glyph ──
+        self._draw_mic_glyph(painter, center, scaled_radius, breath)
+
+    def _draw_mic_glyph(
+        self, painter: QPainter, center: QPointF,
+        radius: float, breath: float
+    ) -> None:
+        """Draw a microphone symbol inside the central core."""
+        s = radius * 0.9
+        mic_color = QColor("#dffbff")
+        mic_color.setAlphaF(0.85 + 0.15 * breath)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QBrush(mic_color))
+
+        # Capsule
+        cap_w, cap_h = s * 0.26, s * 0.42
+        painter.drawRoundedRect(
+            QRectF(center.x() - cap_w / 2, center.y() - s * 0.30, cap_w, cap_h),
+            cap_w / 2, cap_w / 2)
+
+        # Cradle arc
+        painter.setBrush(Qt.NoBrush)
+        painter.setPen(QPen(QColor(mic_color), s * 0.05))
+        arc_r = s * 0.26
+        painter.drawArc(
+            QRectF(center.x() - arc_r, center.y() - arc_r - s * 0.09,
+                   arc_r * 2, arc_r * 2), -55 * 16, 110 * 16)
+
+        # Stem and base
+        painter.drawLine(QPointF(center.x(), center.y() + s * 0.20),
+                         QPointF(center.x(), center.y() + s * 0.30))
+        painter.drawLine(QPointF(center.x() - s * 0.13, center.y() + s * 0.30),
+                         QPointF(center.x() + s * 0.13, center.y() + s * 0.30))
 
 
 def _lerp_color(a: QColor, b: QColor, t: float) -> QColor:

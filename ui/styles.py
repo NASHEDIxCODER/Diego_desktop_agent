@@ -1,316 +1,251 @@
 """
-Diego UI Styles — Premium dark glass/HUD assistant theme.
+Diego UI Styles — dark glass/HUD theme built from ui.tokens.
 
 Design language:
-    - Deep dark background with subtle glass panels
-    - Neon cyan/blue primary accent, restrained purple secondary
-    - Thin borders, soft shadows, rounded panels
-    - Strong typographic hierarchy
-    - Futuristic but professional
+    - Near-black navy background, glass-like translucent panels
+    - Thin 1px borders, soft glow, consistent corner radius
+    - Neon cyan primary accent, restrained violet secondary
 """
 
-# ── Color palette ──────────────────────────────────────────────
+from __future__ import annotations
+
+from ui.tokens import (
+    WINDOW_BACKGROUND, PANEL_BACKGROUND, PANEL_BACKGROUND_HI, PANEL_BORDER,
+    PANEL_BORDER_SOFT, PRIMARY_ACCENT, PRIMARY_ACCENT_DIM, SECONDARY_ACCENT,
+    SUCCESS, WARNING, ERROR, TEXT_PRIMARY, TEXT_SECONDARY, TEXT_MUTED,
+    FONT_FAMILY, FONT_MONO,
+    FONT_XS, FONT_SM, FONT_MD, FONT_LG, FONT_XL, FONT_2XL,
+    PANEL_RADIUS, CARD_RADIUS,
+    GLOW_INTENSITY,
+    HEADER_HEIGHT, FOOTER_HEIGHT, SPACING_SMALL, SPACING_MEDIUM,
+    SPACING_LARGE,
+)
+
+# ── Backward-compatible dicts (existing imports) ───────────────
 COLORS = {
-    # Backgrounds (deep dark)
-    "bg_primary": "#08090d",       # Main window background
-    "bg_secondary": "#0d0f14",     # Panel backgrounds
-    "bg_tertiary": "#12151c",      # Card backgrounds
-    "bg_glass": "#0f1219",         # Glass panel base
-    "bg_elevated": "#161a23",      # Elevated surfaces
-
-    # Text
-    "text_primary": "#e2e8f0",     # Main text (high contrast)
-    "text_secondary": "#94a3b8",   # Secondary text
-    "text_muted": "#475569",       # Muted/disabled text
-    "text_inverse": "#08090d",     # Text on accent backgrounds
-
-    # Accents
-    "accent_primary": "#22d3ee",   # Neon cyan (primary)
-    "accent_blue": "#3b82f6",      # Blue
-    "accent_secondary": "#a78bfa", # Soft purple (secondary)
-    "accent_success": "#34d399",   # Success (emerald)
-    "accent_warning": "#fbbf24",   # Warning (amber)
-    "accent_error": "#f87171",     # Error (red)
-
-    # Borders
-    "border": "#1e293b",           # Default border
-    "border_subtle": "#162032",    # Subtle border
-    "border_accent": "#22d3ee",    # Accent border
-
-    # State colors
-    "state_idle": "#475569",
-    "state_listening": "#22d3ee",
-    "state_speech": "#34d399",
-    "state_thinking": "#a78bfa",
-    "state_executing": "#3b82f6",
-    "state_speaking": "#22d3ee",
-    "state_error": "#f87171",
-
-    # Glow effects
-    "glow_cyan": "#22d3ee",
-    "glow_purple": "#a78bfa",
+    "bg_primary": WINDOW_BACKGROUND,
+    "bg_secondary": PANEL_BACKGROUND,
+    "bg_tertiary": PANEL_BACKGROUND_HI,
+    "bg_glass": PANEL_BACKGROUND,
+    "bg_elevated": PANEL_BACKGROUND_HI,
+    "text_primary": TEXT_PRIMARY,
+    "text_secondary": TEXT_SECONDARY,
+    "text_muted": TEXT_MUTED,
+    "accent_primary": PRIMARY_ACCENT,
+    "accent_blue": PRIMARY_ACCENT_DIM,
+    "accent_secondary": SECONDARY_ACCENT,
+    "accent_success": SUCCESS,
+    "accent_warning": WARNING,
+    "accent_error": ERROR,
+    "border": PANEL_BORDER,
+    "border_subtle": PANEL_BORDER_SOFT,
+    "border_accent": PRIMARY_ACCENT,
+    "state_idle": TEXT_MUTED,
+    "state_listening": PRIMARY_ACCENT,
+    "state_speech": SUCCESS,
+    "state_thinking": SECONDARY_ACCENT,
+    "state_executing": PRIMARY_ACCENT_DIM,
+    "state_speaking": PRIMARY_ACCENT,
+    "state_error": ERROR,
+    "glow_cyan": PRIMARY_ACCENT,
+    "glow_purple": SECONDARY_ACCENT,
 }
 
-# ── Typography ─────────────────────────────────────────────────
 FONTS = {
-    "family": "'Inter', 'Segoe UI', 'Ubuntu', 'Helvetica Neue', sans-serif",
-    "mono": "'JetBrains Mono', 'Fira Code', 'SF Mono', monospace",
-    "size_xs": "10px",
-    "size_sm": "11px",
-    "size_md": "13px",
-    "size_lg": "15px",
-    "size_xl": "18px",
-    "size_2xl": "22px",
-    "size_3xl": "28px",
+    "family": FONT_FAMILY,
+    "mono": FONT_MONO,
+    "size_xs": f"{FONT_XS}px",
+    "size_sm": f"{FONT_SM}px",
+    "size_md": f"{FONT_MD}px",
+    "size_lg": f"{FONT_LG}px",
+    "size_xl": f"{FONT_XL}px",
+    "size_2xl": f"{FONT_2XL}px",
+    "size_3xl": f"{FONT_2XL + 6}px",
 }
 
 # ── Main window stylesheet ─────────────────────────────────────
 MAIN_WINDOW_QSS = f"""
 QMainWindow {{
-    background-color: {COLORS['bg_primary']};
+    background-color: {WINDOW_BACKGROUND};
+}}
+
+#centralWidget {{
+    background-color: {WINDOW_BACKGROUND};
+    border: 1px solid {PANEL_BORDER};
+    border-radius: 10px;
 }}
 
 QWidget {{
     background-color: transparent;
-    color: {COLORS['text_primary']};
-    font-family: {FONTS['family']};
-    font-size: {FONTS['size_md']};
+    color: {TEXT_PRIMARY};
+    font-family: {FONT_FAMILY};
+    font-size: {FONT_MD}px;
 }}
 
 /* ── Header ─────────────────────────────────────────────── */
 #header {{
-    background-color: {COLORS['bg_secondary']};
-    border-bottom: 1px solid {COLORS['border']};
+    background-color: {PANEL_BACKGROUND};
+    border-bottom: 1px solid {PANEL_BORDER};
 }}
 
 #titleLabel {{
-    font-size: {FONTS['size_2xl']};
-    font-weight: 700;
-    color: {COLORS['text_primary']};
-    letter-spacing: 3px;
+    font-size: {FONT_2XL}px;
+    font-weight: 800;
+    color: {TEXT_PRIMARY};
+    letter-spacing: 4px;
 }}
 
 #subtitleLabel {{
-    font-size: {FONTS['size_sm']};
-    color: {COLORS['text_muted']};
-    letter-spacing: 1px;
-    text-transform: uppercase;
+    font-size: {FONT_XS}px;
+    color: {TEXT_MUTED};
+    letter-spacing: 2px;
 }}
 
-/* ── Window controls ────────────────────────────────────── */
-#minimizeButton, #closeButton {{
+#headerDivider {{
+    background-color: {PANEL_BORDER};
+    max-width: 1px;
+}}
+
+#minimizeButton, #maximizeButton, #settingsButton, #closeButton {{
     background-color: transparent;
     border: none;
-    border-radius: 8px;
-    color: {COLORS['text_muted']};
-    font-size: 14px;
+    border-radius: 7px;
+    color: {TEXT_MUTED};
+    font-size: 13px;
 }}
 
-#minimizeButton:hover {{
-    background-color: {COLORS['bg_elevated']};
-    color: {COLORS['text_primary']};
+#minimizeButton:hover, #maximizeButton:hover, #settingsButton:hover {{
+    background-color: {PANEL_BACKGROUND_HI};
+    color: {TEXT_PRIMARY};
 }}
 
 #closeButton:hover {{
-    background-color: {COLORS['accent_error']};
+    background-color: {ERROR};
     color: white;
 }}
 
-/* ── Central voice core area ────────────────────────────── */
-#voiceCoreArea {{
-    background-color: {COLORS['bg_primary']};
+#connectionIndicator {{
+    background-color: {PANEL_BACKGROUND_HI};
+    border: 1px solid {PANEL_BORDER};
+    border-radius: 10px;
+}}
+
+/* ── Hero / voice core area ─────────────────────────────── */
+#heroPanel {{
+    background-color: rgba(11, 17, 28, 0.55);
+    border: 1px solid {PANEL_BORDER};
+    border-radius: {PANEL_RADIUS}px;
 }}
 
 #stateLabel {{
-    font-size: {FONTS['size_md']};
+    font-size: {FONT_MD}px;
     font-weight: 600;
-    color: {COLORS['text_secondary']};
+    color: {TEXT_SECONDARY};
     letter-spacing: 2px;
-    text-transform: uppercase;
 }}
 
 /* ── Transcript panel ───────────────────────────────────── */
 #transcriptPanel {{
-    background-color: {COLORS['bg_glass']};
-    border: 1px solid {COLORS['border_subtle']};
-    border-radius: 16px;
+    background-color: rgba(11, 17, 28, 0.55);
+    border: 1px solid {PANEL_BORDER};
+    border-radius: {PANEL_RADIUS}px;
 }}
 
 #transcriptHeader {{
-    font-size: {FONTS['size_xs']};
-    font-weight: 600;
-    color: {COLORS['text_muted']};
-    letter-spacing: 1.5px;
-    text-transform: uppercase;
+    font-size: {FONT_XS}px;
+    font-weight: 700;
+    color: {TEXT_MUTED};
+    letter-spacing: 2px;
 }}
 
-#transcriptText {{
-    font-size: {FONTS['size_xl']};
-    color: {COLORS['text_primary']};
-    line-height: 1.4;
+#finalBadge {{
+    font-size: {FONT_XS}px;
+    font-weight: 700;
+    color: {SUCCESS};
+    letter-spacing: 1px;
 }}
 
-#transcriptTextPartial {{
-    font-size: {FONTS['size_xl']};
-    color: {COLORS['text_secondary']};
-    font-style: italic;
-}}
-
-/* ── Response panel ─────────────────────────────────────── */
+/* ── Response panel (dominant) ──────────────────────────── */
 #responsePanel {{
-    background-color: {COLORS['bg_glass']};
-    border: 1px solid {COLORS['border_accent']}33;
-    border-radius: 16px;
+    background-color: rgba(14, 21, 34, 0.70);
+    border: 1px solid rgba(34, 211, 238, 0.35);
+    border-radius: {PANEL_RADIUS}px;
 }}
 
 #responseHeader {{
-    font-size: {FONTS['size_xs']};
+    font-size: {FONT_XS}px;
+    font-weight: 800;
+    color: {PRIMARY_ACCENT};
+    letter-spacing: 2.5px;
+}}
+
+#projectCard {{
+    background-color: rgba(34, 211, 238, 0.07);
+    border: 1px solid rgba(34, 211, 238, 0.30);
+    border-radius: {CARD_RADIUS}px;
+}}
+
+#projectName {{
+    font-size: {FONT_LG}px;
     font-weight: 700;
-    color: {COLORS['accent_primary']};
-    letter-spacing: 2px;
-    text-transform: uppercase;
+    color: {TEXT_PRIMARY};
 }}
 
-#responseText {{
-    font-size: {FONTS['size_xl']};
-    font-weight: 500;
-    color: {COLORS['text_primary']};
-    line-height: 1.4;
+#projectMeta {{
+    font-size: {FONT_XS}px;
+    color: {TEXT_SECONDARY};
 }}
 
-#speakingIndicator {{
-    font-size: {FONTS['size_sm']};
-    color: {COLORS['accent_primary']};
+#responsePath {{
+    font-size: {FONT_MD}px;
+    color: {TEXT_SECONDARY};
+}}
+
+/* ── Right column panels ────────────────────────────────── */
+#rightPanel {{
+    background-color: rgba(11, 17, 28, 0.55);
+    border: 1px solid {PANEL_BORDER};
+    border-radius: {PANEL_RADIUS}px;
+}}
+
+#panelTitle {{
+    font-size: {FONT_XS}px;
+    font-weight: 700;
+    color: {TEXT_MUTED};
+    letter-spacing: 1.8px;
+}}
+
+#voiceStateLabel {{
+    font-size: {FONT_LG}px;
     font-weight: 600;
+    color: {TEXT_PRIMARY};
 }}
 
-/* ── Activity panel ─────────────────────────────────────── */
-#activityPanel {{
-    background-color: {COLORS['bg_secondary']};
-    border-left: 1px solid {COLORS['border']};
-}}
-
-#activityTitle {{
-    font-size: {FONTS['size_xs']};
-    font-weight: 600;
-    color: {COLORS['text_muted']};
-    letter-spacing: 1.5px;
-    text-transform: uppercase;
-}}
-
-#activityItem {{
-    font-size: {FONTS['size_md']};
-    color: {COLORS['text_muted']};
-    padding: 6px 0px;
-}}
-
-#activityItemActive {{
-    font-size: {FONTS['size_md']};
-    color: {COLORS['accent_primary']};
-    font-weight: 600;
-    padding: 6px 0px;
-}}
-
-#activityItemDone {{
-    font-size: {FONTS['size_md']};
-    color: {COLORS['text_secondary']};
-    padding: 6px 0px;
-}}
-
-/* ── Metrics cards ──────────────────────────────────────── */
-#metricsPanel {{
-    background-color: {COLORS['bg_secondary']};
-    border-top: 1px solid {COLORS['border']};
-}}
-
+/* ── Metric cards ───────────────────────────────────────── */
 #metricCard {{
-    background-color: {COLORS['bg_tertiary']};
-    border: 1px solid {COLORS['border_subtle']};
-    border-radius: 10px;
-    padding: 8px 12px;
+    background-color: rgba(14, 21, 34, 0.85);
+    border: 1px solid {PANEL_BORDER};
+    border-radius: {CARD_RADIUS}px;
 }}
 
-#metricLabel {{
-    font-size: {FONTS['size_xs']};
-    color: {COLORS['text_muted']};
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-}}
-
-#metricValue {{
-    font-size: {FONTS['size_lg']};
-    font-weight: 600;
-    color: {COLORS['text_primary']};
-    font-family: {FONTS['mono']};
-}}
-
-/* ── System status ──────────────────────────────────────── */
-#systemStatus {{
-    background-color: {COLORS['bg_secondary']};
-    border-top: 1px solid {COLORS['border']};
-}}
-
-#statusItem {{
-    font-size: {FONTS['size_sm']};
-    color: {COLORS['text_muted']};
-}}
-
-#statusItemOk {{
-    font-size: {FONTS['size_sm']};
-    color: {COLORS['accent_success']};
-}}
-
-#statusItemError {{
-    font-size: {FONTS['size_sm']};
-    color: {COLORS['accent_error']};
-}}
-
-/* ── Connection indicator ───────────────────────────────── */
-#connectionIndicator {{
-    background-color: {COLORS['bg_tertiary']};
-    border: 1px solid {COLORS['border']};
-    border-radius: 12px;
-    padding: 4px 10px;
-}}
-
-#connectionDot {{
-    font-size: 8px;
-}}
-
-#connectionText {{
-    font-size: {FONTS['size_xs']};
-    color: {COLORS['text_secondary']};
-    font-weight: 500;
-}}
-
-/* ── History (collapsed) ────────────────────────────────── */
-#historyPanel {{
-    background-color: {COLORS['bg_secondary']};
-    border-top: 1px solid {COLORS['border_subtle']};
-}}
-
-#historyItem {{
-    font-size: {FONTS['size_sm']};
-    color: {COLORS['text_muted']};
-    padding: 4px 0px;
+/* ── Footer ─────────────────────────────────────────────── */
+#footerBar {{
+    background-color: {PANEL_BACKGROUND};
+    border-top: 1px solid {PANEL_BORDER};
 }}
 
 /* ── Scrollbars ─────────────────────────────────────────── */
 QScrollBar:vertical {{
-    background-color: {COLORS['bg_primary']};
+    background-color: {WINDOW_BACKGROUND};
     width: 8px;
     margin: 0;
     border-radius: 4px;
 }}
 
 QScrollBar::handle:vertical {{
-    background-color: {COLORS['bg_elevated']};
+    background-color: {PANEL_BACKGROUND_HI};
     border-radius: 4px;
     min-height: 30px;
-}}
-
-QScrollBar::handle:vertical:hover {{
-    background-color: {COLORS['border']};
 }}
 
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
@@ -322,14 +257,14 @@ QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
 }}
 
 QScrollBar:horizontal {{
-    background-color: {COLORS['bg_primary']};
+    background-color: {WINDOW_BACKGROUND};
     height: 8px;
     margin: 0;
     border-radius: 4px;
 }}
 
 QScrollBar::handle:horizontal {{
-    background-color: {COLORS['bg_elevated']};
+    background-color: {PANEL_BACKGROUND_HI};
     border-radius: 4px;
     min-width: 30px;
 }}
@@ -357,7 +292,7 @@ STATE_COLORS = {
     "Verifying": COLORS["state_executing"],
     "Speaking": COLORS["state_speaking"],
     "Responding": COLORS["state_speaking"],
-    "Authenticating": COLORS["accent_warning"],
+    "Authenticating": WARNING,
     "Error": COLORS["state_error"],
 }
 

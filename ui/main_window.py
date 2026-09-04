@@ -36,10 +36,17 @@ from PySide6.QtWidgets import (
 
 from ui.event_bridge import EventBridge
 from ui.styles import MAIN_WINDOW_QSS, COLORS, FONTS
+from ui.tokens import (
+    HEADER_HEIGHT, FOOTER_HEIGHT, RIGHT_COLUMN_MIN_WIDTH,
+    LEFT_COLUMN_STRETCH, RIGHT_COLUMN_STRETCH,
+    SPACING_SMALL, SPACING_MEDIUM, SPACING_LARGE,
+    WINDOW_MIN, WINDOW_DEFAULT, PRIMARY_ACCENT,
+)
 from ui.visualizer import VoiceCoreVisualizer, VisualizerState
 from ui.widgets import (
     ConnectionIndicator, TranscriptPanel, ResponsePanel,
     ActivityPanel, MetricsCards, SystemStatus, HistoryPanel,
+    VoiceStatePanel, FooterBar, AvatarBadge,
 )
 
 logger = logging.getLogger(__name__)
@@ -97,10 +104,10 @@ class DiegoMainWindow(QMainWindow):
         self._bridge.start()
 
     def _setup_ui(self) -> None:
-        """Build the premium HUD layout."""
+        """Build the premium HUD layout (72% left hero / 28% right column)."""
         self.setWindowTitle("Diego")
-        self.setMinimumSize(680, 620)
-        self.resize(780, 720)
+        self.setMinimumSize(*WINDOW_MIN)
+        self.resize(*WINDOW_DEFAULT)
 
         # Remove native title bar for custom controls
         self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
@@ -113,88 +120,132 @@ class DiegoMainWindow(QMainWindow):
         central.setObjectName("centralWidget")
         self.setCentralWidget(central)
 
-        main_layout = QHBoxLayout(central)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
+        root = QVBoxLayout(central)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        # ── LEFT: Main content column ──────────────────────────
+        # ── HEADER (full width) ──
+        root.addWidget(self._build_header())
+
+        # ── BODY: two columns ──
+        body = QWidget()
+        body_layout = QHBoxLayout(body)
+        body_layout.setContentsMargins(SPACING_MEDIUM, SPACING_MEDIUM,
+                                       SPACING_MEDIUM, SPACING_SMALL)
+        body_layout.setSpacing(SPACING_MEDIUM)
+        root.addWidget(body, 1)
+
+        # ── LEFT: hero + transcript + response (~72%) ──
         left_column = QWidget()
         left_layout = QVBoxLayout(left_column)
         left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.setSpacing(0)
+        left_layout.setSpacing(SPACING_MEDIUM)
 
-        # ── HEADER ──
-        header = self._build_header()
-        left_layout.addWidget(header)
+        # HERO — voice core panel (dominant)
+        left_layout.addWidget(self._build_voice_core(), 10)
 
-        # ── CENTRAL VOICE CORE ──
-        voice_core_area = self._build_voice_core()
-        left_layout.addWidget(voice_core_area, 3)
-
-        # ── TRANSCRIPT ──
+        # TRANSCRIPT ("YOU SAID")
         self._transcript_panel = TranscriptPanel()
-        left_layout.addWidget(self._transcript_panel)
+        left_layout.addWidget(self._transcript_panel, 4)
 
-        # ── RESPONSE ──
+        # RESPONSE ("DIEGO" — dominant card)
         self._response_panel = ResponsePanel()
-        left_layout.addWidget(self._response_panel, 1)
+        left_layout.addWidget(self._response_panel, 6)
 
-        # ── METRICS ──
-        self._metrics = MetricsCards()
-        left_layout.addWidget(self._metrics)
+        body_layout.addWidget(left_column, LEFT_COLUMN_STRETCH)
 
-        # ── SYSTEM STATUS ──
-        self._system_status = SystemStatus()
-        left_layout.addWidget(self._system_status)
+        # ── RIGHT: voice state / activity / latency / status (~28%) ──
+        right_column = QWidget()
+        right_column.setMinimumWidth(RIGHT_COLUMN_MIN_WIDTH)
+        right_layout = QVBoxLayout(right_column)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(SPACING_MEDIUM)
 
-        main_layout.addWidget(left_column, 1)
+        self._voice_state_panel = VoiceStatePanel()
+        right_layout.addWidget(self._voice_state_panel)
 
-        # ── RIGHT: Activity panel ──────────────────────────────
         self._activity_panel = ActivityPanel()
-        main_layout.addWidget(self._activity_panel)
+        right_layout.addWidget(self._activity_panel, 1)
+
+        self._metrics = MetricsCards()
+        right_layout.addWidget(self._metrics)
+
+        self._system_status = SystemStatus()
+        right_layout.addWidget(self._system_status)
+
+        body_layout.addWidget(right_column, RIGHT_COLUMN_STRETCH)
+
+        # ── FOOTER (full width) ──
+        self._footer = FooterBar()
+        root.addWidget(self._footer)
 
     def _build_header(self) -> QFrame:
-        """Build the header: Diego identity + status + controls."""
+        """Build the compact header: logo · DIEGO │ Voice Assistant · LIVE pill · controls."""
         header = QFrame()
         header.setObjectName("header")
-        header.setFixedHeight(64)
+        header.setFixedHeight(HEADER_HEIGHT)
 
         layout = QHBoxLayout(header)
-        layout.setContentsMargins(20, 10, 16, 10)
+        layout.setContentsMargins(16, 6, 14, 6)
         layout.setSpacing(12)
 
-        # Logo/name
-        title_container = QVBoxLayout()
-        title_container.setSpacing(0)
+        # Circular Diego logo
+        layout.addWidget(AvatarBadge("logo", 30))
 
+        # Large "DIEGO"
         title_label = QLabel("DIEGO")
         title_label.setObjectName("titleLabel")
-        title_container.addWidget(title_label)
+        layout.addWidget(title_label)
 
+        # Vertical divider
+        divider = QFrame()
+        divider.setObjectName("headerDivider")
+        divider.setFixedSize(1, 22)
+        layout.addWidget(divider)
+
+        # "Voice Assistant"
         subtitle_label = QLabel("Voice Assistant")
         subtitle_label.setObjectName("subtitleLabel")
-        title_container.addWidget(subtitle_label)
+        layout.addWidget(subtitle_label)
 
-        layout.addLayout(title_container)
         layout.addStretch()
 
-        # Connection indicator
+        # LIVE state pill
         self._connection = ConnectionIndicator()
         layout.addWidget(self._connection)
 
-        layout.addSpacing(12)
+        layout.addSpacing(6)
 
-        # Window controls
+        # Window controls: minimize / maximize / settings / close
         self._minimize_btn = QLabel("─")
         self._minimize_btn.setObjectName("minimizeButton")
-        self._minimize_btn.setFixedSize(32, 32)
+        self._minimize_btn.setFixedSize(28, 28)
         self._minimize_btn.setAlignment(Qt.AlignCenter)
         self._minimize_btn.mousePressEvent = lambda e: self.showMinimized()
         layout.addWidget(self._minimize_btn)
 
+        self._maximize_btn = QLabel("□")
+        self._maximize_btn.setObjectName("maximizeButton")
+        self._maximize_btn.setFixedSize(28, 28)
+        self._maximize_btn.setAlignment(Qt.AlignCenter)
+
+        def _toggle_max(_event) -> None:
+            if self.isMaximized():
+                self.showNormal()
+            else:
+                self.showMaximized()
+        self._maximize_btn.mousePressEvent = _toggle_max
+        layout.addWidget(self._maximize_btn)
+
+        self._settings_btn = QLabel("⚙")
+        self._settings_btn.setObjectName("settingsButton")
+        self._settings_btn.setFixedSize(28, 28)
+        self._settings_btn.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self._settings_btn)
+
         self._close_btn = QLabel("✕")
         self._close_btn.setObjectName("closeButton")
-        self._close_btn.setFixedSize(32, 32)
+        self._close_btn.setFixedSize(28, 28)
         self._close_btn.setAlignment(Qt.AlignCenter)
         self._close_btn.mousePressEvent = lambda e: self.close()
         layout.addWidget(self._close_btn)
@@ -202,23 +253,30 @@ class DiegoMainWindow(QMainWindow):
         return header
 
     def _build_voice_core(self) -> QFrame:
-        """Build the central voice core area (hero element)."""
+        """Build the hero glass panel with the central voice core."""
         area = QFrame()
-        area.setObjectName("voiceCoreArea")
+        area.setObjectName("heroPanel")
+        area.setMinimumHeight(280)
 
         layout = QVBoxLayout(area)
-        layout.setContentsMargins(24, 16, 24, 16)
-        layout.setSpacing(8)
+        layout.setContentsMargins(20, 12, 20, 12)
+        layout.setSpacing(4)
 
-        # State label (above visualizer)
+        # Voice core visualizer (hero, dominates the screen)
+        self._visualizer = VoiceCoreVisualizer()
+        layout.addWidget(self._visualizer, 1)
+
+        # Friendly caption ("I'm listening...")
+        self._caption_label = QLabel("Standing by…")
+        self._caption_label.setObjectName("captionLabel")
+        self._caption_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self._caption_label)
+
+        # State label (compact, uppercase — test-visible)
         self._state_label = QLabel("IDLE")
         self._state_label.setObjectName("stateLabel")
         self._state_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(self._state_label)
-
-        # Voice core visualizer (hero)
-        self._visualizer = VoiceCoreVisualizer()
-        layout.addWidget(self._visualizer, 1)
 
         return area
 
@@ -322,15 +380,20 @@ class DiegoMainWindow(QMainWindow):
     def _on_state_changed(self, state: str) -> None:
         """Handle state change."""
         self._state_label.setText(state.upper())
+        self._caption_label.setText(_CAPTIONS.get(state.lower(), "Standing by…"))
         self._visualizer.set_state_by_name(state)
         self._activity_panel.set_active(state)
+        self._voice_state_panel.set_state(state)
 
     @Slot()
     def _on_listening(self) -> None:
         """Handle listening state."""
         self._state_label.setText("LISTENING")
+        self._caption_label.setText("I'm listening…")
         self._visualizer.set_state(VisualizerState.LISTENING)
         self._activity_panel.set_active("Voice detected")
+        self._voice_state_panel.set_state("Listening")
+        self._connection.set_status("listening")
         self._response_panel.set_speaking(False)
         self._is_speaking = False
 
@@ -338,22 +401,28 @@ class DiegoMainWindow(QMainWindow):
     def _on_thinking(self) -> None:
         """Handle thinking state."""
         self._state_label.setText("THINKING")
+        self._caption_label.setText("Thinking…")
         self._visualizer.set_state(VisualizerState.THINKING)
         self._activity_panel.set_active("Thinking")
+        self._voice_state_panel.set_state("Thinking")
 
     @Slot()
     def _on_planning(self) -> None:
         """Handle planning state."""
         self._state_label.setText("PLANNING")
+        self._caption_label.setText("Planning…")
         self._visualizer.set_state(VisualizerState.THINKING)
         self._activity_panel.set_active("Planning")
+        self._voice_state_panel.set_state("Planning")
 
     @Slot()
     def _on_executing(self) -> None:
         """Handle executing state."""
         self._state_label.setText("EXECUTING")
+        self._caption_label.setText("Working on it…")
         self._visualizer.set_state(VisualizerState.EXECUTING)
         self._activity_panel.set_active("Executing")
+        self._voice_state_panel.set_state("Executing")
 
     @Slot()
     def _on_observing(self) -> None:
@@ -380,8 +449,11 @@ class DiegoMainWindow(QMainWindow):
     def _on_speaking(self) -> None:
         """Handle speaking state."""
         self._state_label.setText("SPEAKING")
+        self._caption_label.setText("Speaking…")
         self._visualizer.set_state(VisualizerState.SPEAKING)
         self._activity_panel.set_active("Responding")
+        self._voice_state_panel.set_state("Speaking")
+        self._connection.set_status("speaking")
         self._response_panel.set_speaking(True)
         self._is_speaking = True
         self._tts_start_time = time.time()
@@ -390,8 +462,11 @@ class DiegoMainWindow(QMainWindow):
     def _on_idle(self) -> None:
         """Handle idle state."""
         self._state_label.setText("IDLE")
+        self._caption_label.setText("Standing by…")
         self._visualizer.set_state(VisualizerState.IDLE)
         self._activity_panel.reset()
+        self._voice_state_panel.set_state("Idle")
+        self._connection.set_status("ready")
         self._response_panel.set_speaking(False)
 
         # Record TTS latency if we were speaking
@@ -409,7 +484,10 @@ class DiegoMainWindow(QMainWindow):
     def _on_error(self, message: str) -> None:
         """Handle error — display friendly message."""
         self._state_label.setText("ERROR")
+        self._caption_label.setText("Something went wrong…")
         self._visualizer.set_state(VisualizerState.ERROR)
+        self._voice_state_panel.set_state("Error")
+        self._connection.set_status("error")
         self._response_panel.set_error(message)
         self._response_panel.set_speaking(False)
         self._is_speaking = False
@@ -424,6 +502,7 @@ class DiegoMainWindow(QMainWindow):
     def set_output_level(self, level: float) -> None:
         """Set TTS output level for the visualizer."""
         self._visualizer.set_output_level(level)
+        self._footer.set_level(level)
         if self._is_speaking:
             self._response_panel.set_output_level(level)
 
@@ -486,7 +565,7 @@ class DiegoMainWindow(QMainWindow):
         """Enable window dragging from the header."""
         if event.button() == Qt.LeftButton:
             # Check if click is in header area
-            if event.position().y() < 64:
+            if event.position().y() < HEADER_HEIGHT:
                 self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
                 event.accept()
 
@@ -574,6 +653,24 @@ class DiegoMainWindow(QMainWindow):
 # ═══════════════════════════════════════════════════════════════
 # These adapters allow existing tests to work with the new UI
 # without modification. They map old widget APIs to new widgets.
+
+# ── Friendly captions per state ────────────────────────────────
+_CAPTIONS = {
+    "idle": "Standing by…",
+    "listening": "I'm listening…",
+    "speech detected": "I hear you…",
+    "thinking": "Thinking…",
+    "planning": "Planning…",
+    "replanning": "Replanning…",
+    "executing": "Working on it…",
+    "observing": "Observing…",
+    "verifying": "Verifying…",
+    "speaking": "Speaking…",
+    "responding": "Responding…",
+    "error": "Something went wrong…",
+    "authenticating": "Verifying it's you…",
+}
+
 
 class _StateIndicatorAdapter:
     """Adapter for backward compatibility with VoiceStateIndicator."""
