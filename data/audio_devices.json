@@ -1,8 +1,8 @@
 {
   "output_device": {
-    "index": 9,
-    "name": "default",
-    "saved_at": 1788511989.6354918
+    "index": 5,
+    "name": "HD-Audio Generic: ALC256 Analog (hw:2,0)",
+    "saved_at": 1788528635.1957924
   },
   "input_device": {
     "index": 5,

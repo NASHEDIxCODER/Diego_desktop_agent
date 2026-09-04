@@ -42,6 +42,13 @@ DEVICES_PATH = Path(__file__).resolve().parent.parent / "data" / "audio_devices.
 INPUT_KEY = "input_device"
 OUTPUT_KEY = "output_device"
 
+# Virtual ALSA/Pulse "default" pseudo-devices. These indices are NOT
+# concrete hardware: playing through a saved virtual `default` index is
+# unreliable (the user may hear nothing). When a saved/selected output is
+# virtual, the REAL current OS default playback device is resolved and
+# validated instead (see resolve_default_output_device).
+VIRTUAL_OUTPUT_NAMES = {"default"}
+
 
 class DeviceManager:
     """Independent input/output audio device selection and persistence."""
@@ -54,6 +61,17 @@ class DeviceManager:
     def _sd(self):
         import sounddevice as sd
         return sd
+
+    # ── Virtual-output detection ──────────────────────────────────
+
+    @staticmethod
+    def _is_virtual_output(name: str) -> bool:
+        """True for virtual ALSA/Pulse pseudo-devices (e.g. `default`).
+
+        A virtual `default` index is never stored/played blindly: a
+        concrete working output device is resolved instead.
+        """
+        return (name or "").strip().lower() in VIRTUAL_OUTPUT_NAMES
 
     # ── Enumeration ───────────────────────────────────────────────
 
@@ -211,21 +229,66 @@ class DeviceManager:
                                saved_in["index"], saved_in.get("name"))
 
         saved_out = self.get_saved_output_device()
+        restored = False
         if saved_out and saved_out.get("index") is not None:
-            if self.find_output_device(saved_out["index"]) is not None:
+            dev = self.find_output_device(int(saved_out["index"]))
+            if dev is None:
+                logger.warning("[DEVICES] Saved output device [%s] %s is "
+                               "unavailable — resolving the current OS "
+                               "default output",
+                               saved_out["index"], saved_out.get("name"))
+            elif self._is_virtual_output(dev["name"]):
+                logger.warning("[DEVICES] Saved output device [%s] '%s' is a "
+                               "virtual pseudo-device — resolving a concrete "
+                               "working output instead",
+                               saved_out["index"], dev["name"])
+            elif not self.test_output_device(int(saved_out["index"])).get("ok"):
+                logger.warning("[DEVICES] Saved output device [%s] %s failed "
+                               "playback validation — resolving the current "
+                               "OS default output",
+                               saved_out["index"], saved_out.get("name"))
+            else:
                 try:
                     from voice.streaming_tts import streaming_tts
                     streaming_tts.set_output_device(int(saved_out["index"]))
                     result["output_restored"] = saved_out
+                    restored = True
                     logger.info("[DEVICES] Restored output device: [%s] %s",
                                 saved_out["index"], saved_out.get("name"))
                 except Exception as e:
                     logger.warning("[DEVICES] Could not restore output "
                                    "device: %s", e)
+
+        if not restored:
+            # No (valid) user selection: resolve the REAL current OS
+            # default playback device, validate it and use it for TTS.
+            # This is an automatic resolution, NOT a user selection — it
+            # is never persisted over the user's saved choice.
+            try:
+                idx = self.resolve_default_output_device()
+            except Exception as e:
+                logger.warning("[DEVICES] Default output resolution "
+                               "failed: %s", e)
+                idx = None
+            if idx is not None:
+                try:
+                    from voice.streaming_tts import streaming_tts
+                    streaming_tts.set_output_device(int(idx))
+                    dev = self.find_output_device(int(idx))
+                    result["output_resolved_default"] = {
+                        "index": int(idx),
+                        "name": dev["name"] if dev else f"Device {idx}",
+                    }
+                    logger.info("[DEVICES] Resolved concrete default output: "
+                                "[%s] %s", idx,
+                                dev["name"] if dev else f"Device {idx}")
+                except Exception as e:
+                    logger.warning("[DEVICES] Could not apply resolved "
+                                   "default output: %s", e)
             else:
-                logger.warning("[DEVICES] Saved output device [%s] %s is "
-                               "unavailable — system default will be used",
-                               saved_out["index"], saved_out.get("name"))
+                logger.warning("[DEVICES] No concrete output device could be "
+                               "validated — TTS will use the PortAudio "
+                               "default (device=None)")
 
         return result
 
@@ -271,6 +334,37 @@ class DeviceManager:
             return {"ok": False,
                     "error": f"Output device {index} not found",
                     "device_index": None, "device_name": "", "fallback": False}
+
+        # Never blindly store/play through a virtual ALSA `default` index:
+        # resolve a concrete working output device instead.
+        if self._is_virtual_output(dev["name"]):
+            concrete = self.resolve_default_output_device()
+            if concrete is None:
+                return {"ok": False,
+                        "error": ("'default' is a virtual device and no "
+                                  "concrete output device could be validated"),
+                        "device_index": None, "device_name": "",
+                        "fallback": False}
+            logger.info("[DEVICES] Virtual output '%s' selected — using "
+                        "concrete default output [%s] instead",
+                        dev["name"], concrete)
+            index = int(concrete)
+            dev = self.find_output_device(index)
+            if dev is None:
+                return {"ok": False, "error": "resolved device not found",
+                        "device_index": None, "device_name": "",
+                        "fallback": False}
+
+        # Validate playback BEFORE switching/persisting.
+        validation = self.test_output_device(index)
+        if not validation.get("ok"):
+            logger.warning("[DEVICES] Output [%s] %s failed playback "
+                           "validation (%s) — selection rejected",
+                           index, dev["name"], validation.get("error"))
+            return {"ok": False, "error": validation.get("error"),
+                    "device_index": None, "device_name": "",
+                    "fallback": False}
+
         try:
             from voice.streaming_tts import streaming_tts
             result = streaming_tts.set_output_device(index)
@@ -280,6 +374,8 @@ class DeviceManager:
                     "device_index": None, "device_name": "", "fallback": False}
 
         if result.get("ok"):
+            # Persist ONLY the speaker selection — the microphone entry is
+            # never touched (independent keys).
             self.save_output_device(index, dev["name"])
         else:
             logger.warning("[DEVICES] Output switch to [%s] %s failed: %s "
@@ -309,23 +405,106 @@ class DeviceManager:
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
-    def test_output_device(self, index: int) -> Dict[str, Any]:
-        """Open/validate the output device by creating (and immediately
-        closing) an OutputStream on it. NO test audio is played."""
+    def test_output_device(self, index: int,
+                           samplerate: Optional[int] = None) -> Dict[str, Any]:
+        """Validate that the output device actually supports playback.
+
+        Opens an OutputStream on the device, writes a 10 ms SILENT buffer
+        (inaudible, non-destructive) and closes again. When `samplerate`
+        is given (e.g. the TTS playback rate) the device must accept THAT
+        rate — a device that only opens at its own default rate is not a
+        valid TTS output.
+        """
         try:
+            import numpy as np
             sd = self._sd()
             dev = self.find_output_device(index)
             if dev is None:
                 return {"ok": False, "error": "device not found"}
-            samplerate = int(dev.get("default_samplerate") or 24000)
-            stream = sd.OutputStream(samplerate=samplerate, channels=1,
-                                     dtype="int16", blocksize=0, device=index)
+            rate = int(samplerate or dev.get("default_samplerate") or 24000)
+            try:
+                stream = sd.OutputStream(samplerate=rate, channels=1,
+                                         dtype="int16", blocksize=0,
+                                         device=index)
+            except Exception:
+                if samplerate is None:
+                    raise
+                # Retry at the device's own default rate so a device that
+                # merely lacks the TTS rate is distinguishable from a
+                # device that cannot play at all.
+                rate = int(dev.get("default_samplerate") or rate)
+                stream = sd.OutputStream(samplerate=rate, channels=1,
+                                         dtype="int16", blocksize=0,
+                                         device=index)
             stream.start()
+            # 10 ms of digital silence — safe playback validation.
+            stream.write(np.zeros(int(rate * 0.01), dtype=np.int16))
             stream.stop()
             stream.close()
-            return {"ok": True, "error": None}
+            return {"ok": True, "error": None, "samplerate": rate}
         except Exception as e:
             return {"ok": False, "error": str(e)}
+
+    def resolve_default_output_device(
+            self, sample_rate: int = 24000) -> Optional[int]:
+        """Resolve the REAL current OS default playback device.
+
+        The PortAudio `default` index may itself be a virtual ALSA
+        pseudo-device (name `default`) which can be silent/unreliable.
+        This returns a CONCRETE, playback-validated device:
+
+          1. the PortAudio default output — when it is concrete
+          2. pulse/pipewire host-api devices (they route to the real
+             OS default sink and accept arbitrary sample rates)
+          3. any other concrete output device
+
+        Every candidate is validated with a short silent playback test at
+        the TTS sample rate. Returns None when nothing validates (the
+        caller then keeps the PortAudio default, device=None).
+        """
+        devices = self.list_output_devices()
+        if not devices:
+            return None
+        try:
+            default_idx = int(self._sd().default.device[1])
+        except Exception:
+            default_idx = -1
+
+        ordered: List[Dict[str, Any]] = []
+        seen: set = set()
+
+        def _add(dev: Optional[Dict[str, Any]]) -> None:
+            if dev is None or dev["index"] in seen:
+                return
+            if self._is_virtual_output(dev["name"]):
+                return
+            seen.add(dev["index"])
+            ordered.append(dev)
+
+        # 1) PortAudio default — only when concrete
+        _add(next((d for d in devices if d["index"] == default_idx), None))
+        # 2) ALSA pulse/pipewire PLUGIN devices (by NAME) — these route to
+        #    the REAL OS default sink configured by the desktop, which is
+        #    exactly "the current OS default playback device".
+        for d in devices:
+            name = (d.get("name") or "").lower()
+            if "pulse" in name or "pipewire" in name:
+                _add(d)
+        # 3) any other concrete output device — HDMI outputs LAST, since a
+        #    monitor HDMI jack usually has no speakers attached and would
+        #    silently swallow TTS even though it "validates".
+        for d in devices:
+            name = (d.get("name") or "").lower()
+            if "hdmi" not in name:
+                _add(d)
+        for d in devices:
+            _add(d)
+
+        for dev in ordered:
+            if self.test_output_device(dev["index"],
+                                       samplerate=sample_rate).get("ok"):
+                return dev["index"]
+        return None
 
 
 # Global singleton

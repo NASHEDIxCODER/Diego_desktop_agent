@@ -5,9 +5,9 @@
   "channels": 2,
   "default_samplerate": 44100.0,
   "speech_channel": 1,
-  "rms": 18915.35,
+  "rms": 18929.85,
   "peak": 32767.0,
   "voice_probability": 1.0,
   "verified": true,
-  "measured_at": 1788516290.7394576
+  "measured_at": 1788528875.4310057
 }

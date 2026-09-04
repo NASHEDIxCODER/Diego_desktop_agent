@@ -346,6 +346,11 @@ def test_startup_restore_both_devices(dev_store, monkeypatch):
     monkeypatch.setattr(mgr, "list_output_devices", lambda: [
         {"index": 3, "name": "USB Headset", "max_output_channels": 2}])
 
+    # Playback validation (new requirement): the saved output is restored
+    # only after a successful playback check.
+    monkeypatch.setattr(mgr, "test_output_device",
+                        lambda idx, samplerate=None: {"ok": True})
+
     from voice.settings import voice_settings
     import voice.streaming_tts as st
     tts_spy = MagicMock()

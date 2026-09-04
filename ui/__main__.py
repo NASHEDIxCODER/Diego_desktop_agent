@@ -308,6 +308,24 @@ def main(argv: Optional[list] = None) -> int:
     app.setApplicationName("Diego")
     app.setOrganizationName("Diego")
 
+    # ── Host the GUI dispatcher on the Qt MAIN thread ──
+    # The ConversationEngine runs on the background DiegoPipeline thread
+    # and marshals ALL Tk GUI work (face-auth popup) to this thread via
+    # gui.submit(). A lightweight QTimer pumps the dispatcher (~30 ms) —
+    # no long-running work ever runs on the Qt thread.
+    from core.gui_dispatcher import gui
+    gui_pump_timer = None
+    if gui.start():
+        gui_pump_timer = QTimer()
+        gui_pump_timer.setInterval(30)
+        gui_pump_timer.timeout.connect(gui.pump_once)
+        gui_pump_timer.start()
+        logger.info("[UI] GUI dispatcher hosted on the Qt main thread "
+                    "(id=%s)", gui.main_thread_ident)
+    else:
+        logger.info("[UI] GUI dispatcher unavailable — face-auth popup "
+                    "will fall back to headless mode")
+
     # Create the event bridge
     from ui.event_bridge import EventBridge
     bridge = EventBridge()
@@ -365,6 +383,9 @@ def main(argv: Optional[list] = None) -> int:
     if runtime:
         runtime.stop()
     bridge.stop()
+    if gui_pump_timer is not None:
+        gui_pump_timer.stop()
+    gui.stop()
 
     logger.info("[UI] Diego Desktop UI exited with code %d", exit_code)
     return exit_code

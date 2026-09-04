@@ -268,11 +268,7 @@ class ConversationEngine:
         except Exception as e:
             logger.warning("[ENGINE] Knowledge subsystem not started: %s", e)
 
-        if threading.current_thread() is threading.main_thread():
-            gui.start()
-            self._gui_pump_task = asyncio.create_task(gui.pump())
-        else:
-            logger.warning("[ENGINE] Engine not on main thread — GUI disabled")
+        self._setup_gui()
 
         # AudioManager
         while self._running and not audio_manager.is_running:
@@ -430,6 +426,40 @@ class ConversationEngine:
 
     # ── Helpers ───────────────────────────────────────────
 
+    def _setup_gui(self) -> None:
+        """GUI-dispatcher bootstrap for EVERY host architecture.
+
+        Threading contract (production):
+          * Qt UI mode  — the Qt application/event loop owns the MAIN
+            thread and hosts the GUI dispatcher (gui.start() + a Qt pump
+            timer in ui/__main__.py). The ConversationEngine runs on the
+            background DiegoPipeline thread and simply USES the
+            dispatcher via thread-safe gui.submit() marshalling.
+          * Headless CLI mode — the engine itself runs on the main
+            thread, so it starts and pumps the dispatcher here.
+          * No GUI host and a background engine thread — headless: the
+            dispatcher stays unavailable and callers fall back safely.
+
+        Long-running STT/LLM/TTS work NEVER moves onto the GUI thread in
+        any of these modes.
+        """
+        if gui.available:
+            # Host-owned dispatcher (Qt main thread) — never start or pump
+            # it from the engine thread.
+            logger.info("[ENGINE] GUI dispatcher hosted by the UI main "
+                        "thread (id=%s) — engine marshals GUI work via "
+                        "gui.submit()", gui.main_thread_ident)
+            return
+        if threading.current_thread() is threading.main_thread():
+            if gui.start():
+                self._gui_pump_task = asyncio.create_task(gui.pump())
+            else:
+                logger.info("[ENGINE] No GUI toolkit available — running "
+                            "headless (GUI disabled)")
+        else:
+            logger.info("[ENGINE] Engine on background thread without a "
+                        "GUI host — running headless (GUI disabled)")
+
     def _ensure_wake_model(self) -> bool:
         if wake_model_manager.loaded:
             return True
@@ -511,7 +541,9 @@ class ConversationEngine:
             else:
                 audio = np.frombuffer(data, dtype=np.uint8).astype(np.float32)
                 audio = (audio - 128.0) / 128.0
-            sd.play(audio, rate)
+            # Play through the SAME resolved output device as TTS so the
+            # chime is audible on the user's selected/validated speaker.
+            sd.play(audio, rate, device=streaming_tts.output_device)
             sd.wait()
         except Exception as e:
             logger.debug("[WAKE] Chime playback failed: %s", e)

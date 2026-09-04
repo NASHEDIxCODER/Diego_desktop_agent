@@ -124,15 +124,29 @@ def _bundled_model_dirs() -> List[Path]:
     dirs: List[Path] = []
 
     # a) Active openwakeword package (only if already imported or importable)
+    #    Newer openwakeword ships models under `resources/models`; older
+    #    releases used `models` directly — BOTH are candidates so the
+    #    resolver works across package layout changes.
     oww = sys.modules.get("openwakeword")
+    oww_pkg_dir: Optional[Path] = None
     if oww is not None and getattr(oww, "__file__", None):
-        dirs.append(Path(oww.__file__).parent / "resources" / "models")
+        oww_pkg_dir = Path(oww.__file__).parent
     else:
         try:
             import openwakeword as _oww  # noqa: F401
-            dirs.append(Path(_oww.__file__).parent / "resources" / "models")
+            oww_pkg_dir = Path(_oww.__file__).parent
         except Exception as e:
             logger.debug("[WAKE-RESOLVER] openwakeword import unavailable: %s", e)
+    if oww_pkg_dir is not None:
+        dirs.append(oww_pkg_dir / "resources" / "models")
+        dirs.append(oww_pkg_dir / "models")
+        # openwakeword.utils may expose a configurable MODEL_PATH
+        try:
+            from openwakeword.utils import MODEL_PATH as _OWW_MODEL_PATH
+            dirs.append(Path(str(_OWW_MODEL_PATH)))
+        except Exception as e:
+            logger.debug("[WAKE-RESOLVER] openwakeword.utils.MODEL_PATH "
+                         "unavailable: %s", e)
 
     # b) USER site-packages (pip --user installs — the common case for
     #    this project; site.getsitepackages() does NOT include it).
