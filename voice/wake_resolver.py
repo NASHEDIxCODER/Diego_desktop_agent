@@ -150,12 +150,23 @@ def _bundled_model_dirs() -> List[Path]:
 
     # b) USER site-packages (pip --user installs — the common case for
     #    this project; site.getsitepackages() does NOT include it).
+    #    site.getusersitepackages() reports ONLY the path matching the
+    #    running interpreter's Python version (e.g. .../python3.11/...),
+    #    so a pip --user install made under a different Python (3.14) is
+    #    invisible. Glob ALL user-site Python versions so the canonical
+    #    resolver is interpreter-version independent.
     try:
         user_site = site.getusersitepackages()
         if user_site:
             dirs.append(Path(user_site) / "openwakeword" / "resources" / "models")
     except Exception as e:
         logger.debug("[WAKE-RESOLVER] usersite lookup failed: %s", e)
+    try:
+        user_base = Path(site.getuserbase()) if hasattr(site, "getuserbase") else Path.home() / ".local"
+        for p in sorted(user_base.glob("lib/python3.*/site-packages/openwakeword/resources/models")):
+            dirs.append(p)
+    except Exception as e:
+        logger.debug("[WAKE-RESOLVER] cross-version usersite glob failed: %s", e)
 
     # c) System site-packages list
     try:

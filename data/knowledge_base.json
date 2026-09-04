@@ -87,7 +87,7 @@
       "source": "/usr/share/doc/gef/api.md",
       "summary": "Here is a simple example of how to make a custom context pane:",
       "created_at": 1788528963.7148962,
-      "access_count": 0,
+      "access_count": 2,
       "confidence": 1.0
     },
     {
@@ -977,7 +977,7 @@
       "source": "/usr/share/doc/gef/commands/vmmap.md",
       "summary": "And you can do all of them in one command \ud83d\ude42",
       "created_at": 1788528963.7159402,
-      "access_count": 0,
+      "access_count": 2,
       "confidence": 1.0
     },
     {
@@ -1757,7 +1757,7 @@
       "source": "/usr/share/doc/gef/commands/stub.md",
       "summary": "For example, it is trivial to bypass `fork()` calls. Since the return value is set to 0, it will in\nfact drop us into the \"child\" process.",
       "created_at": 1788528963.7170386,
-      "access_count": 0,
+      "access_count": 2,
       "confidence": 1.0
     },
     {
@@ -3197,7 +3197,7 @@
       "source": "/usr/share/doc/obfs4proxy/ChangeLog/obfs4-spec.txt",
       "summary": "Once both sides have completed the handshake, they transfer application\n   data broken up into \"packets\", that are then encrypted and authenticated in\n   NaCl crypto_secretbox_xsalsa20poly1305 [5] \"frames\".",
       "created_at": 1788528963.719719,
-      "access_count": 0,
+      "access_count": 2,
       "confidence": 1.0
     },
     {
@@ -3707,7 +3707,7 @@
       "source": "/usr/share/doc/lua54/readme.html",
       "summary": "<OL>\n<LI>\nOpen a terminal window and move to\nthe top-level directory, which is named <TT>lua-5.4.9</TT>. The <TT>Makefile</TT> there controls both the build process and the installation process.",
       "created_at": 1788528963.7206686,
-      "access_count": 0,
+      "access_count": 2,
       "confidence": 1.0
     },
     {
@@ -3827,7 +3827,7 @@
       "source": "/usr/share/doc/lua54/readme.html",
       "summary": "<P>\n  To use Lua as a library in your own programs, you need to know how to\n  create and use libraries with your compiler. Moreover, to dynamically load\n  C libraries for Lua, you'll need to know how to create dynamic libraries\n  and you'll need to make sure that the Lua API functions are accessible",
       "created_at": 1788528963.720767,
-      "access_count": 0,
+      "access_count": 2,
       "confidence": 1.0
     },
     {
@@ -4777,7 +4777,7 @@
       "source": "/usr/share/doc/donut/CHANGELOG.md",
       "summary": "* The -y switch now uses the value provided as an offset from the base address of the process's executable module. So, for example, if you have injected donut into an infected, legitimate PE file, then once donut completes it will create a thread at the provided offset of that legitimate PE, allowin",
       "created_at": 1788528963.7218096,
-      "access_count": 0,
+      "access_count": 4,
       "confidence": 1.0
     },
     {
@@ -5047,7 +5047,7 @@
       "source": "/usr/share/doc/donut/2019-5-9-Introducing-Donut.md",
       "summary": "The result is that execute-assembly *does* allow you to inject your .NET Assembly into a remote process. However, it does not let you inject into a running process or specify how that injection occurs.",
       "created_at": 1788528963.7239745,
-      "access_count": 0,
+      "access_count": 2,
       "confidence": 1.0
     },
     {
@@ -6087,7 +6087,7 @@
       "source": "/usr/share/doc/osert/FAQ.md",
       "summary": "Alternatively what you can do is:",
       "created_at": 1788528963.7251694,
-      "access_count": 0,
+      "access_count": 2,
       "confidence": 1.0
     },
     {
@@ -16907,7 +16907,7 @@
       "source": "/usr/share/doc/xmlsec1/xmlsec-man.md",
       "summary": "> enables Visa3D protocol specific hack for URI attributes processing\n> when we are trying not to use XPath/XPointer engine; this is a hack\n> and I don\\'t know what else might be broken in your application when\n> you use it (also check \\\"\\--id-attr\\\" option because you might need\n> it)",
       "created_at": 1788528963.7491944,
-      "access_count": 0,
+      "access_count": 1,
       "confidence": 1.0
     },
     {
@@ -44227,7 +44227,7 @@
       "source": "/usr/share/doc/turner/README.md",
       "summary": "This assumes you already have a TURN server to connect to or are running your own. If you need to run your own checkout: [https://github.com/coturn/coturn/wiki/turnserver](https://github.com/coturn/coturn/wiki/turnserver)",
       "created_at": 1788528963.808098,
-      "access_count": 0,
+      "access_count": 1,
       "confidence": 1.0
     },
     {
@@ -49452,19 +49452,19 @@
     }
   ],
   "crawled_sources": [
-    "https://kubernetes.io/docs/",
-    "https://doc.rust-lang.org/book/",
-    "https://docs.docker.com/",
     "https://developer.mozilla.org/en-US/docs/Web/",
-    "https://archlinux.org/packages/",
-    "https://docs.python.org/3/",
-    "https://docs.github.com/en",
+    "https://docs.docker.com/",
     "https://nodejs.org/docs/latest/api/",
-    "https://git-scm.com/docs"
+    "https://docs.python.org/3/",
+    "https://archlinux.org/packages/",
+    "https://docs.github.com/en",
+    "https://git-scm.com/docs",
+    "https://kubernetes.io/docs/",
+    "https://doc.rust-lang.org/book/"
   ],
   "action_successes": {},
   "action_failures": {},
   "workflow_patterns": {},
   "learn_count": 511,
-  "updated_at": 1788529174.1762025
+  "updated_at": 1788530269.941825
 }

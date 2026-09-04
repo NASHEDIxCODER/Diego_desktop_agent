@@ -134,13 +134,16 @@ class WakeModelManager:
                 if "detection_threshold" in meta:
                     self._threshold = float(meta["detection_threshold"])
 
-            # openwakeword 0.4.0+ renamed `wakeword_models` → `wakeword_model_paths`
-            # and removed the `inference_framework` parameter (the framework is
-            # now auto-detected from the model file extension — .onnx → onnx,
-            # .tflite → tflite). The old parameter names no longer exist in any
-            # installable openwakeword version, so we use the current API.
+            # openwakeword 0.6.0 renamed `wakeword_models` → `wakeword_model_paths`
+            # but STILL has `inference_framework` (default "tflite"). The default
+            # breaks .onnx models ("The tflite inference framework is selected,
+            # but onnx models were provided!") and tflite_runtime is not even
+            # installed in this environment — so select the framework from the
+            # resolved model's file extension.
+            inference_framework = "onnx" if resolved.suffix == ".onnx" else "tflite"
             self._model = OWWModel(
                 wakeword_model_paths=[str(resolved)],
+                inference_framework=inference_framework,
                 **kwargs
             )
             self._loaded = True
