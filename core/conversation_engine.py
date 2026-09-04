@@ -167,14 +167,6 @@ class ConversationEngine:
 
     # ── Wiring ────────────────────────────────────────────
 
-    # NOTE (2026-08-31): set_vision_context / set_search_provider /
-    # set_learning_context were REMOVED. They were set in Diego.py but
-    # never consumed by the Brain — the Brain has direct, better paths:
-    #   - vision:   brain._perception (perception_pipeline)
-    #   - search:   brain.process_command fetches search_service directly
-    #   - learning: brain._learn uses learning_engine directly
-    # Keeping the dead setters created duplicate provider paths.
-
     def set_auth_provider(self, fn) -> None:
         self._auth_provider = fn
 

@@ -189,15 +189,6 @@ async def run_Diego(no_auth: bool = False, no_wake: bool = False) -> None:
     from core.command_router import command_router
     command_router.wire(action_dispatcher=action_dispatcher, conversation_engine=conversation_engine)
 
-    # NOTE (2026-08-31): set_vision_context / set_search_provider /
-    # set_learning_context were REMOVED. The Brain has direct, better
-    # paths for each:
-    #   - vision:   brain._perception (perception_pipeline)
-    #   - search:   brain.process_command fetches search_service directly
-    #   - learning: brain._learn uses learning_engine directly
-    # The engine's provider callbacks were never consumed by the Brain,
-    # so wiring them here was dead code.
-
     # ── Initialize new services ───────────────────────────
     # MusicAgent: unified music control (MPV, Spotify, YouTube, local)
     from services.music_agent import music_agent

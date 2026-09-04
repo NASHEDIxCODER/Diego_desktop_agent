@@ -1,35 +1,9 @@
 """
-AgentBrain — Central orchestrator for autonomous desktop operation.
+AgentBrain — central orchestrator for autonomous desktop operation.
 
-The Brain is the highest-level agent component. It:
-  1. Receives high-level user goals
-  2. Decomposes goals into tasks (uses LLM)
-  3. Delegates each task to AgentPlanner
-  4. Monitors execution progress
-  5. Recovers from failures
-  6. Updates persistent memory (GoalManager + ExperienceDB)
-  7. Publishes lifecycle events to the EventBus
-
-The Brain NEVER directly executes actions. Everything flows through Planner.
-The Brain is the "thinking" layer — Planner is the "doing" layer.
-
-Architecture:
-    User Goal
-        │
-        ▼
-    Brain.decompose_goal()  ── LLM decomposition into Task DAG
-        │
-        ▼
-    Brain.execute_goal()    ── iterate tasks, delegate to Planner
-        │
-        ▼
-    AgentPlanner.process_request()  ── per-task execution
-        │
-        ▼
-    AgentExecutor  ── actual desktop/browser actions
-
-Event Flow:
-    goal:started  →  task:started  →  task:completed/failed  →  goal:completed/failed
+Never executes actions directly: receives goals, decomposes them (LLM) into
+tasks, delegates execution to AgentPlanner, monitors progress, recovers
+failures, persists state, and emits lifecycle events via the EventBus.
 """
 
 from __future__ import annotations
