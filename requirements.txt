@@ -2,6 +2,13 @@
 #
 # Derived from project imports. This is a top-level requirements file, not a
 # frozen dump of every transitive dependency from one local environment.
+#
+# SUPPORTED PYTHON: production is pinned to Python 3.11 via
+# requirements.runtime-lock.txt (the fully-resolvable, fully-tested
+# combination). Python 3.14 boots via compat.py stdlib shims, but the
+# optional heavy stacks (Coqui TTS <3.12, paddlepaddle <3.13, kokoro/
+# misaki 0.9.x) are NOT installable on 3.14 — 3.14 is a degraded/partial
+# runtime, not a supported production target.
 
 # Core configuration, services, and persistence
 aiohttp>=3.9.0
@@ -42,8 +49,13 @@ llama-cpp-python>=0.2.0
 nemo-toolkit[asr]>=2.0.0
 
 # Streaming TTS providers and fallbacks
-kokoro>=0.7.16
-misaki[en]>=0.7.4
+# Known-good pair (matches requirements.runtime-lock.txt). kokoro 0.7.x
+# requires misaki>=0.7.16, which has no distribution for Python 3.14 —
+# the 0.9.x pair is the resolvable combination on the supported 3.11
+# runtime. On 3.14 these report "no matching distribution" honestly
+# (TTS falls back to pyttsx3; see docs/DOCKER_RUNTIME_MATRIX.md).
+kokoro>=0.9.4
+misaki[en]>=0.9.4
 piper-tts>=1.6.0
 pyttsx3>=2.90
 TTS>=0.22.0; python_version < "3.12"
@@ -54,6 +66,12 @@ firebase-admin>=6.0.0
 mss>=9.0.0
 opencv-python>=4.8.0
 Pillow>=10.0.0
+
+# Knowledge document extraction (pdf/docx/pptx/xlsx)
+PyPDF2>=3.0.1
+python-docx>=1.1.0
+python-pptx>=1.0.0
+openpyxl>=3.1.0
 
 # OCR, screen understanding, and accessibility
 beautifulsoup4>=4.12.0

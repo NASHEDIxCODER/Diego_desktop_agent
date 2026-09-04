@@ -93,8 +93,13 @@ class TTSManager:
                 from voice.tts.xtts_engine import XTTSEngine
                 return XTTSEngine()
             elif name == "piper":
-                from voice.tts.piper_engine import PiperEngine
-                return PiperEngine()
+                # Legacy: voice/tts/piper_engine.py does not exist in this
+                # tree. Piper remains available through the active streaming
+                # path (voice/streaming_tts.py _PiperSynth). Keep this branch
+                # inert so a forced tts_engine=piper falls back cleanly.
+                logger.warning("TTS engine 'piper' unavailable "
+                               "(legacy engine module missing)")
+                return None
             elif name == "pyttsx3":
                 from voice.tts.pyttsx3_engine import Pyttsx3Engine
                 return Pyttsx3Engine()

@@ -193,23 +193,41 @@ auto-enables `TRANSFORMERS_OFFLINE=1` when the embedding model is cached.
 
 ---
 
-## 7. Dependency Gaps Discovered
+## 7. Dependency Gaps (RESOLVED)
 
 Cross-checked **actual production imports** (excluding stdlib/first-party
-and package-name aliases) against `requirements.txt` + the lockfile:
+and package-name aliases) against `requirements.txt` + the lockfile.
 
-| Gap | Imported by | Missing in requirements | Impact |
-|---|---|---|---|
-| `PyPDF2` | `knowledge/extractors.py` | Not listed anywhere | PDF extraction feature fails on clean install |
-| `pypdf` | `knowledge/extractors.py` | Not listed in req; lockfile lacks it too | Same |
-| `python-docx` (import `docx`) | `knowledge/extractors.py` | Not listed | DOCX knowledge indexing fails |
-| `python-pptx` (import `pptx`) | `knowledge/extractors.py` | Not listed | PPTX indexing fails |
-| `openpyxl` | `knowledge/extractors.py` | Not listed | XLSX indexing fails |
-| `aifc` (stdlib module removed in 3.13+) | `compat.py` | Missing for 3.14 (only `audioop-lts` is pinned) | `compat.inject_aifc_stub()` unavailable on 3.14 |
-| `voice/tts/piper_engine.py` (referenced by `voice/tts/manager.py`) | `voice/tts/manager.py` | **File does not exist** | TTSManager's "piper" engine path raises ImportError; not on active `streaming_tts` path |
-| `piper` (module) | `voice/streaming_tts.py` `_PiperSynth` | `piper-tts` IS listed; okay | — |
+**Fixed in this pass** (added to `requirements.txt` and pinned in
+`requirements.runtime-lock.txt`):
 
-Also note:
+| Package | Imported by | Note |
+|---|---|---|
+| `PyPDF2==3.0.1` | `knowledge/extractors.py` | The actively used PDF implementation (`pypdf` is tried first but is NOT installed; the code falls back to PyPDF2 — so PyPDF2 is the declared dependency) |
+| `python-docx==1.2.0` | `knowledge/extractors.py` | DOCX extraction |
+| `python-pptx==1.0.2` (+ `xlsxwriter==3.2.9` transitive) | `knowledge/extractors.py` | PPTX extraction |
+| `openpyxl==3.1.5` (+ `et-xmlfile==2.0.0` transitive) | `knowledge/extractors.py` | XLSX extraction |
+
+**Non-gaps / corrections:**
+
+- `aifc` — NOT a gap: `compat.py` already handles the removed stdlib
+  module correctly on 3.14 (`try: import aifc` → wave-delegating stub via
+  `inject_aifc_stub()`, called from `inject_all()` on import). Python 3.14
+  support is intentional.
+- `piper` module — covered by the declared `piper-tts` distribution.
+
+**Orphaned references (made inert, not faked):**
+
+- `voice/tts/manager.py` referenced `voice.tts.piper_engine`,
+  `voice.tts.xtts_engine`, and `voice.tts.pyttsx3_engine` — none of these
+  modules exist in the tree. TTSManager is NOT reachable from any
+  production entrypoint (only `tests/` and `debug/` import it); the active
+  TTS path is `voice/streaming_tts.py`. The piper branch now logs a clear
+  "legacy engine module missing" warning and returns None (clean
+  fallback); the xtts/pyttsx3 branches are inert via the existing
+  try/except with a clear log.
+
+**Remaining notes:**
 - `TTS` (Coqui XTTS) is `python_version < "3.12"`; on py≥3.12 `_XTTSSynth`
   import fails → TTS engine chain degrades to pyttsx3 (usable) — a real
   limitation for 3.14 images.
@@ -222,6 +240,13 @@ Also note:
   wake model ships inside the `openwakeword` package, so the image must
   install `openwakeword` with its bundled resources (pip default) and NOT
   strip `models/`.
+- openwakeword version compatibility: the runtime now supports BOTH
+  openwakeword 0.4.0 (installed in the 3.14 user site-packages; no
+  `inference_framework` parameter) and 0.6.0 (lockfile; requires explicit
+  `inference_framework="onnx"` for .onnx models). `voice/wake_model_manager.py`
+  and `voice/calibrate_wake.py` inspect the installed `Model.__init__`
+  signature and pass `inference_framework` / choose
+  `wakeword_model_paths` vs `wakeword_models` accordingly.
 
 ---
 

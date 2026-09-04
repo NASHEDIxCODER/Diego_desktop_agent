@@ -94,10 +94,7 @@ def _select_base_model(phrase: str) -> Optional[Path]:
     """
     import difflib
     import os
-    from voice.wake_model_manager import (
-        DEFAULT_BUNDLED_MODEL,
-        NON_WAKE_FILES,
-    )
+    from voice.wake_resolver import DEFAULT_BUNDLED_MODEL, NON_WAKE_FILES
 
     # 1) Explicit WAKE_MODEL configuration
     cfg = (os.getenv("WAKE_MODEL")
@@ -419,18 +416,23 @@ def train() -> bool:
     base_stem = Path(base_model_path).stem
     print(f"  Base model: {base_stem}")
 
-    # Select the inference framework based on the model file extension.
-    # The openwakeword Model defaults to inference_framework="tflite",
-    # which raises ValueError when an ONNX model is provided. We must
-    # explicitly select "onnx" for .onnx models. `inference_framework`
-    # is an explicit named parameter of Model.__init__ (forwarded to
-    # AudioFeatures.__init__), NOT part of **kwargs, so it does not
-    # cause a TypeError.
-    inference_framework = "onnx" if base_model_path.suffix == ".onnx" else "tflite"
-    oww = OWWModel(
-        wakeword_models=[str(base_model_path)],
-        inference_framework=inference_framework,
-    )
+    # Version-adaptive Model construction. openwakeword 0.6.0 renamed
+    # `wakeword_models` → `wakeword_model_paths` and defaults
+    # inference_framework="tflite" (raises ValueError for .onnx models —
+    # select "onnx" explicitly). openwakeword 0.4.0 has NEITHER issue:
+    # it only accepts `wakeword_model_paths` and has no
+    # `inference_framework` parameter (unknown kwargs are forwarded to
+    # AudioFeatures and raise TypeError). Pass each kwarg only when the
+    # installed Model supports it.
+    import inspect as _inspect
+    _sig = _inspect.signature(OWWModel.__init__).parameters
+    _model_kwarg = ("wakeword_model_paths" if "wakeword_model_paths" in _sig
+                    else "wakeword_models")
+    _init_kwargs = {_model_kwarg: [str(base_model_path)]}
+    if "inference_framework" in _sig:
+        _init_kwargs["inference_framework"] = (
+            "onnx" if base_model_path.suffix == ".onnx" else "tflite")
+    oww = OWWModel(**_init_kwargs)
     feats_ndx = oww.model_inputs[base_stem]
 
     def harvest(dat: np.ndarray):

@@ -43,6 +43,23 @@ WARMUP_FRAMES = 5  # openWakeWord zeroes predictions until the buffer has ≥5 f
 WARMUP_FRAME_SAMPLES = 1280  # 80 ms @ 16 kHz
 
 
+def _oww_supports_inference_framework() -> bool:
+    """True when the installed openwakeword Model accepts `inference_framework`.
+
+    openwakeword >= 0.6 has the parameter (default "tflite", which breaks
+    .onnx models — we must select explicitly). openwakeword 0.4.0 does NOT
+    have it (ONNX is the only backend) and forwards unknown kwargs to
+    AudioFeatures, which raises TypeError.
+    """
+    import inspect
+    try:
+        from openwakeword import Model as OWWModel
+        return "inference_framework" in inspect.signature(
+            OWWModel.__init__).parameters
+    except Exception:
+        return False
+
+
 class WakeModelManager:
     """Manages the openWakeWord base model + optional custom verifier."""
 
@@ -139,11 +156,15 @@ class WakeModelManager:
             # breaks .onnx models ("The tflite inference framework is selected,
             # but onnx models were provided!") and tflite_runtime is not even
             # installed in this environment — so select the framework from the
-            # resolved model's file extension.
-            inference_framework = "onnx" if resolved.suffix == ".onnx" else "tflite"
+            # resolved model's file extension. openwakeword 0.4.0 has no
+            # `inference_framework` parameter at all (ONNX is the only backend
+            # and is chosen by the model loader itself) — passing it raises
+            # TypeError from AudioFeatures. Pass it only when supported.
+            if _oww_supports_inference_framework():
+                kwargs["inference_framework"] = (
+                    "onnx" if resolved.suffix == ".onnx" else "tflite")
             self._model = OWWModel(
                 wakeword_model_paths=[str(resolved)],
-                inference_framework=inference_framework,
                 **kwargs
             )
             self._loaded = True
