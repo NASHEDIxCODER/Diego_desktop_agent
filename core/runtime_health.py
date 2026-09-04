@@ -194,23 +194,39 @@ class RuntimeHealth:
                           "no TTS engine available", "none", REQUIRED)
 
         # ══ OPTIONAL — degraded features ═══════════════════════════
-        # 5. Wake model
-        wake_asset = base / "models" / "wake" / "verifier.pkl"
+        # 5. Wake model — uses the SAME canonical resolver as the runtime
+        # loader (voice/wake_resolver.py). Health and runtime therefore
+        # always agree on the candidate list, the selected model and the
+        # diagnostics. (The old check only verified `import openwakeword`
+        # + verifier.pkl existence, which could report READY while the
+        # runtime loader failed with "Wake model not found".)
         if no_wake:
             # Intentionally disabled — BYPASSED, never READY.
             self._add("wake", BYPASSED, "openwakeword",
                       _import_version("openwakeword") or "",
-                      str(wake_asset) if wake_asset.exists() else "",
-                      "--no-wake active (wake detection skipped)", "", OPTIONAL)
-        elif _check_import("openwakeword"):
-            self._add("wake", READY, "openwakeword",
-                      _import_version("openwakeword") or "?",
-                      str(wake_asset) if wake_asset.exists() else "",
-                      "ready", "", OPTIONAL)
+                      "", "--no-wake active (wake detection skipped)", "", OPTIONAL)
         else:
-            self._add("wake", MISSING, "openwakeword", "",
-                      str(wake_asset) if wake_asset.exists() else "",
-                      "package not installed", "run with --no-wake", OPTIONAL)
+            oww_ver = _import_version("openwakeword")
+            if oww_ver is None:
+                self._add("wake", MISSING, "openwakeword", "", "",
+                          "package not installed", "run with --no-wake", OPTIONAL)
+            else:
+                from voice.wake_resolver import resolve_wake_model
+                resolution = resolve_wake_model()
+                if resolution.found:
+                    reason = "ready"
+                    if resolution.verifier_path:
+                        reason = f"ready (verifier: {resolution.verifier_path.name})"
+                    self._add("wake", READY, "openwakeword", oww_ver,
+                              str(resolution.path), reason, "", OPTIONAL)
+                else:
+                    # Honest failure: the package is installed but the
+                    # production model cannot be resolved. Report FAILED
+                    # with the resolver's exact diagnostics — never a
+                    # false READY.
+                    self._add("wake", FAILED, "openwakeword", oww_ver,
+                              "", resolution.reason(),
+                              "run with --no-wake", OPTIONAL)
 
         # 6. Screen capture
         self._check_pkg("screen_capture", "mss", OPTIONAL,

@@ -17,31 +17,27 @@ Responsibilities:
 The verifier is a logistic-regression model trained with
 openwakeword.train_custom_verifier on the USER's voice saying the wake phrase.
 It is attached to the base openWakeWord model via `custom_verifier_models`.
+
+MODEL RESOLUTION (2026-09-04): all path discovery delegates to
+voice/wake_resolver.py — the ONE canonical resolver shared with the
+startup health probe (core/runtime_health.py). Health and runtime now
+always agree on the candidate list, the selected model and the
+diagnostics.
 """
 
-import difflib
-import json
 import logging
-import os
 import time
 from collections import deque
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 import numpy as np
 
-from config.settings import settings
 from voice.audio_processing import float32_to_int16
 from voice.settings import voice_settings
+from voice import wake_resolver
 
 logger = logging.getLogger(__name__)
-
-# Bundled fallback used only when no model matches the wake phrase.
-# NEVER hardcode hey_jarvis — models are selected dynamically below.
-DEFAULT_BUNDLED_MODEL = "hey_marvin"
-
-# Files in the openWakeWord resources dir that are not wake-word models
-NON_WAKE_FILES = {"melspectrogram.onnx", "embedding_model.onnx", "silero_vad.onnx"}
 
 WARMUP_FRAMES = 5  # openWakeWord zeroes predictions until the buffer has ≥5 frames
 WARMUP_FRAME_SAMPLES = 1280  # 80 ms @ 16 kHz
@@ -57,6 +53,8 @@ class WakeModelManager:
         self._verifier_path: Optional[Path] = None
         self._loaded = False
         self._load_error: Optional[str] = None
+        # Last canonical resolution (shared shape with the health probe).
+        self._last_resolution = None
 
         self._wake_phrase: str = voice_settings.wake_phrase
         self._threshold: float = 0.5
@@ -82,10 +80,13 @@ class WakeModelManager:
         Load the wake model.
 
         Args:
-            model_path: Explicit path to an ONNX model. If None, auto-resolve:
+            model_path: Explicit path to an ONNX model. If None, auto-resolve
+                        via the canonical resolver (voice/wake_resolver.py):
                         1. settings.WAKE_MODEL / voice_settings.wake_model
                         2. models/wake/*.onnx (custom trained model)
-                        3. Bundled openWakeWord model best matching WAKE_PHRASE
+                        3. Bundled openWakeWord model recorded in verifier
+                           metadata (base_model)
+                        4. Bundled openWakeWord model best matching WAKE_PHRASE
             wake_phrase: Phrase to associate with the model (defaults to config).
 
         Returns:
@@ -101,7 +102,10 @@ class WakeModelManager:
         try:
             resolved = Path(model_path).expanduser() if model_path else self._resolve_model_path()
             if resolved is None or not resolved.exists():
-                self._load_error = (f"Wake model not found ({resolved or 'no candidate'}); "
+                detail = ""
+                if resolved is None and self._last_resolution is not None:
+                    detail = f" ({self._last_resolution.reason()})"
+                self._load_error = (f"Wake model not found ({resolved or 'no candidate'}){detail}; "
                                     f"check WAKE_MODEL or run --train-wake")
                 logger.error("[WAKE] %s", self._load_error)
                 return False
@@ -442,157 +446,51 @@ class WakeModelManager:
         }
 
     # ── Model resolution ───────────────────────────────────────────
+    #
+    # ALL discovery delegates to voice/wake_resolver.py — the canonical
+    # resolver shared with the startup health probe.
 
     def _resolve_model_path(self) -> Optional[Path]:
-        """Resolve the base wake model path in priority order."""
-        # 1) Explicit WAKE_MODEL configuration
-        cfg = (os.getenv("WAKE_MODEL")
-               or getattr(settings, "WAKE_MODEL", None)
-               or voice_settings.wake_model)
-        if cfg:
-            p = Path(str(cfg)).expanduser()
-            if p.exists():
-                return p
-            p2 = settings.BASE_DIR / str(cfg)
-            if p2.exists():
-                return p2
-            logger.warning("[WAKE] WAKE_MODEL='%s' not found at %s or %s",
-                           cfg, p, p2)
-
-        # 2) Custom ONNX model in models/wake/ (trained wake model)
-        try:
-            for f in sorted(settings.MODELS_WAKE_DIR.glob("*.onnx")):
-                if f.name in NON_WAKE_FILES:
-                    continue
-                return f
-        except Exception as e:
-            logger.debug("[WAKE] models/wake glob error: %s", e)
-
-        # 3) Bundled model recorded in verifier metadata
-        meta = self._load_verifier_metadata()
-        base = meta.get("base_model")
-        if base:
-            p = self._bundled_model_path(base)
-            if p is not None:
-                return p
-
-        # 4) Bundled model best matching the wake phrase
-        return self._select_bundled_model(self._wake_phrase)
+        """Resolve the base wake model path via the canonical resolver."""
+        resolution = wake_resolver.resolve_wake_model(self._wake_phrase)
+        self._last_resolution = resolution
+        if resolution.found:
+            return resolution.path
+        logger.error("[WAKE] %s", resolution.reason())
+        return None
 
     def _bundled_models(self) -> Dict[str, Path]:
-        """Return {model_stem: Path} for all bundled openWakeWord models.
-
-        Searches multiple candidate locations so the models are found even
-        when the active openwakeword install lacks its resources/models dir
-        (e.g. a pip install that omitted the bundled .onnx files):
-          1. The active openwakeword package's resources/models.
-          2. A project-local models/wake/bundled/ directory.
-          3. Any other openwakeword install on the system (site-packages).
-        """
-        candidates: List[Path] = []
-
-        # 1) Active openwakeword package resources/models
-        try:
-            import openwakeword as _oww
-            candidates.append(Path(_oww.__file__).parent / "resources" / "models")
-        except ImportError:
-            pass
-
-        # 2) Project-local bundled models directory
-        candidates.append(settings.MODELS_WAKE_DIR / "bundled")
-
-        # 3) Other openwakeword installs on the system (site-packages)
-        try:
-            import site
-            for sp in site.getsitepackages():
-                candidates.append(Path(sp) / "openwakeword" / "resources" / "models")
-        except Exception:
-            pass
-
-        out: Dict[str, Path] = {}
-        seen: set = set()
-        for d in candidates:
-            if not d.exists():
-                continue
-            for f in d.glob("*.onnx"):
-                if f.name in NON_WAKE_FILES:
-                    continue
-                key = f.stem
-                if key in seen:
-                    continue
-                seen.add(key)
-                out[key] = f
-        return out
+        """{model_stem: Path} for all bundled openWakeWord models."""
+        return wake_resolver.bundled_models()
 
     def _bundled_model_path(self, model_stem: str) -> Optional[Path]:
-        models = self._bundled_models()
-        return models.get(model_stem)
+        return wake_resolver.bundled_models().get(model_stem)
 
     def _select_bundled_model(self, phrase: str) -> Optional[Path]:
-        """Select the bundled model whose name best matches the wake phrase.
-
-        Never hardcodes a specific bundled model. If the phrase has low
-        similarity to all bundled models, DEFAULT_BUNDLED_MODEL is used as a
-        generic base for the custom verifier.
-        """
-        models = self._bundled_models()
-        if not models:
+        """Select the bundled model best matching the wake phrase."""
+        stem, ratio = wake_resolver._select_bundled_for_phrase(phrase)
+        if stem is None:
             return None
-        phrase_lower = phrase.lower().strip()
-        best_name = DEFAULT_BUNDLED_MODEL
-        best_ratio = -1.0
-        for name in models:
-            pretty = name.replace("_", " ")
-            ratio = difflib.SequenceMatcher(None, phrase_lower, pretty).ratio()
-            if ratio > best_ratio:
-                best_ratio = ratio
-                best_name = name
-        if best_ratio < 0.3:
-            best_name = DEFAULT_BUNDLED_MODEL
         logger.info("[WAKE] Selected bundled model '%s' for phrase '%s' "
-                    "(match ratio=%.2f)", best_name, phrase, best_ratio)
-        return models.get(best_name)
+                    "(match ratio=%.2f)", stem, phrase, ratio)
+        return wake_resolver.bundled_models().get(stem)
 
     # ── Verifier resolution ────────────────────────────────────────
 
     def _load_verifier_metadata(self) -> dict:
-        meta_path = settings.MODELS_WAKE_DIR / "metadata.json"
-        if not meta_path.exists():
-            return {}
-        try:
-            return json.loads(meta_path.read_text(encoding="utf-8"))
-        except Exception as e:
-            logger.debug("[WAKE] Verifier metadata read failed: %s", e)
-            return {}
+        """Verifier metadata — delegates to the canonical resolver."""
+        return wake_resolver._load_verifier_metadata()
 
     def _resolve_verifier(self, base_model_name: str) -> Optional[Path]:
         """Resolve a verifier valid for the given base model, or None."""
-        meta = self._load_verifier_metadata()
-        # Only attach when the verifier was trained on this base model
-        if meta.get("base_model") and meta["base_model"] != base_model_name:
-            logger.info("[WAKE] Verifier trained on '%s', current base model is "
-                        "'%s' — verifier not attached", meta["base_model"], base_model_name)
-            return None
-
-        named = meta.get("verifier_path")
-        candidates: List[Path] = []
-        if named:
-            candidates.append(settings.MODELS_WAKE_DIR / named)
-        candidates.append(settings.MODELS_WAKE_DIR / "verifier.pkl")
-        candidates.append(settings.MODELS_WAKE_DIR / "verifier.joblib")
-        try:
-            candidates += sorted(settings.MODELS_WAKE_DIR.glob("verifier.*"))
-        except Exception:
-            pass
-
-        seen = set()
-        for c in candidates:
-            key = str(c)
-            if key in seen or not c.exists():
-                continue
-            seen.add(key)
-            return c
-        return None
+        verifier = wake_resolver.resolve_verifier(base_model_name)
+        if verifier is None:
+            meta = self._load_verifier_metadata()
+            if meta.get("base_model") and meta["base_model"] != base_model_name:
+                logger.info("[WAKE] Verifier trained on '%s', current base model is "
+                            "'%s' — verifier not attached",
+                            meta["base_model"], base_model_name)
+        return verifier
 
     # ── Warmup ─────────────────────────────────────────────────────
 
@@ -620,7 +518,6 @@ class WakeModelManager:
             peak_monitor.reset("wake_detector")
         except Exception:
             pass
-
 
 
 # Global singleton

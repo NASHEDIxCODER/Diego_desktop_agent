@@ -21,6 +21,7 @@ import asyncio
 import contextlib
 import sys
 import time
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -407,7 +408,18 @@ def test_health_ready_components_show_no_fallback(monkeypatch):
     rh = _patch_health(monkeypatch, versions={
         "sounddevice": "0.5.5", "silero_vad": "1.0",
         "faster_whisper": "1.0", "kokoro": "0.1",
+        "openwakeword": "0.6.0",
     }, imports={"openwakeword": True})
+    # The wake check uses the canonical resolver (voice/wake_resolver.py);
+    # stub it so this test exercises the health logic deterministically.
+    from types import SimpleNamespace
+    import voice.wake_resolver as wr
+    fake_res = SimpleNamespace(
+        found=True,
+        path=Path("/fake/wake_model.onnx"),
+        verifier_path=Path("/fake/verifier.pkl"),
+        reason="resolved /fake/wake_model.onnx (source=test)")
+    monkeypatch.setattr(wr, "resolve_wake_model", lambda *a, **k: fake_res)
     h = rh.RuntimeHealth()
     comps = {c.name: c for c in h.run(no_wake=False)}
 
@@ -424,7 +436,16 @@ def test_health_ready_components_show_no_fallback(monkeypatch):
 def test_health_silero_missing_is_degraded_with_fallback(monkeypatch):
     rh = _patch_health(monkeypatch, versions={
         "sounddevice": "0.5.5", "faster_whisper": "1.0", "kokoro": "0.1",
+        "openwakeword": "0.6.0",
     }, imports={"openwakeword": True})
+    from types import SimpleNamespace
+    import voice.wake_resolver as wr
+    fake_res = SimpleNamespace(
+        found=True,
+        path=Path("/fake/wake_model.onnx"),
+        verifier_path=None,
+        reason="resolved /fake/wake_model.onnx (source=test)")
+    monkeypatch.setattr(wr, "resolve_wake_model", lambda *a, **k: fake_res)
     h = rh.RuntimeHealth()
     comps = {c.name: c for c in h.run(no_wake=False)}
     assert comps["vad"].status == rh.DEGRADED
