@@ -1987,7 +1987,7 @@
       "source": "/usr/share/doc/gef/commands/tmux-setup.md",
       "summary": "Those commands will check whether GDB is being spawn from inside a `tmux` (resp. `screen`) session,\nand if so, will split the pane vertically, and configure the context to be redirected to the new\npane, looking something like:",
       "created_at": 1788500098.8344672,
-      "access_count": 0,
+      "access_count": 2,
       "confidence": 1.0
     },
     {
@@ -2317,7 +2317,7 @@
       "source": "/usr/share/doc/gef/commands/search-pattern.md",
       "summary": "`search-pattern` can also be used to search for addresses. To do so, simply ensure that your pattern\nstarts with `0x` and is a valid hex address.",
       "created_at": 1788500098.835205,
-      "access_count": 0,
+      "access_count": 2,
       "confidence": 1.0
     },
     {
@@ -4837,7 +4837,7 @@
       "source": "/usr/share/doc/donut/2019-5-31-Apple-Fritter.md",
       "summary": "In case you are unaware, [Donut](https://github.com/TheWover/donut \"Donut\") is a shellcode generation tool that creates native shellcode payloads from .NET Assemblies. This shellcode may be used to inject the Assembly into arbitrary Windows processes.",
       "created_at": 1788500098.8439708,
-      "access_count": 0,
+      "access_count": 2,
       "confidence": 1.0
     },
     {
@@ -11817,7 +11817,7 @@
       "source": "/usr/share/doc/damm/README.md",
       "summary": "The results look similar to the 'processes' plugin output above, but there are some differences:\n* Only results that are new in 'after.db' or that are in both dbs but have some attributes that changed from 'before.db' are displayed (the output here is snipped). * Results that are only in the 'after.",
       "created_at": 1788500098.8741674,
-      "access_count": 0,
+      "access_count": 2,
       "confidence": 1.0
     },
     {
@@ -49452,19 +49452,19 @@
     }
   ],
   "crawled_sources": [
-    "https://git-scm.com/docs",
+    "https://docs.docker.com/",
     "https://kubernetes.io/docs/",
     "https://docs.github.com/en",
+    "https://doc.rust-lang.org/book/",
+    "https://archlinux.org/packages/",
     "https://developer.mozilla.org/en-US/docs/Web/",
     "https://docs.python.org/3/",
-    "https://archlinux.org/packages/",
-    "https://doc.rust-lang.org/book/",
-    "https://nodejs.org/docs/latest/api/",
-    "https://docs.docker.com/"
+    "https://git-scm.com/docs",
+    "https://nodejs.org/docs/latest/api/"
   ],
   "action_successes": {},
   "action_failures": {},
   "workflow_patterns": {},
   "learn_count": 503,
-  "updated_at": 1788506598.7607217
+  "updated_at": 1788513419.916627
 }

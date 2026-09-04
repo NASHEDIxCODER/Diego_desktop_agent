@@ -749,6 +749,7 @@ class TaskRunner:
         limits: Optional[TaskLimits] = None,
         transcript: str = "",
         confirmation_callback: Optional[ConfirmationCallback] = None,
+        approved_actions: Optional[frozenset] = None,
     ):
         self._executor = executor
         self._observer = observer
@@ -760,12 +761,23 @@ class TaskRunner:
         self._loops = LoopDetector()
         self._cancelled = False
         self._confirmation_callback = confirmation_callback
+        # Action signatures the user has ALREADY approved (confirmation
+        # resumption). A sensitive step whose signature is present here is
+        # executed without re-asking — the user already said "yes".
+        self._approved_actions = approved_actions or frozenset()
 
     # ── External control ──────────────────────────────────────
 
     def cancel(self) -> None:
         """Request cancellation (checked between steps — never mid-action)."""
         self._cancelled = True
+
+    def _action_pre_approved(self, action: str, params: Dict[str, Any]) -> bool:
+        """True if the user already approved this exact action (resumption)."""
+        if not self._approved_actions:
+            return False
+        sig = StepRecord(index=0, action=action, params=params).signature()
+        return sig in self._approved_actions
 
     # ── Main loop ─────────────────────────────────────────────
 
@@ -908,7 +920,7 @@ class TaskRunner:
 
             # ── HUMAN SAFETY: sensitive action confirmation ────
             sensitive, sensitive_reason = is_sensitive_action(action, params)
-            if sensitive:
+            if sensitive and not self._action_pre_approved(action, params):
                 rec.sensitive_reason = sensitive_reason
                 approved = await self._request_confirmation(
                     action, sensitive_reason, params, state)
@@ -1276,8 +1288,10 @@ class TaskStateStore:
 
     def save(self, state: TaskExecutionState) -> None:
         self.last = state
-        if state.final_status in (FinalStatus.PARTIAL_FAILURE, FinalStatus.NEEDS_INPUT):
-            self.active = state   # "continue" can resume this
+        if state.final_status in (FinalStatus.PARTIAL_FAILURE,
+                                  FinalStatus.NEEDS_INPUT,
+                                  FinalStatus.NEEDS_CONFIRMATION):
+            self.active = state   # "continue" / "yes" can resume this
         else:
             self.active = None    # SUCCESS/FAILED/CANCELLED — keep last for refs
 

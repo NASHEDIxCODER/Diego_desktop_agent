@@ -246,7 +246,8 @@ def main() -> None:
     parser.add_argument("--no-auth", action="store_true",
                         help="Skip face authentication (development only)")
     parser.add_argument("--no-wake", action="store_true",
-                        help="Bypass wake detection and face auth — enter LISTEN directly (development only)")
+                        help="Bypass wake detection only — enter LISTEN directly "
+                             "(face auth still runs unless --no-auth is also given; development only)")
     parser.add_argument("--record-session", action="store_true",
                         help="Record every conversation turn to logs/manual_voice_session.json")
     parser.add_argument("--headless", action="store_true",

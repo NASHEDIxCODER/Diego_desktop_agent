@@ -9,6 +9,7 @@ Developer/test CLI for the local knowledge subsystem.
     python -m knowledge.cli roots                 # show indexed roots
     python -m knowledge.cli skipped               # show skipped/sensitive
     python -m knowledge.cli snapshot              # refresh PC snapshot
+    python -m knowledge.cli context-status        # LLM context-window status
 """
 
 from __future__ import annotations
@@ -23,6 +24,13 @@ def main(argv=None) -> int:
         print(__doc__)
         return 1
     cmd = args[0].lower()
+
+    # Context-window status does not need the knowledge service at all.
+    if cmd in ("context-status", "context status", "context_status"):
+        from ai.context_monitor import context_monitor
+        print(json.dumps(context_monitor.context_status(), indent=2,
+                         default=str))
+        return 0
 
     from knowledge.service import knowledge_service
 

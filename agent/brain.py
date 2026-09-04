@@ -393,6 +393,16 @@ class AgentBrain:
         except ImportError:
             pass  # voice subsystem unavailable — never block command processing
 
+        # ── Step 0.21: Pending-confirmation continuation (CONTINUOUS TASK) ──
+        # A multi-step task can pause for user confirmation and resume the
+        # SAME task. "yes"/"play it"/"do it" resume; "no"/"cancel" cancel.
+        # Only fires while a pending confirmation actually exists — a bare
+        # "yes" with nothing pending falls through and executes NOTHING.
+        # An unrelated command ("what's my CPU?") is handled normally while
+        # the pending task stays alive.
+        if await self._handle_pending_confirmation(text, result, conv_memory, t0):
+            return result
+
         # ── Step 0.22: Task follow-up continuation (CLOSED LOOP) ──────
         # "continue", "open the first result", "do the same for Chrome",
         # "close that", "try another one" must operate on the PREVIOUS
@@ -627,6 +637,13 @@ class AgentBrain:
             # Verification happens in the background.
             immediate_response = ""
             if decision.action:
+                # ── CONTINUOUS CONFIRMATION: explicit YouTube playback ──
+                # "play X on youtube" → search (visible) → ask → wait.
+                # Playback happens ONLY after the user confirms.
+                if await self._maybe_confirm_youtube_playback(
+                        decision, result, personality, conv_memory, t0):
+                    return result
+
                 # Presence check: if the app is already running, say so
                 # instead of "Opening X." — Diego feels present.
                 already = self._check_already_running(decision.action)
@@ -951,11 +968,16 @@ class AgentBrain:
 
     async def _run_task_loop(self, request: str,
                              plan: List[Dict[str, Any]],
-                             inherited: Optional["TaskExecutionState"] = None
+                             inherited: Optional["TaskExecutionState"] = None,
+                             approved_actions: Optional[frozenset] = None,
                              ) -> "TaskExecutionState":
         """Run the closed-loop task agent: execute → observe → verify →
         replan → repeat until the goal is satisfied or a real blocker
-        requires stopping. Task state is preserved for follow-ups."""
+        requires stopping. Task state is preserved for follow-ups.
+
+        approved_actions: signatures the user already approved (confirmation
+        resumption) — those sensitive steps run without re-asking.
+        """
         from agent.task_state import (
             TaskRunner, PlanValidator, TaskExecutionState, FinalStatus,
             task_state_store,
@@ -966,9 +988,15 @@ class AgentBrain:
             planner=self._plan_with_context,
             validator=PlanValidator(action_gate=self._planner_action_allowed),
             transcript=request,
+            approved_actions=approved_actions,
         )
         state = await runner.run(request, plan, inherited=inherited)
         task_state_store.save(state)
+        # CONTINUOUS TASK: a sensitive step that paused for confirmation is
+        # registered as pending so "yes"/"no" can resume/cancel the SAME task.
+        if (state.final_status == FinalStatus.NEEDS_CONFIRMATION
+                and state.pending_confirmation is not None):
+            self._register_pending_confirmation(state)
         # Record the whole task as one experience for self-improvement.
         try:
             from learning.experience_db import experience_db
@@ -1002,9 +1030,197 @@ class AgentBrain:
         result.verified = state.final_status == FinalStatus.SUCCESS
         result.task_status = (state.final_status.value
                               if state.final_status else "")
+        # CONTINUOUS TASK: a task paused for confirmation speaks the prompt,
+        # never a completion claim.
+        if state.final_status == FinalStatus.NEEDS_CONFIRMATION:
+            rec = state.pending_confirmation
+            result.response = (
+                f"I need your confirmation to run '{rec.action}'. Should I do it?"
+                if rec is not None else state.summary())
+            result.speak_immediately = False
+            result.verified = False
+            return
         if result.actions_executed > 0:
             result.response = state.summary()
             result.speak_immediately = False
+
+    # ── Continuous task confirmation (pause → resume SAME task) ──────
+
+    async def _handle_pending_confirmation(self, text: str,
+                                           result: CommandResult,
+                                           conv_memory, t0: float) -> bool:
+        """Resume / cancel a task that paused for user confirmation.
+
+        Returns True when the turn was fully consumed (caller returns the
+        result). Returns False to let the command flow through normally —
+        either because there is NO pending confirmation (a bare "yes" must
+        execute nothing) or because the utterance is an unrelated command
+        (the pending task stays alive while it is handled).
+        """
+        from agent.task_continuation import (
+            pending_task_manager, classify_confirmation,
+        )
+        pending = pending_task_manager.get_pending()
+        if pending is None:
+            # No pending confirmation — "yes"/"no" are just conversation.
+            return False
+
+        verdict = classify_confirmation(text)
+        if verdict is None:
+            # Unrelated command ("what's my CPU?") — keep the pending task
+            # alive and process this command normally.
+            logger.info("[Brain] Pending task %s kept alive while handling "
+                        "unrelated command: '%s'", pending.task_id, text[:50])
+            return False
+
+        if verdict == "cancel":
+            pending_task_manager.cancel()
+            result.path = "TASK_CONFIRMATION_CANCEL"
+            result.used_llm = False
+            result.response = "Okay, cancelled."
+            result.verified = False
+            conv_memory.add_assistant(result.response)
+            result.latency_ms = (time.time() - t0) * 1000
+            logger.info("[Brain] Pending task %s cancelled by user", pending.task_id)
+            return True
+
+        # verdict == "confirm": resume the SAME task from the confirmation
+        # point. Clear the pending state BEFORE executing so a failure does
+        # not re-prompt.
+        pending_task_manager.clear()
+        logger.info("[Brain] Resuming task %s after confirmation: '%s'",
+                    pending.task_id, pending.goal[:60])
+
+        if pending.resume_plan:
+            # Multi-step resumption through the closed-loop runner. The
+            # approved signatures stop the runner from re-asking the step
+            # the user already confirmed.
+            approved = frozenset(pending.approved_signatures or [])
+            state = await self._run_task_loop(
+                pending.goal, pending.resume_plan,
+                inherited=pending.task_state,
+                approved_actions=approved,
+            )
+            self._fill_result_from_state(result, state)
+            result.path = "TASK_CONFIRMATION_RESUME"
+            if not result.response:
+                result.response = self._default_response(result)
+            conv_memory.add_assistant(result.response)
+            result.latency_ms = (time.time() - t0) * 1000
+            return True
+
+        if pending.resume_step:
+            # Single-action resumption (e.g. YouTube playback). Dispatch +
+            # verify, then speak the ACTUAL outcome — never claim playback
+            # that was not verified.
+            ok, action_result = await self._dispatch_and_verify(pending.resume_step)
+            result.actions_executed = 1
+            result.actions_succeeded = 1 if ok else 0
+            result.actions_failed = 0 if ok else 1
+            result.verified = ok
+            result.used_llm = False
+            result.path = "TASK_CONFIRMATION_RESUME"
+            result.speak_immediately = False
+            result.response = action_result or self._default_response(result)
+            conv_memory.add_assistant(result.response)
+            result.latency_ms = (time.time() - t0) * 1000
+            logger.info("[Brain] Resumed task %s finished: ok=%s",
+                        pending.task_id, ok)
+            return True
+
+        # Nothing resumable was stored — drop it and fall through.
+        return False
+
+    async def _maybe_confirm_youtube_playback(self, decision, result: CommandResult,
+                                              personality, conv_memory,
+                                              t0: float) -> bool:
+        """Continuous-confirmation gate for explicit "play X on youtube".
+
+        Flow (preserves the existing VISIBLE YouTube behaviour):
+            search (open results page visibly)
+            → present/ask confirmation
+            → wait (pending task stored)
+        Playback happens ONLY after the user confirms (see the pending
+        confirmation resume path). This method NEVER claims playback.
+
+        Returns True when the turn was consumed (caller returns result).
+        """
+        action = decision.action or {}
+        if action.get("action") != "play_media":
+            return False
+        params = action.get("params", {}) or {}
+        if not params.get("youtube"):
+            return False
+        query = str(params.get("query", "")).strip()
+        if not query:
+            return False
+
+        from agent.task_continuation import pending_task_manager
+
+        # Phase 1: SEARCH ONLY — open the YouTube results page visibly.
+        # This is the existing visible behaviour and gives the user real
+        # results BEFORE we ask to play (never ask before searching).
+        search_action = {"action": "youtube_search",
+                         "params": {"query": query}}
+        search_ok, search_result = await self._dispatch_and_verify(search_action)
+
+        result.path = "YOUTUBE_CONFIRMATION"
+        result.used_llm = False
+        result.actions_executed = 1
+        result.actions_succeeded = 1 if search_ok else 0
+        result.actions_failed = 0 if search_ok else 1
+        result.speak_immediately = False
+
+        if not search_ok:
+            # Search/open failed — be honest, do NOT ask to play.
+            result.verified = False
+            result.response = (search_result
+                               or f"I couldn't open YouTube search for {query}.")
+            conv_memory.add_assistant(result.response)
+            result.latency_ms = (time.time() - t0) * 1000
+            return True
+
+        # Store the pending task so "yes"/"play it"/"do it" resumes the
+        # SAME task and actually plays (with verification).
+        resume_step = {"action": "play_media",
+                       "params": {"query": query, "youtube": True}}
+        prompt = f"I found {query} on YouTube. Should I play it?"
+        pending_task_manager.set_pending(
+            goal=f"play {query} on youtube",
+            resume_step=resume_step,
+            confirmation_prompt=prompt,
+        )
+
+        result.verified = False  # playback NOT started/verified yet
+        result.response = prompt
+        conv_memory.add_assistant(prompt)
+        result.latency_ms = (time.time() - t0) * 1000
+        logger.info("[Brain] YouTube confirmation pending: '%s'", query[:60])
+        return True
+
+    def _register_pending_confirmation(self, state) -> None:
+        """Register a sensitive-action pause as a pending confirmation so
+        "yes"/"no" can resume/cancel the SAME multi-step task."""
+        from agent.task_continuation import pending_task_manager
+        from agent.task_state import task_state_store
+        rec = state.pending_confirmation
+        if rec is None:
+            return
+        resume_plan = task_state_store._remaining_steps(state)
+        if not resume_plan:
+            resume_plan = [{"action": rec.action, "params": dict(rec.params),
+                            "description": rec.description}]
+        prompt = (f"I need your confirmation to run '{rec.action}'. "
+                  f"Should I do it?")
+        pending_task_manager.set_pending(
+            goal=state.normalized_goal or state.original_request,
+            resume_step={"action": rec.action, "params": dict(rec.params)},
+            resume_plan=resume_plan,
+            confirmation_prompt=prompt,
+            task_state=state,
+            task_id=state.task_id,
+            approved_signatures=[rec.signature()],
+        )
 
     async def _dispatch_and_verify(self, action: Dict[str, Any]) -> Tuple[bool, str]:
         """

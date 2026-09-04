@@ -1,7 +1,12 @@
 {
   "output_device": {
-    "index": 1,
-    "name": "HDA NVidia: HDMI 1 (hw:0,7)",
-    "saved_at": 1788503437.039598
+    "index": 9,
+    "name": "default",
+    "saved_at": 1788511989.6354918
+  },
+  "input_device": {
+    "index": 5,
+    "name": "HD-Audio Generic: ALC256 Analog (hw:2,0)",
+    "saved_at": 1788508379.331983
   }
 }

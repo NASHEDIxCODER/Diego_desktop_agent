@@ -4,10 +4,10 @@
   "hostapi": "ALSA",
   "channels": 2,
   "default_samplerate": 44100.0,
-  "speech_channel": 0,
-  "rms": 18815.89,
-  "peak": 32768.0,
+  "speech_channel": 1,
+  "rms": 18915.35,
+  "peak": 32767.0,
   "voice_probability": 1.0,
   "verified": true,
-  "measured_at": 1788215015.2131727
+  "measured_at": 1788516290.7394576
 }

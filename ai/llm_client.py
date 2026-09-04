@@ -18,6 +18,7 @@ from typing import Optional
 import httpx
 
 from config.settings import settings
+from ai.context_monitor import context_monitor
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,8 @@ class LLMClient:
                     self._available = True
                     # Auto-select model
                     self._select_model()
+                    # Instrument the context window for the selected model.
+                    await self._configure_context_monitor()
                 else:
                     logger.warning("Ollama returned status %d", resp.status_code)
         except httpx.ConnectError:
@@ -135,6 +138,25 @@ class LLMClient:
         logger.warning("No small/non-vision model found — "
                        "falling back to: %s (may be heavy)", self._model)
 
+    async def _configure_context_monitor(self) -> None:
+        """Configure the context monitor with the active model + its real
+        context length (when Ollama reports it)."""
+        context_limit = None
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.post(
+                    f"{self._base_url}/api/show",
+                    json={"name": self._model})
+                if resp.status_code == 200:
+                    info = resp.json().get("model_info", {}) or {}
+                    for key, value in info.items():
+                        if key.endswith("context_length") and isinstance(value, (int, float)):
+                            context_limit = int(value)
+                            break
+        except Exception as e:
+            logger.debug("Context-length probe failed: %s", e)
+        context_monitor.configure(self._model or "", context_limit=context_limit)
+
     async def chat(self, message: str, context: str = "") -> str:
         """
         Send a message to Ollama and get a response.
@@ -150,9 +172,22 @@ class LLMClient:
             return "I'm having trouble connecting to my brain right now."
 
         prompt = f"{context}\n\nUser: {message}" if context else message
+        full_prompt = f"{SYSTEM_PROMPT}\n\n{prompt}"
+
+        # ── CONTEXT GUARD ──
+        # Reserve the output budget and refuse a prompt that would exceed
+        # the configured model context window (never blindly truncate the
+        # current user request — the guard rejects instead).
+        max_output = 200
+        ok, reason, _est = context_monitor.pre_request_check(
+            full_prompt, reserve_output=max_output)
+        if not ok:
+            logger.warning("Context guard refused LLM request: %s", reason)
+            return "That's a bit too much context for me to handle at once."
+
         payload = {
             "model": self._model,
-            "prompt": f"{SYSTEM_PROMPT}\n\n{prompt}",
+            "prompt": full_prompt,
             "stream": False,
             # CRITICAL FIX (2026-08-31): keep_alive=0 unloaded the model
             # after EVERY request, forcing a full cold reload on every
@@ -161,7 +196,7 @@ class LLMClient:
             # path so the fallback client never undoes the warm-up.
             "keep_alive": settings.OLLAMA_KEEP_ALIVE,
             "options": {
-                "num_predict": 200,
+                "num_predict": max_output,
                 "temperature": 0.7,
             },
         }
@@ -171,7 +206,21 @@ class LLMClient:
                 resp = await client.post(f"{self._base_url}/api/generate", json=payload)
                 if resp.status_code == 200:
                     data = resp.json()
-                    return data.get("response", "").strip()
+                    response_text = data.get("response", "").strip()
+                    # ── CONTEXT MEASUREMENT ──
+                    # Prefer Ollama's provider-reported token counts; the
+                    # monitor labels them reported vs estimated.
+                    context_monitor.record_request(
+                        model=self._model,
+                        prompt=full_prompt,
+                        max_output=max_output,
+                        provider_usage={
+                            "prompt_eval_count": data.get("prompt_eval_count"),
+                            "eval_count": data.get("eval_count"),
+                        },
+                        response_text=response_text,
+                    )
+                    return response_text
                 else:
                     logger.warning("Ollama API error: %d %s", resp.status_code, resp.text)
                     return "I had trouble processing that."

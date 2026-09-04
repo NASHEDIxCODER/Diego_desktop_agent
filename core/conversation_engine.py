@@ -107,8 +107,13 @@ class EngineState(str, Enum):
 
 ALLOWED_TRANSITIONS = {
     # IDLE → WAKE is the normal wake-word path.
-    # IDLE → LISTEN is the --no-wake development path (bypasses wake + auth).
-    EngineState.IDLE:      {EngineState.WAKE, EngineState.LISTEN},
+    # IDLE → FACE_AUTH is the wake-bypass path (--no-wake flag, or wake
+    # model DEGRADED/unavailable) while face authentication is still
+    # enabled — wake and auth are INDEPENDENT controls.
+    # IDLE → LISTEN only when face auth is disabled (--no-auth) or the
+    # auth session is still valid.
+    EngineState.IDLE:      {EngineState.WAKE, EngineState.FACE_AUTH,
+                            EngineState.LISTEN},
     EngineState.WAKE:      {EngineState.FACE_AUTH, EngineState.LISTEN},
     EngineState.FACE_AUTH: {EngineState.LISTEN},
     EngineState.LISTEN:    {EngineState.THINK, EngineState.IDLE},
@@ -131,8 +136,11 @@ class ConversationEngine:
         self._running = False
         self._no_wake: bool = False
         # Wake availability: False when the wake model failed to load at
-        # boot — the engine then degrades to LISTEN instead of spinning
-        # forever in the WAKE state with repeated model retries.
+        # boot — the engine then follows the documented wake fallback
+        # (always-LISTEN instead of spinning forever in the WAKE state
+        # with repeated model retries). Wake and face authentication are
+        # INDEPENDENT: a degraded wake model NEVER disables the auth
+        # provider — only an explicit --no-auth does that.
         self._wake_active: bool = True
 
         # Face-auth session
@@ -227,10 +235,21 @@ class ConversationEngine:
     async def run(self, no_wake: bool = False) -> None:
         """IDLE → WAKE → (FACE_AUTH) → LISTEN → THINK → SPEAK → IDLE … forever.
 
-        When `no_wake` is True, the engine bypasses wake detection and face
-        authentication entirely, entering LISTEN directly. This is the
-        `--no-wake` development path: VAD, STT, routing, LLM, search, tools,
-        verification and TTS all remain fully active.
+        Wake detection and face authentication are INDEPENDENT controls:
+
+        * `no_wake=True` (explicit --no-wake) bypasses ONLY wake detection.
+          Face authentication still runs (IDLE → FACE_AUTH → LISTEN) unless
+          --no-auth was also supplied and disabled the auth provider.
+        * If the wake model is UNAVAILABLE at boot (normal mode, no flags),
+          wake is marked DEGRADED and the documented wake fallback applies:
+          always-LISTEN mode. Face authentication remains ACTIVE — a wake
+          failure is NEVER treated as --no-auth.
+        * If face authentication fails or is unavailable, the failure is
+          reported honestly; the auth provider stays active and wake
+          detection is NEVER disabled by it.
+
+        VAD, STT, routing, LLM, search, tools, verification and TTS all
+        remain fully active on every path.
         """
         self._no_wake = no_wake
         self._running = True
@@ -267,16 +286,19 @@ class ConversationEngine:
             return
 
         # openWakeWord — a boot-time load failure must NOT cause an
-        # infinite WAKE-state retry loop. One attempt; on failure the
-        # engine degrades to the always-LISTEN path (same code path as
-        # --no-wake) with a single clear report.
+        # infinite WAKE-state retry loop. One attempt; on failure wake is
+        # marked DEGRADED and the documented wake fallback applies
+        # (always-LISTEN). This NEVER touches face authentication: the
+        # configured auth provider stays active (only --no-auth disables
+        # it).
         wake_ok = await loop.run_in_executor(None, self._ensure_wake_model)
         self._wake_active = wake_ok
         if not wake_ok and not no_wake:
             logger.error(
-                "[ENGINE] Wake model unavailable (%s) — wake detection "
-                "DISABLED this session, degrading to always-LISTEN mode. "
-                "Restart with --no-wake to silence this notice.",
+                "[ENGINE] Wake model UNAVAILABLE (%s) — wake detection is "
+                "DEGRADED for this session: following the documented "
+                "always-LISTEN wake fallback. Face authentication remains "
+                "ACTIVE (it is disabled only by an explicit --no-auth).",
                 wake_model_manager.load_error or "model failed to load")
 
         # Unified VAD (shared by wake + command)
@@ -301,12 +323,31 @@ class ConversationEngine:
         try:
             while self._running:
                 if self._no_wake or not self._wake_active:
-                    # ── no-wake path (flag or degraded): bypass wake +
-                    # auth, enter LISTEN directly ──
+                    # ── Wake is bypassed (--no-wake flag) or DEGRADED
+                    # (model unavailable). Face authentication is an
+                    # INDEPENDENT control: the auth gate below still runs
+                    # unless --no-auth disabled the provider. ──
                     if self._no_wake:
-                        logger.info("[ENGINE] --no-wake: bypassing wake detection and face auth")
+                        if self._auth_provider is None:
+                            logger.info(
+                                "[ENGINE] --no-wake --no-auth: bypassing "
+                                "wake detection and face auth (dev mode)")
+                        else:
+                            logger.info(
+                                "[ENGINE] --no-wake: bypassing wake "
+                                "detection only — face auth remains active")
                     else:
-                        logger.info("[ENGINE] Wake unavailable: bypassing wake detection and face auth (degraded)")
+                        logger.warning(
+                            "[ENGINE] Wake DEGRADED: wake detection "
+                            "unavailable this session (documented "
+                            "always-LISTEN fallback) — face auth remains "
+                            "active")
+                    # STATE: FACE_AUTH (if needed) — identical policy to
+                    # the normal post-wake path. Skipped only when auth is
+                    # disabled (--no-auth) or the session is still valid.
+                    await self._face_auth_gate(
+                        trigger="no-wake" if self._no_wake else "wake-degraded")
+                    # Documented wake fallback entry: always-LISTEN mode.
                     self._set_state(EngineState.LISTEN)
                     await self._conversation_session()
                     continue
@@ -332,28 +373,8 @@ class ConversationEngine:
                 # Play chime
                 await loop.run_in_executor(None, self._play_wake_chime)
 
-                # STATE: FACE_AUTH (if needed)
-                needs_auth = self._needs_auth()
-                if needs_auth:
-                    self._set_state(EngineState.FACE_AUTH)
-                    t_auth_start = time.time()
-                    name = await self._run_auth()
-                    auth_latency = (time.time() - t_auth_start) * 1000
-                    if name:
-                        self._auth_user = name
-                        self._last_auth_time = time.time()
-                        conv_memory.set_user_name(name)
-                        logger.info("[FACE_AUTH] Authenticated: %s", name)
-                        session_recorder.record_face_auth(auth_latency, True, name)
-                        # Greet the user by name after successful auth.
-                        # Uses the guarded path so the greeting is NEVER
-                        # transcribed as a user command (laptop speakers).
-                        greeting = f"Welcome back, {name}!"
-                        logger.info("[FACE_AUTH] Greeting: '%s'", greeting)
-                        await self._speak_guarded(greeting)
-                    else:
-                        logger.warning("[FACE_AUTH] Failed — continuing unauthenticated")
-                        session_recorder.record_face_auth(auth_latency, False)
+                # STATE: FACE_AUTH (if needed) — independent of wake
+                await self._face_auth_gate(trigger="wake")
 
                 # STATE: LISTEN → THINK → SPEAK → (loop back)
                 await self._conversation_session()
@@ -425,6 +446,46 @@ class ConversationEngine:
         except Exception as e:
             logger.warning("[FACE_AUTH] Auth provider error: %s", e)
             return None
+
+    async def _face_auth_gate(self, trigger: str = "wake") -> None:
+        """STATE: FACE_AUTH — the single face-auth gate for EVERY path.
+
+        Used by the normal post-wake path AND the wake-bypass/degraded
+        path so authentication policy is identical everywhere. Wake and
+        auth are independent: this gate runs whenever `_needs_auth()` is
+        True, regardless of how (or whether) wake was reached.
+
+        A failure/denial is reported honestly and NEVER disables the auth
+        provider — an auth failure is NOT equivalent to --no-auth.
+        """
+        if not self._needs_auth():
+            return
+        self._set_state(EngineState.FACE_AUTH)
+        t_auth_start = time.time()
+        name = await self._run_auth()
+        auth_latency = (time.time() - t_auth_start) * 1000
+        if name:
+            self._auth_user = name
+            self._last_auth_time = time.time()
+            conv_memory.set_user_name(name)
+            logger.info("[FACE_AUTH] Authenticated: %s", name)
+            session_recorder.record_face_auth(auth_latency, True, name)
+            # Greet the user by name after successful auth.
+            # Uses the guarded path so the greeting is NEVER
+            # transcribed as a user command (laptop speakers).
+            greeting = f"Welcome back, {name}!"
+            logger.info("[FACE_AUTH] Greeting: '%s'", greeting)
+            await self._speak_guarded(greeting)
+        else:
+            # Honest failure reporting: the provider stays ACTIVE so the
+            # next gate retries authentication. This is NEVER silently
+            # treated as --no-auth.
+            logger.error(
+                "[FACE_AUTH] Face authentication FAILED or UNAVAILABLE "
+                "(trigger=%s) — reported honestly; auth provider remains "
+                "ACTIVE (NOT equivalent to --no-auth). Continuing this "
+                "session unauthenticated.", trigger)
+            session_recorder.record_face_auth(auth_latency, False)
 
     # ── STATE: WAKE ───────────────────────────────────────
 
@@ -953,6 +1014,14 @@ class ConversationEngine:
             "state_duration_s": round(time.monotonic() - self._state_entered, 1),
             "turn_count": self._turn_count,
             "auth_user": self._auth_user,
+            # Independent wake/auth status markers:
+            #   wake: BYPASSED (--no-wake), DEGRADED (model unavailable),
+            #         or READY
+            #   auth: DISABLED only via explicit --no-auth, else ACTIVE
+            "wake": ("BYPASSED" if self._no_wake
+                     else "READY" if self._wake_active
+                     else "DEGRADED"),
+            "auth": "DISABLED" if self._auth_provider is None else "ACTIVE",
             "running": self._running,
             "last_diag": self._diag,
             "response_guarantee": response_guarantee.get_diagnostics(),

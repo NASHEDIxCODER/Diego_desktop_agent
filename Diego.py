@@ -92,7 +92,12 @@ async def authenticate_on_wake() -> Optional[str]:
     try:
         from auth.live_auth import authenticate_live
     except Exception as e:
-        logger.error("[AUTH] live_auth unavailable: %s", e)
+        # Honest failure reporting: this auth ATTEMPT failed, but face
+        # authentication is NOT disabled — the provider stays active and
+        # the next gate retries. Never equivalent to --no-auth.
+        logger.error("[AUTH] live_auth unavailable: %s — face authentication "
+                     "FAILED for this attempt; auth remains ENABLED (this is "
+                     "NOT --no-auth)", e)
         return None
     try:
         # authenticate_live blocks on the camera → run in an executor thread.
@@ -101,7 +106,9 @@ async def authenticate_on_wake() -> Optional[str]:
         name = await loop.run_in_executor(None, authenticate_live)
         return name
     except Exception as e:
-        logger.warning("[AUTH] live authentication error: %s", e)
+        logger.error("[AUTH] live authentication error: %s — face authentication "
+                     "FAILED for this attempt; auth remains ENABLED (this is "
+                     "NOT --no-auth)", e)
         return None
 
 
@@ -534,7 +541,8 @@ def main() -> None:
     parser.add_argument("--no-auth", action="store_true",
                         help="Skip face authentication (development only)")
     parser.add_argument("--no-wake", action="store_true",
-                        help="Bypass wake detection and face auth — enter LISTEN directly (development only)")
+                        help="Bypass wake detection only — enter LISTEN directly "
+                             "(face auth still runs unless --no-auth is also given; development only)")
     parser.add_argument("--status", action="store_true",
                         help="Show subsystem status and exit")
     args = parser.parse_args()
