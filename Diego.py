@@ -155,7 +155,7 @@ async def run_Diego(no_auth: bool = False, no_wake: bool = False) -> None:
     # production component. Runs ONCE — never retries a permanently
     # missing component (no retry loop).
     from core.runtime_health import run_runtime_health
-    run_runtime_health()
+    run_runtime_health(no_wake=no_wake)
 
     from core.conversation_engine import conversation_engine
     from agent.action_dispatcher import action_dispatcher

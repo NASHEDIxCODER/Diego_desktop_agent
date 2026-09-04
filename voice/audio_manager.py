@@ -1520,6 +1520,93 @@ class AudioManager:
         except Exception as e:
             logger.warning("[AUDIO] Stop error: %s", e)
 
+    def _close_stream(self) -> None:
+        """Close the capture stream WITHOUT clearing the ring buffer or
+        resetting consumer counters.
+
+        Used by device switching: the ring buffer's total_samples counter
+        stays MONOTONIC, so wake/VAD/STT consumers holding a read cursor
+        (`get_since`) continue to receive exactly-once frames from the new
+        device without a stall or resync. VAD state is reset to SILENCE
+        because the audio source changed mid-speech.
+        """
+        try:
+            if self._stream is not None:
+                self._stream.stop()
+                self._stream.close()
+                self._stream = None
+            self._running = False
+            self._vad.reset()
+            # Reset digital-silence latch: the NEW device must be judged on
+            # its own signal, not inherit the old device's verdict.
+            self._digital_silence = False
+            self._zero_streak = 0
+            self._callback_count = 0
+            logger.info("[AUDIO] Capture stream closed for device switch "
+                        "(ring buffer preserved, total_samples=%d)",
+                        self._ring_buffer.total_samples)
+        except Exception as e:
+            logger.warning("[AUDIO] Device-switch stream close error: %s", e)
+
+    def switch_input_device(self, device_index: Optional[int]) -> dict:
+        """
+        Safely switch the live capture microphone to `device_index`.
+
+        Contract (runtime device switching, UI AUDIO panel):
+          - Stops → reconfigures → RESTARTS the existing single InputStream
+            (there is still exactly ONE capture pipeline — never a second).
+          - Preserves VAD/STT consumers: ring-buffer counters stay monotonic,
+            models are NOT reloaded and the assistant is NOT restarted.
+          - Verifies the live signal (digital-silence watchdog runs again
+            inside start() → _finish_start()).
+          - On failure falls back to the PREVIOUS working device.
+          - NEVER touches TTS/output.
+
+        Returns {"ok": bool, "device_index", "device_name", "fallback", "error"}.
+        """
+        with self._lock:
+            prev_index = self._device_index
+            prev_name = self._device_name
+            prev_verified = self._mic_verified
+            was_running = self._running
+
+            if was_running and device_index == prev_index:
+                return {"ok": True, "device_index": prev_index,
+                        "device_name": prev_name, "fallback": False,
+                        "error": None}
+
+            if was_running:
+                self._close_stream()
+
+            logger.info("[AUDIO] Switching input device → [%s] (previous: [%s] %s)",
+                        device_index, prev_index, prev_name)
+
+            voice_settings.device_index = device_index
+            ok = self.start()
+            if ok:
+                logger.info("[AUDIO] Input device switched → [%s] %s",
+                            self._device_index, self._device_name)
+                return {"ok": True, "device_index": self._device_index,
+                        "device_name": self._device_name, "fallback": False,
+                        "error": None}
+
+            # ── Fallback: restore the previous working device ──
+            error = (f"device [{device_index}] failed live verification"
+                     if not prev_verified else
+                     f"device [{device_index}] failed live verification")
+            logger.error("[AUDIO] Input switch to [%s] FAILED — falling back "
+                         "to previous device [%s] %s",
+                         device_index, prev_index, prev_name)
+            voice_settings.device_index = prev_index if prev_verified else None
+            ok = self.start()
+            if not ok:
+                logger.error("[AUDIO] Fallback restart ALSO failed — "
+                             "no working microphone (assistant stays up, "
+                             "audio reported unavailable)")
+            return {"ok": ok, "device_index": self._device_index,
+                    "device_name": self._device_name, "fallback": True,
+                    "error": None if ok else error}
+
     def _access_forbidden(self, caller: str) -> bool:
         """AudioManager must NEVER be accessed after shutdown begins or
         after the stream is stopped. All public read paths gate on this."""

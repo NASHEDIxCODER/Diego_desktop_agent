@@ -51,7 +51,9 @@ VERIFY_MIN_INTERVAL_S = 1.5            # never verify more often than this
 VERIFY_WINDOW_S = 1.5                  # Whisper verification looks back this far
 SCORE_LOG_INTERVAL_S = 0.5             # "Wake score=…" cadence while idle
 VAD_LOG_INTERVAL_S = 1.0               # "VAD probability=…" cadence while gate open
-MODEL_RETRY_S = 5.0                    # missing-model retry cadence (never exits)
+MODEL_RETRY_S = 5.0                    # missing-model retry cadence
+MODEL_MAX_RETRIES = 3                  # bounded retries — NO infinite spin
+MODEL_UNAVAILABLE_IDLE_S = 30.0        # idle wait after retries exhausted
 STALL_DUMP_S = 2.0                     # "NO INFERENCE" watchdog cadence
 VERIFY_TIMEOUT_S = 30.0                # Whisper verification hard timeout
 TRIGGER_SETTLE_FRAMES = 5
@@ -89,6 +91,8 @@ class WakeListener:
         self._last_inference = time.monotonic()
         self._last_stall_dump = 0.0
         self._last_model_retry = 0.0
+        self._model_retry_count = 0
+        self._model_unavailable_logged = False
         # Trigger-settling state
         self._trigger_active = False
         self._trigger_peak = 0.0
@@ -382,23 +386,43 @@ class WakeListener:
             now = time.monotonic()
 
             if not wake_model_manager.loaded:
+                # ── Bounded retry: never spin forever on a missing model ──
+                if self._model_retry_count >= MODEL_MAX_RETRIES:
+                    if not self._model_unavailable_logged:
+                        self._model_unavailable_logged = True
+                        logger.error(
+                            "[WAKE] Wake model unavailable after %d attempts "
+                            "(%s) — retry loop STOPPED. Wake detection is "
+                            "disabled for this session; use --no-wake to "
+                            "run in always-listen mode instead.",
+                            self._model_retry_count,
+                            wake_model_manager.load_error or "no model")
+                    # Idle quietly — the problem is reported once; no
+                    # repeated retries, no retry-log spam, no exit.
+                    await asyncio.sleep(MODEL_UNAVAILABLE_IDLE_S)
+                    continue
                 if now - self._last_model_retry >= MODEL_RETRY_S:
                     self._last_model_retry = now
-                    logger.warning("[WAKE] Wake model NOT loaded (%s) — retrying",
-                                   wake_model_manager.load_error or "no model")
+                    self._model_retry_count += 1
+                    logger.warning("[WAKE] Wake model NOT loaded (%s) — "
+                                   "retrying (%d/%d)",
+                                   wake_model_manager.load_error or "no model",
+                                   self._model_retry_count, MODEL_MAX_RETRIES)
                     try:
                         ok = await loop.run_in_executor(None, wake_model_manager.load)
                         if ok:
+                            self._model_retry_count = 0
+                            self._model_unavailable_logged = False
                             self.prime()
                     except asyncio.CancelledError:
                         raise
                     except Exception as e:
                         # A model reload failure must never kill the wake
-                        # loop. Report it as a structured worker error and
-                        # keep retrying on the next cadence.
+                        # loop. Report it as a structured worker error;
+                        # retries remain bounded by MODEL_MAX_RETRIES.
                         logger.exception(
                             "[WORKER-CRASH] worker=wake_listener exception=%s "
-                            "message=%s — model reload failed; retrying",
+                            "message=%s — model reload failed; retries bounded",
                             type(e).__name__, str(e),
                         )
                 await asyncio.sleep(0.25)

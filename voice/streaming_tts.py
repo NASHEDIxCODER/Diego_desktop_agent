@@ -63,6 +63,13 @@ class _InterruptiblePlayer:
         self._stream_lock = threading.Lock()       # guards _stream create/destroy ONLY
         self._stream = None                        # persistent OutputStream
         self._stream_created: bool = False         # True once created, False until close()
+        # ── Independent OUTPUT device selection (HUD AUDIO panel) ──
+        # _device is the target output device index (None = PortAudio
+        # default). Changing it NEVER touches the microphone: the switch
+        # is applied by the WORKER thread between chunk writes (the worker
+        # owns the stream lifecycle), so there is never a mid-write tear.
+        self._device: Optional[int] = None
+        self._device_switch_requested = threading.Event()
         self._playing = False
         self._abort = threading.Event()             # interrupt current utterance
         self._shutdown = threading.Event()          # kill the worker thread
@@ -91,23 +98,81 @@ class _InterruptiblePlayer:
                 if self._sd is None:
                     import sounddevice as sd
                     self._sd = sd
-                self._stream = self._sd.OutputStream(
-                    samplerate=self._sample_rate,
-                    channels=1,
-                    dtype="int16",
-                    blocksize=0,  # let PortAudio pick for low latency
-                )
+                try:
+                    self._stream = self._sd.OutputStream(
+                        samplerate=self._sample_rate,
+                        channels=1,
+                        dtype="int16",
+                        blocksize=0,  # let PortAudio pick for low latency
+                        device=self._device,
+                    )
+                except Exception as dev_err:
+                    if self._device is not None:
+                        # Selected output device disappeared/failed → fall
+                        # back to the system default, never crash Diego.
+                        logger.error("[PLAYER] Output device %s failed (%s) "
+                                     "— falling back to system default",
+                                     self._device, dev_err)
+                        self._device = None
+                        self._stream = self._sd.OutputStream(
+                            samplerate=self._sample_rate,
+                            channels=1,
+                            dtype="int16",
+                            blocksize=0,
+                            device=None,
+                        )
+                    else:
+                        raise
                 stream_id = id(self._stream)
                 self._stream.start()
                 self._stream_created = True
                 logger.info("[PLAYER] OutputStream CREATED id=%s "
-                            "thread=%s — persistent, lives until shutdown",
-                            stream_id, threading.current_thread().name)
+                            "device=%s thread=%s — persistent, lives until shutdown",
+                            stream_id, self._device,
+                            threading.current_thread().name)
                 return True
             except Exception as e:
                 logger.error("[PLAYER] Failed to open output stream: %s", e)
                 self._stream = None
                 return False
+
+    def set_output_device(self, device_index: Optional[int]) -> None:
+        """Target FUTURE synthesis/playback at `device_index` (None = default).
+
+        Thread-safe. The stream itself is recreated by the worker thread at
+        the next safe point (between chunk writes) via
+        `_apply_pending_device_switch` — never mid-write, never from the
+        caller thread. Does NOT touch microphone capture or STT.
+        """
+        self._device = device_index
+        self._device_switch_requested.set()
+        logger.info("[PLAYER] Output device target set → %s (applies at the "
+                    "next safe playback point)", device_index)
+
+    def _apply_pending_device_switch(self) -> None:
+        """Destroy the current stream so the next `_ensure_stream()` opens on
+        the new device. CALLED ONLY FROM THE WORKER THREAD (stream owner)."""
+        if not self._device_switch_requested.is_set():
+            return
+        self._device_switch_requested.clear()
+        with self._stream_lock:
+            if self._stream is not None:
+                stream_id = id(self._stream)
+                try:
+                    self._stream.abort()
+                    self._stream.close()
+                    logger.info("[PLAYER] OutputStream closed for device "
+                                "switch id=%s → target device %s",
+                                stream_id, self._device)
+                except Exception as e:
+                    logger.debug("[PLAYER] Device-switch close error: %s", e)
+                self._stream = None
+                self._stream_created = False
+
+    @property
+    def output_device(self) -> Optional[int]:
+        """Currently targeted output device index (None = system default)."""
+        return self._device
 
     # ── Worker thread ──────────────────────────────────────
 
@@ -133,6 +198,9 @@ class _InterruptiblePlayer:
         while not self._shutdown.is_set():
             # ── Check stop-requested BEFORE blocking on the queue ──
             self._service_stop_request()
+            # ── Apply a pending output-device switch (worker-owned, safe
+            # point: never mid-write) ──
+            self._apply_pending_device_switch()
 
             try:
                 chunk = self._chunk_queue.get(timeout=0.1)
@@ -686,6 +754,40 @@ class StreamingTTS:
     @property
     def ready(self) -> bool:
         return self._ready
+
+    # ── Independent OUTPUT device selection (HUD AUDIO panel) ──
+
+    def set_output_device(self, index: Optional[int]) -> dict:
+        """Target the TTS playback stream at output device `index`.
+
+        Updates ONLY the player's output target — microphone capture and
+        STT are untouched and the assistant is NOT restarted. The open
+        stream (if any) is recreated by the worker thread at the next
+        safe point; if the new device cannot open, the player falls back
+        to the system default automatically.
+        """
+        self._player.set_output_device(index)
+        # Give the worker a moment to apply the switch when idle so the
+        # caller can confirm quickly; playback is never blocked.
+        return {"ok": True, "device_index": index}
+
+    @property
+    def output_device(self) -> Optional[int]:
+        """Currently targeted output device index (None = system default)."""
+        return self._player.output_device
+
+    @property
+    def output_device_name(self) -> str:
+        """Human-readable name of the targeted output device (best effort)."""
+        idx = self._player.output_device
+        if idx is None:
+            return "System Default"
+        try:
+            import sounddevice as sd
+            info = sd.query_devices(idx)
+            return str(info.get("name", f"Device {idx}"))
+        except Exception:
+            return f"Device {idx}"
 
     def close(self) -> None:
         """Graceful shutdown: stop playback, kill worker, destroy stream."""

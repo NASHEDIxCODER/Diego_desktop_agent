@@ -130,6 +130,10 @@ class ConversationEngine:
         self._state_entered: float = time.monotonic()
         self._running = False
         self._no_wake: bool = False
+        # Wake availability: False when the wake model failed to load at
+        # boot — the engine then degrades to LISTEN instead of spinning
+        # forever in the WAKE state with repeated model retries.
+        self._wake_active: bool = True
 
         # Face-auth session
         self._auth_user: Optional[str] = None
@@ -262,8 +266,18 @@ class ConversationEngine:
             self._running = False
             return
 
-        # openWakeWord
-        await loop.run_in_executor(None, self._ensure_wake_model)
+        # openWakeWord — a boot-time load failure must NOT cause an
+        # infinite WAKE-state retry loop. One attempt; on failure the
+        # engine degrades to the always-LISTEN path (same code path as
+        # --no-wake) with a single clear report.
+        wake_ok = await loop.run_in_executor(None, self._ensure_wake_model)
+        self._wake_active = wake_ok
+        if not wake_ok and not no_wake:
+            logger.error(
+                "[ENGINE] Wake model unavailable (%s) — wake detection "
+                "DISABLED this session, degrading to always-LISTEN mode. "
+                "Restart with --no-wake to silence this notice.",
+                wake_model_manager.load_error or "model failed to load")
 
         # Unified VAD (shared by wake + command)
         from voice.vad import unified_vad
@@ -286,9 +300,13 @@ class ConversationEngine:
         # ── Forever loop ──
         try:
             while self._running:
-                if self._no_wake:
-                    # ── --no-wake path: bypass wake + auth, enter LISTEN ──
-                    logger.info("[ENGINE] --no-wake: bypassing wake detection and face auth")
+                if self._no_wake or not self._wake_active:
+                    # ── no-wake path (flag or degraded): bypass wake +
+                    # auth, enter LISTEN directly ──
+                    if self._no_wake:
+                        logger.info("[ENGINE] --no-wake: bypassing wake detection and face auth")
+                    else:
+                        logger.info("[ENGINE] Wake unavailable: bypassing wake detection and face auth (degraded)")
                     self._set_state(EngineState.LISTEN)
                     await self._conversation_session()
                     continue

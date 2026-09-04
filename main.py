@@ -159,7 +159,7 @@ def cmd_benchmark() -> None:
 
 def cmd_select_mic() -> None:
     """Interactive microphone selection."""
-    from voice.mic_selector import select_microphone_interactive
+    from voice.device_manager import select_microphone_interactive
     select_microphone_interactive()
 
 
@@ -249,6 +249,8 @@ def main() -> None:
                         help="Bypass wake detection and face auth — enter LISTEN directly (development only)")
     parser.add_argument("--record-session", action="store_true",
                         help="Record every conversation turn to logs/manual_voice_session.json")
+    parser.add_argument("--headless", action="store_true",
+                        help="Run the CLI conversational runtime WITHOUT the Qt UI (headless mode)")
 
     args = parser.parse_args()
 
@@ -290,9 +292,26 @@ def main() -> None:
         # Non-fatal: proceed to normal runtime which will try again.
         pass
 
-    # ── Default: the conversational runtime (boots once, waits forever
-    # for the wake word, never exits unless the user quits). ──
-    Diego.run(no_auth=args.no_auth, no_wake=args.no_wake, record_session=args.record_session)
+    # ── Default: the voice-first HUD (existing production pipeline runs
+    # behind it via ConversationEngine → STT → Brain → TaskController →
+    # TTS). The UI replaces only the terminal surface — there is still
+    # exactly ONE assistant pipeline. ──
+    if args.headless:
+        # Headless mode preserved: the original CLI runtime (no Qt).
+        Diego.run(no_auth=args.no_auth, no_wake=args.no_wake,
+                  record_session=args.record_session)
+        return
+
+    from ui.__main__ import main as ui_main
+    ui_argv = []
+    if args.no_wake:
+        ui_argv.append("--no-wake")
+    if args.no_auth:
+        ui_argv.append("--no-auth")
+    if args.record_session:
+        print("  [main] --record-session is only supported in --headless mode "
+              "(ignored by the UI).")
+    sys.exit(ui_main(ui_argv))
 
 
 if __name__ == "__main__":

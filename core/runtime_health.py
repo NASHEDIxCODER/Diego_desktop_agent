@@ -4,9 +4,22 @@ RuntimeHealth — Production dependency/asset diagnostic for Diego.
 Prints a structured [HEALTH] report at startup so every component's
 status is visible in one place:
 
-    [HEALTH] component=OK        package=sounddevice/0.5.5  asset=none  reason=ready  fallback=none
-    [HEALTH] component=DEGRADED  package=kokoro/MISSING     asset=none  reason=requires Python<3.13  fallback=pyttsx3
-    [HEALTH] component=MISSING   package=...                asset=...   reason=...    fallback=...
+    [HEALTH] status=READY      name=microphone  package=sounddevice/0.5.5  ...
+    [HEALTH] status=DEGRADED   name=vad         package=silero_vad/MISSING fallback=energy-based VAD
+    [HEALTH] status=BYPASSED   name=wake        reason=--no-wake active
+
+Status model (exactly one of):
+    READY      — component loaded and fully operational
+    DEGRADED   — component unavailable but a functional fallback is active
+    MISSING    — component not installed (feature absent)
+    FAILED     — component present but failed to initialise/load
+    BYPASSED   — intentionally disabled (e.g. wake via --no-wake)
+    UNAVAILABLE— external service unreachable (e.g. Ollama down); Diego
+                 keeps running with deterministic/local capabilities
+
+An earlier revision printed component=OK together with a fallback field
+like "energy-based VAD (degraded)" — a READY line NEVER shows a fallback
+now: the fallback text only appears on DEGRADED/FAILED/MISSING lines.
 
 Classification:
   REQUIRED  — normal voice operation depends on this (mic + VAD + STT + TTS)
@@ -32,9 +45,13 @@ from typing import Callable, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 # ── Status values ──────────────────────────────────────────────────
-OK = "OK"
+READY = "READY"
+OK = READY            # backward-compatible alias
 DEGRADED = "DEGRADED"
 MISSING = "MISSING"
+FAILED = "FAILED"
+BYPASSED = "BYPASSED"
+UNAVAILABLE = "UNAVAILABLE"
 
 # ── Component classes ──────────────────────────────────────────────
 REQUIRED = "REQUIRED"      # normal voice operation
@@ -55,15 +72,20 @@ class ComponentHealth:
     component_class: str = OPTIONAL
 
     def to_line(self) -> str:
+        # READY/BYPASSED lines NEVER advertise a fallback: showing
+        # "fallback=energy-based VAD (degraded)" on an OK line was
+        # misleading (a component cannot be fully OK and degraded).
+        fallback_shown = "" if self.status in (READY, BYPASSED) \
+            else f" fallback={self.fallback or 'none'}"
         return (
-            f"[HEALTH] component={self.status:<8} "
+            f"[HEALTH] status={self.status:<11} "
             f"name={self.name} "
             f"package={self.package or 'none'}"
             f"{'/' + self.version if self.version else ''} "
             f"asset={self.asset or 'none'} "
             f"class={self.component_class} "
-            f"reason={self.reason or 'ready'} "
-            f"fallback={self.fallback or 'none'}"
+            f"reason={self.reason or 'ready'}"
+            f"{fallback_shown}"
         )
 
 
@@ -120,8 +142,13 @@ class RuntimeHealth:
 
     # ── Full diagnostic ───────────────────────────────────────────
 
-    def run(self) -> List[ComponentHealth]:
-        """Run every check and return the component list."""
+    def run(self, no_wake: bool = False) -> List[ComponentHealth]:
+        """Run every check and return the component list.
+
+        `no_wake` marks the wake detector BYPASSED (--no-wake / dev mode)
+        instead of READY — the component is intentionally skipped, not
+        operational.
+        """
         self._components = []
         base = self._base_dir
 
@@ -129,17 +156,31 @@ class RuntimeHealth:
         # 1. Microphone capture
         self._check_pkg("microphone", "sounddevice", REQUIRED,
                         fallback="none")
-        # 2. VAD
-        self._check_pkg("vad", "silero_vad", REQUIRED,
-                        fallback="energy-based VAD (degraded)")
-        # 3. Command STT
-        self._check_pkg("stt", "faster_whisper", REQUIRED,
-                        fallback="command STT disabled")
+        # 2. VAD — Silero missing means the energy fallback is ACTIVE,
+        #    so the honest status is DEGRADED, not MISSING.
+        silero_ver = _import_version("silero_vad")
+        if silero_ver is not None:
+            self._add("vad", READY, "silero_vad", silero_ver, "",
+                      "ready", "", REQUIRED)
+        else:
+            self._add("vad", DEGRADED, "silero_vad", "", "",
+                      "silero unavailable — energy-based VAD active",
+                      "energy-based VAD", REQUIRED)
+        # 3. Command STT — Whisper unavailable means command recognition
+        #    is DISABLED: FAILED (required capability lost, no equivalent).
+        whisper_ver = _import_version("faster_whisper")
+        if whisper_ver is not None:
+            self._add("stt", READY, "faster_whisper", whisper_ver, "",
+                      "ready", "", REQUIRED)
+        else:
+            self._add("stt", FAILED, "faster_whisper", "", "",
+                      "package not installed — command STT disabled",
+                      "command STT disabled", REQUIRED)
         # 4. TTS
         tts_ver = _import_version("kokoro")
         if tts_ver is not None:
-            self._add("tts", OK, "kokoro", tts_ver, "",
-                      "ready", "pyttsx3", REQUIRED)
+            self._add("tts", READY, "kokoro", tts_ver, "",
+                      "ready", "", REQUIRED)
         else:
             # Kokoro requires Python <3.13. Check pyttsx3 fallback.
             pyttsx3_ver = _import_version("pyttsx3")
@@ -149,22 +190,27 @@ class RuntimeHealth:
                           f"{sys.version_info.major}.{sys.version_info.minor})",
                           "pyttsx3 (espeak)", REQUIRED)
             else:
-                self._add("tts", MISSING, "kokoro", "", "",
+                self._add("tts", FAILED, "kokoro", "", "",
                           "no TTS engine available", "none", REQUIRED)
 
         # ══ OPTIONAL — degraded features ═══════════════════════════
         # 5. Wake model
         wake_asset = base / "models" / "wake" / "verifier.pkl"
-        wake_ok = _check_import("openwakeword")
-        if wake_ok:
-            self._add("wake", OK, "openwakeword",
+        if no_wake:
+            # Intentionally disabled — BYPASSED, never READY.
+            self._add("wake", BYPASSED, "openwakeword",
+                      _import_version("openwakeword") or "",
+                      str(wake_asset) if wake_asset.exists() else "",
+                      "--no-wake active (wake detection skipped)", "", OPTIONAL)
+        elif _check_import("openwakeword"):
+            self._add("wake", READY, "openwakeword",
                       _import_version("openwakeword") or "?",
                       str(wake_asset) if wake_asset.exists() else "",
-                      "ready", "--no-wake bypass", OPTIONAL)
+                      "ready", "", OPTIONAL)
         else:
             self._add("wake", MISSING, "openwakeword", "",
                       str(wake_asset) if wake_asset.exists() else "",
-                      "package not installed", "--no-wake bypass", OPTIONAL)
+                      "package not installed", "run with --no-wake", OPTIONAL)
 
         # 6. Screen capture
         self._check_pkg("screen_capture", "mss", OPTIONAL,
@@ -184,23 +230,25 @@ class RuntimeHealth:
             self._add("ocr", MISSING, "paddleocr/easyocr/pytesseract", "",
                       "", "no OCR backend installed", "none", OPTIONAL)
 
-        # 8. Local LLM (Ollama)
+        # 8. Local LLM (Ollama) — fail-safe: an unreachable Ollama NEVER
+        # blocks startup. Health simply reports UNAVAILABLE and Diego
+        # keeps running with deterministic/local capabilities.
         try:
             import httpx
             r = httpx.get("http://localhost:11434/api/tags", timeout=3.0)
             if r.status_code == 200:
                 models = [m["name"] for m in r.json().get("models", [])]
-                self._add("llm", OK, "ollama", "",
+                self._add("llm", READY, "ollama", "",
                           f"http://localhost:11434 ({len(models)} models)",
-                          "ready", "none", OPTIONAL)
+                          "ready", "", OPTIONAL)
             else:
-                self._add("llm", MISSING, "ollama", "",
+                self._add("llm", UNAVAILABLE, "ollama", "",
                           "http://localhost:11434",
-                          f"HTTP {r.status_code}", "none", OPTIONAL)
+                          f"HTTP {r.status_code}", "", OPTIONAL)
         except Exception as e:
-            self._add("llm", MISSING, "ollama", "",
+            self._add("llm", UNAVAILABLE, "ollama", "",
                       "http://localhost:11434",
-                      f"unreachable: {type(e).__name__}", "none", OPTIONAL)
+                      f"unreachable: {type(e).__name__}", "", OPTIONAL)
 
         # 9. DuckDB persistence
         self._check_pkg("duckdb", "duckdb", OPTIONAL,
@@ -243,15 +291,15 @@ class RuntimeHealth:
         print()
 
         required = [c for c in self._components if c.component_class == REQUIRED]
-        required_ok = [c for c in required if c.status == OK]
+        required_ok = [c for c in required if c.status == READY]
         required_degraded = [c for c in required if c.status == DEGRADED]
-        required_missing = [c for c in required if c.status == MISSING]
+        required_down = [c for c in required if c.status in (MISSING, FAILED)]
 
-        print(f"  REQUIRED voice components: {len(required_ok)} OK, "
-              f"{len(required_degraded)} degraded, {len(required_missing)} missing")
-        if required_missing:
-            print("  ✗ Normal voice operation BLOCKED — missing: "
-                  + ", ".join(c.name for c in required_missing))
+        print(f"  REQUIRED voice components: {len(required_ok)} READY, "
+              f"{len(required_degraded)} DEGRADED, {len(required_down)} down")
+        if required_down:
+            print("  ✗ Normal voice operation BLOCKED — down: "
+                  + ", ".join(f"{c.name}({c.status})" for c in required_down))
         elif required_degraded:
             print("  ✓ Voice operation available (degraded: "
                   + ", ".join(c.name for c in required_degraded) + ")")
@@ -261,17 +309,21 @@ class RuntimeHealth:
 
     @property
     def voice_ready(self) -> bool:
-        """True if all REQUIRED components are OK or DEGRADED (not MISSING)."""
+        """True if all REQUIRED components are READY or DEGRADED (operable
+        with fallback). MISSING/FAILED required components block voice."""
         required = [c for c in self._components if c.component_class == REQUIRED]
-        return all(c.status != MISSING for c in required)
+        return all(c.status not in (MISSING, FAILED) for c in required)
 
 
 # Global singleton
 runtime_health = RuntimeHealth()
 
 
-def run_runtime_health() -> List[ComponentHealth]:
-    """Run the diagnostic and print the report. Returns components."""
-    components = runtime_health.run()
+def run_runtime_health(no_wake: bool = False) -> List[ComponentHealth]:
+    """Run the diagnostic and print the report. Returns components.
+
+    `no_wake=True` reports the wake detector as BYPASSED instead of READY.
+    """
+    components = runtime_health.run(no_wake=no_wake)
     runtime_health.print_report()
     return components

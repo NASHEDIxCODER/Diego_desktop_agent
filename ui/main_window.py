@@ -46,7 +46,7 @@ from ui.visualizer import VoiceCoreVisualizer, VisualizerState
 from ui.widgets import (
     ConnectionIndicator, TranscriptPanel, ResponsePanel,
     ActivityPanel, MetricsCards, SystemStatus, HistoryPanel,
-    VoiceStatePanel, FooterBar, AvatarBadge,
+    VoiceStatePanel, FooterBar, AvatarBadge, AudioDevicePanel,
 )
 
 logger = logging.getLogger(__name__)
@@ -169,6 +169,11 @@ class DiegoMainWindow(QMainWindow):
 
         self._metrics = MetricsCards()
         right_layout.addWidget(self._metrics)
+
+        # AUDIO panel — independent microphone/speaker device selection
+        # (compact, right column, consistent with the existing theme).
+        self._audio_panel = AudioDevicePanel()
+        right_layout.addWidget(self._audio_panel)
 
         self._system_status = SystemStatus()
         right_layout.addWidget(self._system_status)

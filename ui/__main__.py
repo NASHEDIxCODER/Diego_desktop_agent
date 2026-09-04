@@ -102,7 +102,17 @@ class DiegoRuntime:
         """Initialize and run the production Diego pipeline."""
         # Import here to avoid heavy imports at UI startup
         from core.runtime_health import run_runtime_health
-        run_runtime_health()
+        run_runtime_health(no_wake=self.no_wake)
+
+        # Restore persisted audio device selections BEFORE the AudioManager
+        # opens its stream: input → voice_settings.device_index override
+        # (still verified by the existing probe), output → StreamingTTS
+        # target. Missing devices fall back to auto-detection safely.
+        try:
+            from voice.device_manager import device_manager
+            device_manager.apply_persisted_devices()
+        except Exception as e:
+            logger.warning("[UI-RUNTIME] Device restore skipped: %s", e)
 
         from core.conversation_engine import conversation_engine
         from agent.brain import agent_brain
@@ -266,8 +276,12 @@ class AudioLevelPoller:
                 pass
 
 
-def main() -> int:
-    """Main entry point for the Diego UI."""
+def main(argv: Optional[list] = None) -> int:
+    """Main entry point for the Diego UI.
+
+    `argv` lets other entry points (main.py) forward parsed flags without
+    re-parsing sys.argv. Defaults to sys.argv.
+    """
     parser = argparse.ArgumentParser(description="Diego Desktop UI")
     parser.add_argument("--no-wake", action="store_true",
                         help="Bypass wake detection (development)")
@@ -275,7 +289,7 @@ def main() -> int:
                         help="Skip face authentication (development)")
     parser.add_argument("--ui-only", action="store_true",
                         help="Run UI only without the voice pipeline (testing)")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     setup_logging()
     logger.info("[UI] Starting Diego Desktop UI (no_wake=%s, no_auth=%s, ui_only=%s)",

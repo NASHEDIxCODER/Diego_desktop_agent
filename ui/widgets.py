@@ -19,16 +19,17 @@ from __future__ import annotations
 
 import math
 import re
+import threading
 from typing import Optional, List
 
-from PySide6.QtCore import Qt, QTimer, QPointF, QRectF, QSize
+from PySide6.QtCore import Qt, QTimer, QPointF, QRectF, QSize, Signal
 from PySide6.QtGui import (
     QColor, QPainter, QPen, QBrush, QFont, QRadialGradient, QLinearGradient,
     QPainterPath,
 )
 from PySide6.QtWidgets import (
     QWidget, QLabel, QVBoxLayout, QHBoxLayout, QFrame, QSizePolicy,
-    QGraphicsOpacityEffect, QGridLayout,
+    QGraphicsOpacityEffect, QGridLayout, QComboBox,
 )
 
 from ui.tokens import (
@@ -1187,4 +1188,223 @@ class HistoryPanel(QFrame):
 
     def clear(self) -> None:
         self._history.clear()
-        self._refresh()
+
+
+# ═══════════════════════════════════════════════════════════════
+# AUDIO device panel — independent INPUT/OUTPUT selection
+# ═══════════════════════════════════════════════════════════════
+
+class AudioDevicePanel(QFrame):
+    """
+    AUDIO panel — compact, independent microphone + speaker selectors.
+
+    INPUT MICROPHONE controls ONLY capture/STT/VAD.
+    OUTPUT SPEAKER controls ONLY TTS playback.
+    Both are persisted independently and switched at runtime via the
+    existing AudioManager / StreamingTTS infrastructure (no second
+    audio pipeline, no assistant restart).
+
+    Switching runs on a background thread (device verification takes
+    ~2 s) — the Qt thread is NEVER blocked; a signal delivers the result
+    back to the GUI thread.
+    """
+
+    # kind ("input"/"output"), ok, message
+    switch_finished = Signal(str, bool, str)
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.setObjectName("rightPanel")
+        self._populating = False
+        self._switch_in_flight: set = set()
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(SPACING_MEDIUM, SPACING_SMALL + 2,
+                                  SPACING_MEDIUM, SPACING_SMALL + 2)
+        layout.setSpacing(6)
+
+        title = QLabel("AUDIO")
+        title.setObjectName("panelTitle")
+        layout.addWidget(title)
+
+        # ── Microphone ──
+        mic_label = QLabel("Microphone")
+        mic_label.setObjectName("statusItem")
+        mic_label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: {FONT_SM}px; background: transparent;")
+        layout.addWidget(mic_label)
+        self.input_combo = QComboBox()
+        self.input_combo.setObjectName("deviceCombo")
+        layout.addWidget(self.input_combo)
+        self.input_status = QLabel("● —")
+        self.input_status.setObjectName("deviceStatus")
+        layout.addWidget(self.input_status)
+
+        # ── Speaker ──
+        spk_label = QLabel("Speaker")
+        spk_label.setObjectName("statusItem")
+        spk_label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: {FONT_SM}px; background: transparent;")
+        layout.addWidget(spk_label)
+        self.output_combo = QComboBox()
+        self.output_combo.setObjectName("deviceCombo")
+        layout.addWidget(self.output_combo)
+        self.output_status = QLabel("● —")
+        self.output_status.setObjectName("deviceStatus")
+        layout.addWidget(self.output_status)
+
+        layout.addStretch()
+
+        self.input_combo.currentIndexChanged.connect(self._on_input_changed)
+        self.output_combo.currentIndexChanged.connect(self._on_output_changed)
+        self.switch_finished.connect(self._on_switch_finished)
+
+        self.refresh_devices()
+
+    # ── Device enumeration / current selection ────────────────
+
+    def refresh_devices(self) -> None:
+        """Populate both dropdowns from the live sounddevice enumeration.
+
+        Input dropdown lists capture-capable devices only; output dropdown
+        lists playback-capable devices only. Currently-selected devices
+        are shown clearly (combos start disabled during pipeline boot).
+        """
+        self._populating = True
+        try:
+            from voice.device_manager import device_manager
+            try:
+                inputs = device_manager.list_input_devices()
+            except Exception:
+                inputs = []
+            try:
+                outputs = device_manager.list_output_devices()
+            except Exception:
+                outputs = []
+            cur_in = device_manager.get_current_input_device()
+            cur_out = device_manager.get_current_output_device()
+        except Exception:
+            inputs, outputs = [], []
+            cur_in = {"index": None, "name": ""}
+            cur_out = {"index": None, "name": ""}
+
+        self.input_combo.blockSignals(True)
+        self.input_combo.clear()
+        for d in inputs:
+            label = str(d.get("name", "")).strip() or f"Device {d.get('index')}"
+            if d.get("is_default"):
+                label += "  (default)"
+            self.input_combo.addItem(label, d.get("index"))
+        if cur_in.get("index") is not None:
+            pos = self.input_combo.findData(cur_in["index"])
+            if pos >= 0:
+                self.input_combo.setCurrentIndex(pos)
+        self.input_combo.blockSignals(False)
+        if cur_in.get("running"):
+            self.set_status("input", True, cur_in.get("name") or "Connected")
+        elif inputs:
+            self.set_status("input", None, "Waiting for audio engine…")
+        else:
+            self.set_status("input", False, "No input devices found")
+
+        self.output_combo.blockSignals(True)
+        self.output_combo.clear()
+        for d in outputs:
+            label = str(d.get("name", "")).strip() or f"Device {d.get('index')}"
+            if d.get("is_default"):
+                label += "  (default)"
+            self.output_combo.addItem(label, d.get("index"))
+        if cur_out.get("index") is not None:
+            pos = self.output_combo.findData(cur_out["index"])
+            if pos >= 0:
+                self.output_combo.setCurrentIndex(pos)
+        self.output_combo.blockSignals(False)
+        if cur_out.get("index") is not None:
+            self.set_status("output", True, cur_out.get("name") or "Connected")
+        elif outputs:
+            self.set_status("output", None, "System default")
+        else:
+            self.set_status("output", False, "No output devices found")
+
+        self._populating = False
+
+    # ── Status dot ────────────────────────────────────────────
+
+    def set_status(self, kind: str, ok, message: str = "") -> None:
+        """ok=True → green ● Connected; ok=False → red ● error;
+        ok=None → neutral ● pending/unknown."""
+        label = self.input_status if kind == "input" else self.output_status
+        text = message or ("Connected" if ok else "Unavailable")
+        if ok is True:
+            label.setText(f"● {text}")
+            label.setStyleSheet(f"color: {SUCCESS}; font-size: {FONT_XS}px; background: transparent;")
+        elif ok is False:
+            label.setText(f"● {text}")
+            label.setStyleSheet(f"color: {ERROR}; font-size: {FONT_XS}px; background: transparent;")
+        else:
+            label.setText(f"● {text}")
+            label.setStyleSheet(f"color: {TEXT_MUTED}; font-size: {FONT_XS}px; background: transparent;")
+
+    # ── Switch handling (background thread — UI never blocks) ──
+
+    def _on_input_changed(self, index: int) -> None:
+        if self._populating or index < 0:
+            return
+        device_index = self.input_combo.itemData(index)
+        if device_index is None:
+            return
+        self._start_switch("input", device_index)
+
+    def _on_output_changed(self, index: int) -> None:
+        if self._populating or index < 0:
+            return
+        device_index = self.output_combo.itemData(index)
+        if device_index is None:
+            return
+        self._start_switch("output", device_index)
+
+    def _start_switch(self, kind: str, device_index) -> None:
+        """Run the device switch on a worker thread."""
+        if kind in self._switch_in_flight:
+            return
+        self._switch_in_flight.add(kind)
+        combo = self.input_combo if kind == "input" else self.output_combo
+        combo.setEnabled(False)
+        self.set_status(kind, None, "Switching…")
+
+        def work():
+            ok, msg = False, "unknown error"
+            try:
+                from voice.device_manager import device_manager
+                if kind == "input":
+                    result = device_manager.set_input_device(int(device_index))
+                else:
+                    result = device_manager.set_output_device(int(device_index))
+                ok = bool(result.get("ok"))
+                msg = (result.get("device_name")
+                       or result.get("error")
+                       or ("Connected" if ok else "switch failed"))
+            except Exception as e:
+                ok, msg = False, str(e)
+            self.switch_finished.emit(kind, ok, str(msg))
+
+        threading.Thread(target=work, name=f"audio-switch-{kind}",
+                         daemon=True).start()
+
+    def _on_switch_finished(self, kind: str, ok: bool, message: str) -> None:
+        self._switch_in_flight.discard(kind)
+        combo = self.input_combo if kind == "input" else self.output_combo
+        combo.setEnabled(True)
+        self.set_status(kind, ok, message)
+        if not ok:
+            # Restore the combobox to the actually-active device.
+            try:
+                from voice.device_manager import device_manager
+                cur = (device_manager.get_current_input_device()
+                       if kind == "input"
+                       else device_manager.get_current_output_device())
+                self._populating = True
+                pos = combo.findData(cur.get("index"))
+                if pos >= 0:
+                    combo.setCurrentIndex(pos)
+                self._populating = False
+            except Exception:
+                self._populating = False
