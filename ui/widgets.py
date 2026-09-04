@@ -1194,6 +1194,40 @@ class HistoryPanel(QFrame):
 # AUDIO device panel — independent INPUT/OUTPUT selection
 # ═══════════════════════════════════════════════════════════════
 
+# Blue dropdown popup for the mic/speaker device combos. Applied directly
+# on the widgets because the global stylesheet does not cover QComboBox,
+# and native Linux popup menus ignore stylesheets entirely (white popup).
+_DEVICE_COMBO_QSS = f"""
+QComboBox {{
+    background-color: {PANEL_BACKGROUND_HI};
+    color: {TEXT_PRIMARY};
+    border: 1px solid {PANEL_BORDER};
+    border-radius: 6px;
+    padding: 4px 8px;
+}}
+QComboBox::drop-down {{
+    border: none;
+}}
+QComboBox QAbstractItemView {{
+    background-color: #1565c0;
+    color: #ffffff;
+    border: 1px solid {PANEL_BORDER};
+    outline: none;
+    selection-background-color: #1e88e5;
+    selection-color: #ffffff;
+}}
+QComboBox QAbstractItemView::item {{
+    background-color: #1565c0;
+    color: #ffffff;
+    min-height: 26px;
+    padding: 4px 8px;
+}}
+QComboBox QAbstractItemView::item:selected {{
+    background-color: #1e88e5;
+    color: #ffffff;
+}}
+"""
+
 class AudioDevicePanel(QFrame):
     """
     AUDIO panel — compact, independent microphone + speaker selectors.
@@ -1234,6 +1268,11 @@ class AudioDevicePanel(QFrame):
         layout.addWidget(mic_label)
         self.input_combo = QComboBox()
         self.input_combo.setObjectName("deviceCombo")
+        self.input_combo.setStyleSheet(_DEVICE_COMBO_QSS)
+        # Render the popup ourselves — native Linux menus ignore QSS
+        # (this is what made the dropdown white/unreadable).
+        self.input_combo.view().window().setWindowFlags(
+            Qt.Popup | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint)
         layout.addWidget(self.input_combo)
         self.input_status = QLabel("● —")
         self.input_status.setObjectName("deviceStatus")
@@ -1246,6 +1285,11 @@ class AudioDevicePanel(QFrame):
         layout.addWidget(spk_label)
         self.output_combo = QComboBox()
         self.output_combo.setObjectName("deviceCombo")
+        self.output_combo.setStyleSheet(_DEVICE_COMBO_QSS)
+        # Render the popup ourselves — native Linux menus ignore QSS
+        # (this is what made the dropdown white/unreadable).
+        self.output_combo.view().window().setWindowFlags(
+            Qt.Popup | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint)
         layout.addWidget(self.output_combo)
         self.output_status = QLabel("● —")
         self.output_status.setObjectName("deviceStatus")
