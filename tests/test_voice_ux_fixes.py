@@ -98,7 +98,10 @@ class TestLocalKnowledgeRouting:
         from nlp.intent_authorizer import authorize_intent, IntentCategory
         auth = authorize_intent("find my project which I have worked on recently")
         assert auth.category == IntentCategory.LOCAL_KNOWLEDGE
-        assert auth.actionable
+        # LOCAL_KNOWLEDGE is answered from the local index + LLM, never
+        # via the planner/tools (which would web-search the request).
+        assert auth.actionable is False
+        assert auth.llm_allowed
 
     def test_my_project_is_local(self):
         """'my project' → LOCAL_KNOWLEDGE"""
