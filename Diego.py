@@ -309,6 +309,7 @@ async def _main_async(no_auth: bool, no_wake: bool = False, record_session: bool
         from core.manual_session_recorder import session_recorder
         session_recorder.enable()
 
+    t_signal = loop.time()
     run_task = asyncio.create_task(run_Diego(no_auth=no_auth, no_wake=no_wake))
     stop_task = asyncio.create_task(stop.wait())
 
@@ -323,8 +324,32 @@ async def _main_async(no_auth: bool, no_wake: bool = False, record_session: bool
         await asyncio.wait_for(shutdown(), timeout=15.0)
     except asyncio.TimeoutError:
         logger.error("[SHUTDOWN] Hard timeout exceeded 15s — exiting anyway")
-    # Drain cancelled tasks
-    await asyncio.gather(*pending, return_exceptions=True)
+    # Drain cancelled tasks — bounded so a hung worker (e.g. a stuck
+    # background_learner.stop()) cannot extend the shutdown window.
+    # The drain shares the overall hard 15 s deadline.
+    drain_timeout = max(0.5, 15.0 - (loop.time() - t_signal))
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(*pending, return_exceptions=True),
+            timeout=drain_timeout)
+    except asyncio.TimeoutError:
+        logger.warning("[SHUTDOWN] Pending tasks did not drain within "
+                       "%.1fs — forcing exit", drain_timeout)
+
+    # ── Hard-exit guarantee (documented shutdown contract) ────────
+    # shutdown() has completed (or hit its hard 15 s timeout). Hung
+    # non-daemon workers (e.g. an executor thread blocked inside a C
+    # call such as a PortAudio probe) must NOT keep the process alive
+    # past the shutdown window — asyncio's implicit executor join at
+    # interpreter shutdown would otherwise block forever, which in a
+    # container prevents the runtime from ever terminating.
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except Exception:
+        pass
+    logger.info("[DIEGO] Shutdown window closed — hard exit")
+    os._exit(0)
 
 
 def cmd_status() -> None:

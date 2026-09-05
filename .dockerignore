@@ -1,0 +1,99 @@
+# ============================================================
+# Diego production image — build-context exclusions
+# Derived from docs/DOCKER_PREFLIGHT.md "MUST NOT Be Baked Into
+# the Image" + docs/DOCKER_RUNTIME_MATRIX.md classifications.
+# ============================================================
+
+# ── VCS / IDE / virtualenvs ─────────────────────────────────
+.git
+.gitignore
+.gitattributes
+.venv/
+venv/
+env/
+ENV/
+.idea/
+.vscode/
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+
+# ── Secrets / credentials (NEVER in image layers) ───────────
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+serviceAccountKey.json
+**/serviceAccountKey.json
+credentials.json
+token.json
+client_secret*.json
+*.session
+**/*.session
+
+# ── Mutable runtime state (volumes, never baked) ────────────
+data/Diego.duckdb
+data/Diego.duckdb-wal
+data/Diego.duckdb-shm
+data/*.duckdb*
+data/embedding_cache.pkl
+data/knowledge_base.json
+data/audio_devices.json
+data/mic_selection.json
+data/whisper_backend.json
+data/*benchmark*.json
+data/asr_models/
+data/tts_cache/
+auth/Known_encodings.p
+auth/*.p
+auth/*.pickle
+auth/images/
+**/face_images/
+logs/
+*.log
+*.jsonl
+telemetry/*.log
+telemetry/*.json
+tmp/
+*.tmp
+
+# ── Model / HF caches (downloaded at first run into a volume) ──
+.cache/
+**/.cache/
+
+# ── Wake training corpora (DEV-ONLY; verifier+metadata ARE included) ──
+models/wake/positives/
+models/wake/positives_backup/
+models/wake/positives_orig/
+models/wake/negatives/
+models/wake/backup_pre_int16/
+models/wake/wake_phrase.wav
+
+# ── DEV-ONLY trees (pytest, debug, scripts, benchmarks) ─────
+tests/
+debug/
+scripts/
+datasets/
+docs/
+screenshots/
+.pytest_cache/
+htmlcov/
+.coverage
+
+# ── Historical / generated docs and artifacts ───────────────
+AUDIT_REPORT.md
+RUNTIME_AUDIT.md
+RUNTIME_STABILITY_REPORT.md
+SYSTEM_HEALTH.md
+DELETE.md
+Delete.md
+DEPENDENCY_MATRIX.md
+tree.txt
+requirements.before-cuda-repair.txt
+Dockerfile
+.dockerignore

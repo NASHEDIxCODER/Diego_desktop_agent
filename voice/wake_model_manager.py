@@ -50,12 +50,25 @@ def _oww_supports_inference_framework() -> bool:
     .onnx models — we must select explicitly). openwakeword 0.4.0 does NOT
     have it (ONNX is the only backend) and forwards unknown kwargs to
     AudioFeatures, which raises TypeError.
+
+    The ``@re_arg`` decorator on ``Model.__init__`` replaces the signature
+    with ``(*args, **kwargs)``, hiding the real parameters — so when the
+    direct check fails, recover the original ``__init__`` from the decorator
+    closure and inspect that instead.
     """
     import inspect
     try:
         from openwakeword import Model as OWWModel
-        return "inference_framework" in inspect.signature(
-            OWWModel.__init__).parameters
+        fn = OWWModel.__init__
+        if "inference_framework" in inspect.signature(fn).parameters:
+            return True
+        # Decorator-wrapped: the original __init__ is captured in the closure.
+        for cell in (fn.__closure__ or []):
+            obj = cell.cell_contents
+            if callable(obj) and getattr(obj, "__name__", "") == "__init__":
+                if "inference_framework" in inspect.signature(obj).parameters:
+                    return True
+        return False
     except Exception:
         return False
 

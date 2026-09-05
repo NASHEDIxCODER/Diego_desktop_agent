@@ -249,21 +249,26 @@ class RuntimeHealth:
         # 8. Local LLM (Ollama) — fail-safe: an unreachable Ollama NEVER
         # blocks startup. Health simply reports UNAVAILABLE and Diego
         # keeps running with deterministic/local capabilities.
+        # Docker/container contract (docs/DOCKER_PREFLIGHT.md §12):
+        # Ollama lives OUTSIDE the container — always probe the
+        # configured OLLAMA_BASE_URL, never container-local localhost.
+        import httpx
+        from config.settings import settings
+        base_url = settings.OLLAMA_BASE_URL
         try:
-            import httpx
-            r = httpx.get("http://localhost:11434/api/tags", timeout=3.0)
+            r = httpx.get(f"{base_url}/api/tags", timeout=3.0)
             if r.status_code == 200:
                 models = [m["name"] for m in r.json().get("models", [])]
                 self._add("llm", READY, "ollama", "",
-                          f"http://localhost:11434 ({len(models)} models)",
+                          f"{base_url} ({len(models)} models)",
                           "ready", "", OPTIONAL)
             else:
                 self._add("llm", UNAVAILABLE, "ollama", "",
-                          "http://localhost:11434",
+                          base_url,
                           f"HTTP {r.status_code}", "", OPTIONAL)
         except Exception as e:
             self._add("llm", UNAVAILABLE, "ollama", "",
-                      "http://localhost:11434",
+                      base_url,
                       f"unreachable: {type(e).__name__}", "", OPTIONAL)
 
         # 9. DuckDB persistence
