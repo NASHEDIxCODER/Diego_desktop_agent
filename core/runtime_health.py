@@ -140,6 +140,48 @@ class RuntimeHealth:
             self._add(name, MISSING, module, "", asset,
                       "package not installed", fallback, component_class)
 
+    # ── Microphone device probe ───────────────────────────────────
+
+    def _check_microphone(self) -> tuple:
+        """Check microphone availability — package AND real device.
+
+        Returns (status, version, reason). sounddevice can import fine
+        while reporting zero input devices (e.g. Docker without a
+        PulseAudio socket). Health must reflect actual availability, not
+        just package presence.
+        """
+        try:
+            import sounddevice as sd
+            ver = str(getattr(sd, "__version__", "?"))
+        except Exception:
+            return MISSING, "", "package not installed"
+
+        try:
+            devices = sd.query_devices()
+            input_devices = [
+                d for d in devices
+                if int(d.get("max_input_channels", 0)) > 0
+            ]
+            if input_devices:
+                names = ", ".join(
+                    f"[{d.get('index', '?')}]{d.get('name', '?')}"
+                    for d in input_devices[:5]
+                )
+                extra = (f" (+{len(input_devices) - 5} more)"
+                         if len(input_devices) > 5 else "")
+                return READY, ver, f"{len(input_devices)} input device(s): {names}{extra}"
+            else:
+                # Package imports but no input devices — the common Docker
+                # failure mode. Report FAILED with a clear reason so the
+                # operator knows to mount the PulseAudio socket.
+                return (FAILED, ver,
+                        "no input devices — mount host PulseAudio socket "
+                        "(-v /run/user/$UID/pulse:/run/user/$UID/pulse) "
+                        "or use --headless without audio")
+        except Exception as e:
+            # sounddevice failed to query (e.g. no audio backend at all).
+            return FAILED, ver, f"device query failed: {type(e).__name__}: {e}"
+
     # ── Full diagnostic ───────────────────────────────────────────
 
     def run(self, no_wake: bool = False) -> List[ComponentHealth]:
@@ -153,9 +195,14 @@ class RuntimeHealth:
         base = self._base_dir
 
         # ══ REQUIRED — normal voice operation ══════════════════════
-        # 1. Microphone capture
-        self._check_pkg("microphone", "sounddevice", REQUIRED,
-                        fallback="none")
+        # 1. Microphone capture — package presence ≠ device existence.
+        #    sounddevice can import fine while reporting zero input
+        #    devices (e.g. Docker without PulseAudio socket). Probe the
+        #    real device list so health reflects actual availability.
+        mic_status, mic_ver, mic_reason = self._check_microphone()
+        self._add("microphone", mic_status, "sounddevice", mic_ver, "",
+                  mic_reason, "none" if mic_status == READY else "",
+                  REQUIRED)
         # 2. VAD — Silero missing means the energy fallback is ACTIVE,
         #    so the honest status is DEGRADED, not MISSING.
         silero_ver = _import_version("silero_vad")

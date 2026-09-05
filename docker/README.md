@@ -24,10 +24,9 @@ docker build -t diego:latest .        # or: podman build -t diego:latest .
 docker run -d --name diego \
   --init \
   --add-host=host.docker.internal:host-gateway \
-  --device /dev/snd \                          # microphone + speakers (ALSA)
   --device /dev/video0 \                       # camera (face auth only)
-  -e PULSE_SERVER=unix:/run/user/1000/pulse/native \
-  -v /run/user/1000/pulse:/run/user/1000/pulse \   # PulseAudio/PipeWire
+  -e PULSE_SERVER=unix:/run/user/$(id -u)/pulse/native \
+  -v /run/user/$(id -u)/pulse:/run/user/$(id -u)/pulse \   # PulseAudio/PipeWire socket
   -v /tmp/.X11-unix:/tmp/.X11-unix -e DISPLAY=:0 \ # X11 (optional)
   -e OLLAMA_BASE_URL=http://host.docker.internal:11434 \
   -v diego-data:/app/data \
@@ -36,6 +35,13 @@ docker run -d --name diego \
   --shm-size=1g \
   diego:latest
 ```
+
+> **Audio is PulseAudio/PipeWire socket-based, NOT `/dev/snd`.** The
+> entrypoint auto-detects the socket at any `/run/user/*/pulse/native`
+> path, so the image is portable — no `DIEGO_UID` build arg needed.
+> The operator mounts `-v /run/user/$UID/pulse:/run/user/$UID/pulse`
+> and `PULSE_SERVER` is set automatically. The explicit `-e` is
+> optional but shown for clarity.
 
 Primary command: `python main.py --headless` (image default).
 Documented alternative: `docker run ... diego:latest python Diego.py`.

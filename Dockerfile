@@ -17,6 +17,12 @@
 
 ARG PYTHON_VERSION=3.11
 
+# Runtime user UID. MUST match the host uid that owns the PulseAudio
+# socket (/run/user/<UID>/pulse/native) so the container process is
+# allowed to connect. Override at build time for non-default hosts:
+#   docker build --build-arg DIEGO_UID=$(id -u) -t diego:latest .
+ARG DIEGO_UID=1000
+
 # ─────────────────────────────────────────────────────────────
 # Stage 1 — builder: compile native wheels (dlib etc.) into a venv
 # ─────────────────────────────────────────────────────────────
@@ -131,10 +137,12 @@ RUN apt-get update \
         tk8.6 \
  && rm -rf /var/lib/apt/lists/*
 
-# Non-root runtime user, uid 1000 to match the host PulseAudio socket
-# path (/run/user/1000/pulse). audio/video groups for device nodes.
-RUN groupadd -g 1000 diego \
- && useradd -m -u 1000 -g 1000 -G audio,video diego
+# Non-root runtime user. uid MUST match the host uid that owns the
+# PulseAudio socket (/run/user/<UID>/pulse/native) — PulseAudio
+# rejects connections from mismatched uids. audio/video groups for
+# direct ALSA device node access (fallback when no PA server).
+RUN groupadd -g "${DIEGO_UID}" diego \
+ && useradd -m -u "${DIEGO_UID}" -g "${DIEGO_UID}" -G audio,video diego
 
 # Python venv from the builder (pre-compiled wheels, no build tools)
 COPY --from=builder /opt/venv /opt/venv

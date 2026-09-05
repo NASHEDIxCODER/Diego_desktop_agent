@@ -60,6 +60,45 @@ for f in /opt/diego-assets/wake-bundled/*.onnx; do
 done
 shopt -u nullglob
 
+# ── Audio: PulseAudio / PipeWire socket plumbing ───────────────
+# The host PulseAudio/PipeWire server exposes a per-user Unix socket at
+# /run/user/<UID>/pulse/native. When the operator mounts that socket
+# into the container (the documented audio path), point the PulseAudio
+# client at it via PULSE_SERVER so sounddevice/PortAudio open the host
+# server instead of failing to find a device. Without this variable
+# PortAudio sees NO input devices even though the socket is present.
+#
+# PORTABILITY: the entrypoint scans ALL /run/user/*/pulse/native paths,
+# so the image works regardless of the container uid. The operator
+# simply mounts -v /run/user/$UID/pulse:/run/user/$UID/pulse and the
+# socket is found. No DIEGO_UID build arg required for audio.
+if [ -z "${PULSE_SERVER:-}" ]; then
+    # Auto-detect ANY mounted PulseAudio/PipeWire socket under /run/user.
+    # This makes the image portable: the operator mounts the host socket
+    # (-v /run/user/$UID/pulse:/run/user/$UID/pulse) and the entrypoint
+    # finds it regardless of the container uid. No DIEGO_UID build arg
+    # required for audio to work.
+    _found=""
+    for _sock in /run/user/*/pulse/native /run/user/*/pipewire-0; do
+        if [ -S "$_sock" ]; then
+            _found="$_sock"
+            break
+        fi
+    done
+    if [ -n "$_found" ]; then
+        export PULSE_SERVER="unix:${_found}"
+        echo "[ENTRYPOINT] Audio socket detected — PULSE_SERVER=${PULSE_SERVER}"
+    else
+        # Fall back to the current uid path for a clearer diagnostic.
+        _uid="$(id -u)"
+        echo "[ENTRYPOINT] WARNING: no PulseAudio/PipeWire socket found at " \
+             "/run/user/*/ — audio input will be UNAVAILABLE unless " \
+             "PULSE_SERVER is set and the socket is mounted"
+    fi
+else
+    echo "[ENTRYPOINT] PULSE_SERVER=${PULSE_SERVER} (explicit)"
+fi
+
 # ── Display shim (headless containers) ─────────────────────────
 # pyautogui/mouseinfo (imported via services/screen_capture even in
 # --headless mode) require an X server at import time. If no host

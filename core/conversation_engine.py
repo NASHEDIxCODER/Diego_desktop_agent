@@ -262,16 +262,46 @@ class ConversationEngine:
 
         self._setup_gui()
 
-        # AudioManager
-        while self._running and not audio_manager.is_running:
-            ok = await loop.run_in_executor(None, audio_manager.start)
-            if ok:
-                break
-            logger.error("[ENGINE] AudioManager failed — retrying in 5s")
-            await asyncio.sleep(5.0)
-        if not audio_manager.is_running:
-            self._running = False
-            return
+        # AudioManager — bounded retries, never infinite. A permanently
+        # missing microphone (e.g. Docker without PulseAudio socket) must
+        # NOT spin forever. After max retries, mark audio DEGRADED and
+        # continue without voice input.
+        if audio_manager.is_running:
+            # Audio already active (e.g. pre-initialized by a caller or
+            # test stub). Skip initialization entirely.
+            logger.info("[ENGINE] AudioManager already running — skipping init")
+            self._mic_available = True
+        else:
+            AUDIO_MAX_RETRIES = 3
+            AUDIO_RETRY_DELAY_S = 5.0
+            for _attempt in range(1, AUDIO_MAX_RETRIES + 1):
+                if not self._running:
+                    break
+                ok = await loop.run_in_executor(None, audio_manager.start)
+                if ok:
+                    break
+                logger.error("[ENGINE] AudioManager failed (attempt %d/%d) — %s",
+                             _attempt, AUDIO_MAX_RETRIES,
+                             f"retrying in {AUDIO_RETRY_DELAY_S}s"
+                             if _attempt < AUDIO_MAX_RETRIES
+                             else "no more retries — audio UNAVAILABLE")
+                if _attempt < AUDIO_MAX_RETRIES:
+                    await asyncio.sleep(AUDIO_RETRY_DELAY_S)
+            if not audio_manager.is_running:
+                logger.error(
+                    "[ENGINE] AudioManager did not start after %d attempts — "
+                    "audio input is UNAVAILABLE. Diego continues without "
+                    "voice (text input, wake detection, and TTS disabled). "
+                    "Mount the host PulseAudio socket to enable audio: "
+                    "-v /run/user/$UID/pulse:/run/user/$UID/pulse",
+                    AUDIO_MAX_RETRIES)
+                # Do NOT set self._running = False — Diego keeps running
+                # in text-only mode. The health check correctly reports
+                # microphone FAILED and the wake listener idles.
+                self._wake_active = False
+                self._mic_available = False
+            else:
+                self._mic_available = True
 
         # openWakeWord — a boot-time load failure must NOT cause an
         # infinite WAKE-state retry loop. One attempt; on failure wake is
