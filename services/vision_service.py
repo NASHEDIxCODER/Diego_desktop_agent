@@ -979,7 +979,9 @@ class VisionService(BaseService):
     # ═══════════════════════════════════════════════════════════════
 
     async def analyze_forensic(self, force: bool = True,
-                                source: str = "active_window") -> Tuple[VisionContext, ForensicReport]:
+                                source: str = "active_window",
+                                verify_previous_action: bool = False,
+                                ) -> Tuple[VisionContext, ForensicReport]:
         """
         Run the full pipeline with forensic logging at every stage.
 
@@ -987,6 +989,12 @@ class VisionService(BaseService):
         Never silently fails — every failure explains exactly why.
 
         Also updates the debug_overlay if enabled.
+
+        Args:
+            force: Bypass gating (always run full pipeline).
+            source: "active_window" or "fullscreen".
+            verify_previous_action: Run stage-9 verification against the
+                pre-action snapshot (mirrors analyze()).
 
         Returns:
             (VisionContext, ForensicReport)
