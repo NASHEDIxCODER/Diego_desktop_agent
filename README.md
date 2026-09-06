@@ -4,12 +4,12 @@
   <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="MIT License">
 </p>
 
-<h1 align="center">🦁 Diego — Desktop AI Assistant</h1>
+<h1 align="center">🦁 Diego — Desktop AI agent</h1>
 
-<p align="center"><em>A local-first, voice-first desktop AI assistant for Linux.<br>
+<p align="center"><em>A local-first, voice-first desktop AI agent for Linux.<br>
 Wake word · face authentication · streaming speech · local knowledge · desktop and browser control.</em></p>
 
-Diego is a **local-first desktop AI assistant** designed to run entirely on your machine, without mandatory cloud AI APIs. It listens for a wake word, verifies who is speaking with face authentication, transcribes your voice locally, thinks with a locally hosted LLM, and acts on your desktop — all on Linux.
+Diego is a **local-first desktop AI agent** designed to run entirely on your machine, without mandatory cloud AI APIs. It listens for a wake word, verifies who is speaking with face authentication, transcribes your voice locally, thinks with a locally hosted LLM, and acts on your desktop — all on Linux.
 
 - **Voice-first interaction** — full-duplex streaming conversation; interrupt Diego mid-sentence by speaking.
 - **Wake-word activation** — openWakeWord detection with Whisper transcript verification.
