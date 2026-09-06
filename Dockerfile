@@ -76,6 +76,10 @@ RUN pip install \
 # ─────────────────────────────────────────────────────────────
 FROM python:${PYTHON_VERSION}-slim
 
+# Re-declare the global ARG so it is available inside this stage.
+# Default 1000; override with --build-arg DIEGO_UID=$(id -u).
+ARG DIEGO_UID=1000
+
 # Persistent model caches (volume-backed — never baked in layers),
 # bundled Tesseract data (seeded into /app/data by the entrypoint).
 # Ollama: NEVER container-local localhost. Docker users override

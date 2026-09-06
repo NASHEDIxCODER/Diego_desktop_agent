@@ -2,21 +2,54 @@
 
 Image build contract: `docs/DOCKER_PREFLIGHT.md` + `docs/DOCKER_RUNTIME_MATRIX.md`.
 
+## Host / Container OS Separation
+
+| Layer | OS | Notes |
+|---|---|---|
+| **Host** | Arch Linux (e.g. BlackArch) | Runs Docker/Podman. Owns the PulseAudio/PipeWire socket at `/run/user/$UID/pulse/native`. |
+| **Container** | Debian (`python:3.11-slim`) | Diego runtime. Audio is socket-mounted from host — no ALSA devices needed inside. |
+
+> **Key distinction:** Host setup uses Arch commands (`pacman`). The Dockerfile uses
+> Debian/apt — this is intentional and must NOT be changed to match the host.
+
 ## Files
 
 | File | Role |
 |---|---|
-| `../Dockerfile` | Multi-stage build: Python 3.11-slim, lockfile wheels (CPU torch), runtime libs, static assets. |
+| `../Dockerfile` | Multi-stage build (Debian `python:3.11-slim`): lockfile wheels (CPU torch), runtime libs, static assets. |
 | `../.dockerignore` | Excludes `.venv`, `.git`, secrets, runtime state, HF caches, dev-only trees. |
 | `entrypoint.sh` | tini child; seeds REQUIRED-IN-IMAGE assets into fresh volumes, runs model bootstrap, `exec`s the CMD (SIGTERM reaches Python). |
 | `bootstrap.py` | First-run model pre-fetch into persistent volumes. Reuses existing cache; downloads only what is missing; REQUIRED assets fail clearly. |
 | `healthcheck.py` | Container probe on top of `core/runtime_health`. Distinguishes READY / DEGRADED / UNAVAILABLE (healthy) vs FAILED (unhealthy). |
 
-## Build
+## Host Setup (Arch Linux)
+
+Install Docker and audio dependencies on the **host**:
 
 ```bash
-docker build -t diego:latest .        # or: podman build -t diego:latest .
+# Docker
+sudo pacman -S docker
+sudo systemctl enable --now docker
+
+# Audio (PipeWire/PulseAudio socket already present on Arch with pipewire-pulse)
+# Verify the socket exists:
+ls -la /run/user/$(id -u)/pulse/native
 ```
+
+## Build
+
+Default (container user uid 1000):
+```bash
+docker build -t diego:latest .
+```
+
+Explicit host UID (container user matches host uid for file ownership):
+```bash
+docker build --build-arg DIEGO_UID=$(id -u) -t diego:latest .
+```
+
+> **Both builds work.** `DIEGO_UID` controls file ownership inside the container.
+> It is NOT required for audio — PulseAudio/PipeWire is runtime-configured.
 
 ## Run (full host integration)
 
