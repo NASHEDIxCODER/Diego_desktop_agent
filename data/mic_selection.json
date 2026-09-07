@@ -1,0 +1,13 @@
+{
+  "index": 5,
+  "name": "HD-Audio Generic: ALC256 Analog (hw:2,0)",
+  "hostapi": "ALSA",
+  "channels": 2,
+  "default_samplerate": 44100.0,
+  "speech_channel": 0,
+  "rms": 13484.8,
+  "peak": 32767.0,
+  "voice_probability": 1.0,
+  "verified": true,
+  "measured_at": 1788801446.5785127
+}
