@@ -78,6 +78,11 @@ RELAXED_TRACKING_MIN_BLUR = 25.0
 # Total auth budget exposed to main.py for its wait_for timeout.
 AUTH_TOTAL_BUDGET = AUTH_ROUNDS * ROUND_DURATION + 6.0
 
+# ── Multi-frame authentication ──────────────────────────────────
+# Number of high-quality stable frames to collect for multi-frame recognition.
+# Encoding costs ~259ms/frame, so keep this bounded (3-4 frames = ~1s total).
+MAX_ENCODE_FRAMES = 4
+
 # ── Debug overlay ──────────────────────────────────────────────
 _debug_overlay_enabled = False
 
@@ -448,59 +453,121 @@ def _is_face_stable(face: FaceBox, quality: FrameQuality,
     return True, "ok"
 
 
-def _compare_and_decide(best_frame: np.ndarray, best_face: FaceBox, t0: float) -> Optional[str]:
-    """Encode the stable face and compare against known encodings."""
-    t6 = time.time()
-    rgb_frame = cv.cvtColor(best_frame, cv.COLOR_BGR2RGB)
-    face_loc = best_face.to_face_recognition_format()
-    face_encodings = face_recognition.face_encodings(rgb_frame, [face_loc])
-    encode_time = time.time() - t6
-
-    logger.info("[AUTH] Face encoding: %d encoding(s) generated (%.2fs)",
-                len(face_encodings), encode_time)
-
-    if not face_encodings:
-        logger.warning("[AUTH] No encodings generated despite face detection")
-        return None
-    if not _known_encodings:
-        logger.warning("[AUTH] No known encodings to compare against")
+def _encode_single_frame(frame: np.ndarray, face: FaceBox) -> Optional[np.ndarray]:
+    """Encode a single face frame to 128-D embedding. Returns None on failure."""
+    try:
+        rgb_frame = cv.cvtColor(frame, cv.COLOR_BGR2RGB)
+        face_loc = face.to_face_recognition_format()
+        encs = face_recognition.face_encodings(rgb_frame, [face_loc])
+        return encs[0] if encs else None
+    except Exception as e:
+        logger.debug("[AUTH] Encoding failed: %s", e)
         return None
 
+
+def _aggregate_and_decide(
+    frame_face_pairs: List[Tuple[np.ndarray, FaceBox]],
+    t0: float,
+    max_encode: int = 4,
+) -> Optional[str]:
+    """
+    Multi-frame authentication decision.
+
+    Encodes up to max_encode frames, computes per-frame distances, then
+    aggregates using median distance per identity. Requires consistent
+    evidence: the winning identity must have median distance < tolerance
+    and must be the majority winner across frames.
+
+    This prevents a single anomalous frame from dominating the decision.
+    """
+    if not frame_face_pairs or not _known_encodings:
+        logger.warning("[AUTH] Aggregate: no frames or no known encodings")
+        return None
+
+    # Encode frames (bounded)
     tolerance = FACE_TOLERANCE
-    encode_face = face_encodings[0]
-    distances = face_recognition.face_distance(_known_encodings, encode_face)
-    face_distances = list(zip(_known_names, distances))
+    embeddings: List[np.ndarray] = []
+    encode_times: List[float] = []
 
-    if len(distances) == 0:
-        logger.warning("[AUTH] No distances computed")
+    for frame, face in frame_face_pairs[:max_encode]:
+        t_enc = time.time()
+        enc = _encode_single_frame(frame, face)
+        encode_times.append(time.time() - t_enc)
+        if enc is not None:
+            embeddings.append(enc)
+
+    logger.info("[AUTH] Aggregate: %d/%d frames encoded (avg %.2fs, max %.2fs)",
+                len(embeddings), len(frame_face_pairs[:max_encode]),
+                np.mean(encode_times) if encode_times else 0.0,
+                max(encode_times) if encode_times else 0.0)
+
+    if not embeddings:
+        logger.warning("[AUTH] Aggregate: no valid embeddings generated")
         return None
 
-    best_match_idx = int(np.argmin(distances))
-    best_distance = float(distances[best_match_idx])
-    best_name = _known_names[best_match_idx]
+    # Per-frame distances: list of (name, distance) lists
+    per_frame_results: List[List[Tuple[str, float]]] = []
+    for enc in embeddings:
+        distances = face_recognition.face_distance(_known_encodings, enc)
+        frame_results = list(zip(_known_names, distances))
+        per_frame_results.append(frame_results)
 
-    logger.info("[AUTH] Comparison: best match='%s' dist=%.4f tolerance=%.2f",
-                best_name, best_distance, tolerance)
+    # Aggregate: median distance per identity
+    identity_median_dist: Dict[str, float] = {}
+    identity_win_count: Dict[str, int] = {}
     for uname in sorted(set(_known_names)):
-        name_distances = [d for n, d in face_distances if n == uname]
-        if name_distances:
-            logger.info("[AUTH]   vs '%s': min=%.4f, avg=%.4f, samples=%d",
-                        uname, min(name_distances),
-                        sum(name_distances) / len(name_distances),
-                        len(name_distances))
+        all_dists = []
+        for frame_results in per_frame_results:
+            for name, dist in frame_results:
+                if name == uname:
+                    all_dists.append(dist)
+        if all_dists:
+            identity_median_dist[uname] = float(np.median(all_dists))
+            identity_win_count[uname] = sum(
+                1 for frame_results in per_frame_results
+                if min(frame_results, key=lambda x: x[1])[0] == uname
+            )
+
+    if not identity_median_dist:
+        logger.warning("[AUTH] Aggregate: no distances computed")
+        return None
+
+    # Find best identity by median distance
+    best_name = min(identity_median_dist, key=identity_median_dist.get)
+    best_median = identity_median_dist[best_name]
+    best_wins = identity_win_count.get(best_name, 0)
+
+    # Log per-identity aggregates
+    for uname in sorted(identity_median_dist.keys()):
+        logger.info("[AUTH]   vs '%s': median_dist=%.4f wins=%d/%d",
+                    uname, identity_median_dist[uname],
+                    identity_win_count.get(uname, 0), len(embeddings))
 
     elapsed = time.time() - t0
-    if best_distance < tolerance:
-        logger.info("[AUTH] ✅ AUTHENTICATED: '%s' (dist=%.4f < tolerance=%.2f, total=%.2fs)",
-                    best_name, best_distance, tolerance, elapsed)
+
+    # Decision: median distance must be within tolerance AND majority of frames agree
+    majority_threshold = max(1, len(embeddings) // 2)
+    if best_median < tolerance and best_wins > majority_threshold:
+        logger.info("[AUTH] ✅ AUTHENTICATED: '%s' (median_dist=%.4f < tol=%.2f, "
+                    "wins=%d/%d, total=%.2fs)",
+                    best_name, best_median, tolerance, best_wins, len(embeddings), elapsed)
         return best_name
 
-    logger.info("[AUTH] ❌ REJECTED: '%s' (dist=%.4f >= tolerance=%.2f, total=%.2fs)",
-                best_name, best_distance, tolerance, elapsed)
-    face_distances.sort(key=lambda x: x[1])
-    for i, (name, dist) in enumerate(face_distances[:5]):
-        logger.info("[AUTH]   %d. '%s' (dist=%.4f)", i + 1, name, dist)
+    # Rejection with reason category
+    if best_median >= tolerance:
+        reject_reason = f"distance_too_high(median={best_median:.4f}>={tolerance})"
+    else:
+        reject_reason = f"insufficient_consensus(wins={best_wins}<={majority_threshold})"
+
+    logger.info("[AUTH] ❌ REJECTED: '%s' (%s, total=%.2fs)",
+                best_name, reject_reason, elapsed)
     return None
+
+
+def _compare_and_decide(best_frame: np.ndarray, best_face: FaceBox, t0: float) -> Optional[str]:
+    """Encode the stable face and compare against known encodings (single-frame legacy)."""
+    result = _aggregate_and_decide([(best_frame, best_face)], t0, max_encode=1)
+    return result
 
 
 def recognize_faces() -> Optional[str]:
@@ -574,6 +641,8 @@ def recognize_faces() -> Optional[str]:
         best_face: Optional[FaceBox] = None
         best_frame: Optional[np.ndarray] = None
         best_stable = 0
+        # Multi-frame collection: store (frame, face) pairs for aggregation
+        stable_frame_pairs: List[Tuple[np.ndarray, FaceBox]] = []
         frame_count = 0
         fps_counter = 0
         fps_start = time.time()
@@ -659,17 +728,22 @@ def recognize_faces() -> Optional[str]:
                 best_face = largest_face
                 best_frame = frame.copy()
 
+            # Collect multi-frame pairs for aggregation (bounded)
+            if len(stable_frame_pairs) < MAX_ENCODE_FRAMES:
+                stable_frame_pairs.append((frame.copy(), largest_face))
+
             if stable_count < TRACKING_STABLE_FRAMES:
                 continue
 
-            # ── Face stable for N consecutive frames → encode + compare ──
-            logger.info("[AUTH] Face stable %d frames — encoding "
-                        "(backend=%s, %dx%d, conf=%.3f)",
-                        stable_count, best_face.backend, best_face.w,
-                        best_face.h, best_face.confidence)
+            # ── Face stable for N consecutive frames → multi-frame encode + aggregate ──
+            logger.info("[AUTH] Face stable %d frames — multi-frame encoding "
+                        "(%d frames collected, backend=%s, %dx%d, conf=%.3f)",
+                        stable_count, len(stable_frame_pairs), best_face.backend,
+                        best_face.w, best_face.h, best_face.confidence)
             _save_debug_frame(best_frame, "auth_stable",
-                              f"stable={stable_count}, backend={best_face.backend}")
-            name = _compare_and_decide(best_frame, best_face, t0)
+                              f"stable={stable_count}, frames={len(stable_frame_pairs)}, "
+                              f"backend={best_face.backend}")
+            name = _aggregate_and_decide(stable_frame_pairs, t0, max_encode=MAX_ENCODE_FRAMES)
             if name:
                 if _overlay_allowed():
                     cv.destroyAllWindows()
@@ -691,19 +765,22 @@ def recognize_faces() -> Optional[str]:
 
 
         # ── Round ended. Intelligent retry: if we had a decent face for
-        # ≥2 (non-consecutive-end) stable frames, try encoding it anyway
+        # ≥2 (non-consecutive-end) stable frames, try multi-frame encoding
         # instead of throwing the round away.
         if best_face is not None and best_frame is not None and best_stable >= 2:
             logger.info("[AUTH] Round %d ended with %d stable frames — "
-                        "attempting best-effort encoding", round_idx + 1, best_stable)
-            name = _compare_and_decide(best_frame, best_face, t0)
+                        "attempting best-effort multi-frame encoding",
+                        round_idx + 1, best_stable)
+            # Use collected stable frames if available, otherwise fall back to best frame
+            retry_pairs = stable_frame_pairs if stable_frame_pairs else [(best_frame, best_face)]
+            name = _aggregate_and_decide(retry_pairs, t0, max_encode=MAX_ENCODE_FRAMES)
             if name:
                 if _overlay_allowed():
                     cv.destroyAllWindows()
                 _release_camera()
                 logger.info("[AUTH] ════════════════════════════════════════════════════")
                 return name
-            logger.info("[AUTH] Best-effort encoding rejected — next round")
+            logger.info("[AUTH] Best-effort multi-frame encoding rejected — next round")
 
         else:
             logger.info("[AUTH] Round %d complete: no stable face "
