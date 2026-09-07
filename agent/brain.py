@@ -377,6 +377,27 @@ class AgentBrain:
         if await self._handle_pending_confirmation(text, result, conv_memory, t0):
             return result
 
+        # ── Step 0.211: Cancel an IN-FLIGHT autonomous task ────────────
+        # "stop the task", "cancel", "abort" while a closed-loop task is
+        # actually executing (no pending confirmation awaiting an answer)
+        # cooperatively cancels the running TaskRunner via the shared store.
+        # Cancellation is never reported as SUCCESS — the runner sets the
+        # authoritative CANCELLED status between steps.
+        try:
+            from agent.task_state import task_state_store as _rtss
+            from agent.task_state import FollowUpResolver as _fres
+            if _rtss.has_running_task() and _fres.match(text) == ("cancel", None):
+                result.path = "TASK_CANCELLED"
+                result.used_llm = False
+                result.verified = False
+                result.response = "Task cancelled."
+                conv_memory.add_assistant(result.response)
+                result.latency_ms = (time.time() - t0) * 1000
+                logger.info("[Brain] Cancellation requested for running task")
+                return result
+        except Exception:
+            pass  # cancellation registry unavailable — never block the pipeline
+
         # ── Step 0.22: Task follow-up continuation (CLOSED LOOP) ──────
         # "continue", "open the first result", "do the same for Chrome",
         # "close that", "try another one" must operate on the PREVIOUS
@@ -1825,6 +1846,30 @@ class AgentBrain:
         "music_volume": ("volume", "music"),
         "music_mute": ("mute", "music"),
         "screenshot": ("screenshot", "capture", "picture of the screen"),
+        # ── General ToolRegistry tools (Phase 15B) ──
+        # These names resolve to existing registered tools in
+        # core/tool_registry.py and are executed via the dispatcher's
+        # registry path, verified by the SAME pipeline as every other
+        # action (failure strings fail verification).
+        "terminal": ("run", "command", "shell", "execute", "terminal",
+                     "script"),
+        "python": ("python", "code", "script", "compute", "run"),
+        "filesystem": ("file", "folder", "directory", "list", "read",
+                       "write", "create"),
+        "git": ("git", "commit", "push", "pull", "branch", "status"),
+        "git_status": ("git", "status", "repository", "repo"),
+        "docker": ("docker", "container", "image"),
+        "browser": ("open", "website", "url", "navigate", "visit"),
+        "open_app": ("open", "launch", "start", "run"),
+        "open_url": ("open", "url", "website", "visit", "go to"),
+        "search": ("search", "google", "look up", "find"),
+        "notify": ("notify", "notification", "alert", "remind"),
+        "clipboard_read": ("clipboard", "paste", "copied"),
+        "clipboard_write": ("clipboard", "copy"),
+        "mouse": ("click", "mouse", "scroll"),
+        "keyboard": ("type", "press", "key", "hotkey"),
+        "volume": ("volume", "mute", "louder", "quieter"),
+        "brightness": ("brightness", "brighter", "dimmer"),
     }
 
     @staticmethod

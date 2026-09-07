@@ -45,6 +45,47 @@ os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
 logger = logging.getLogger("DiegoUI")
 
 
+async def _cancel_all_tasks(loop: asyncio.AbstractEventLoop) -> None:
+    """Safely cancel every pending asyncio task on `loop`.
+
+    ROOT-CAUSE FIX (Phase 18C): the previous implementation collected
+    `asyncio.all_tasks(loop)` — which INCLUDES the `cancel_all` coroutine
+    itself — and then cancelled every task including itself. Cancelling
+    the awaiting task while it awaits `asyncio.gather(*tasks)` caused
+    mutual recursion between `Task.cancel()` and the gather future's
+    child cancellation, producing:
+
+        RecursionError: maximum recursion depth exceeded
+        File ".../asyncio/tasks.py", line 761, in cancel
+            if child.cancel(msg=msg):   [repeated 989 more times]
+
+    This helper:
+      1. NEVER cancels the currently-running task (itself).
+      2. Operates on a STABLE SNAPSHOT of pending tasks.
+      3. Cancels each task AT MOST ONCE (deduplicated by identity).
+      4. Skips already-done and already-cancelled tasks.
+      5. Awaits completion with `asyncio.gather(..., return_exceptions=True)`
+         so one task's cancellation failure never blocks the rest.
+    """
+    current = asyncio.current_task(loop)
+    # Stable snapshot, deduplicated, excluding ourselves.
+    tasks = []
+    seen = set()
+    for t in asyncio.all_tasks(loop):
+        if t is current or t in seen:
+            continue
+        seen.add(t)
+        if t.done() or t.cancelled():
+            continue  # already finished/cancelled — nothing to do
+        tasks.append(t)
+
+    for task in tasks:
+        task.cancel()
+
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
 def setup_logging() -> None:
     """Configure logging for the UI."""
     logging.basicConfig(
@@ -96,6 +137,18 @@ class DiegoRuntime:
             if self._bridge:
                 self._bridge.emit_error("Diego encountered a problem starting up.")
         finally:
+            # Phase 18C: drain any remaining pending tasks from INSIDE the
+            # loop before closing. `stop()` schedules `cancel_all` via
+            # run_coroutine_threadsafe(); if its 5s wait times out, that
+            # coroutine is left pending and must NOT be destroyed by
+            # `loop.close()`. Running the same safe cancellation here
+            # awaits/cleans it (it appears in all_tasks(), is cancelled at
+            # most once, and is gathered) so no "Task was destroyed but it
+            # is pending!" is ever produced by the shutdown path.
+            try:
+                self.loop.run_until_complete(_cancel_all_tasks(self.loop))
+            except Exception:
+                pass
             self.loop.close()
 
     async def _run_pipeline(self) -> None:
@@ -177,15 +230,18 @@ class DiegoRuntime:
         if self.loop and self.loop.is_running():
             # Cancel all tasks
             async def cancel_all():
-                tasks = [t for t in asyncio.all_tasks(self.loop) if not t.done()]
-                for task in tasks:
-                    task.cancel()
-                await asyncio.gather(*tasks, return_exceptions=True)
+                await _cancel_all_tasks(self.loop)
 
             try:
                 asyncio.run_coroutine_threadsafe(cancel_all(), self.loop).result(timeout=5)
-            except Exception:
-                pass
+            except Exception as e:
+                # Shutdown failures are logged, never silently swallowed —
+                # but one task's failure must not prevent remaining cleanup.
+                # The loop's finally-drain (Phase 18C) awaits this coroutine
+                # if the 5s wait expires, so it is never abandoned.
+                logger.warning("[UI-RUNTIME] Task cancellation during shutdown "
+                               "was not confirmed within the timeout "
+                               "(%s): %s", type(e).__name__, e)
 
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=5)

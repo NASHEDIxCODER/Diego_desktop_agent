@@ -1,0 +1,161 @@
+{
+  "task_id": "a29fb03382e4",
+  "original_request": "search and read",
+  "normalized_goal": "search and read",
+  "current_plan": [
+    {
+      "action": "web_search",
+      "params": {
+        "query": "websocket library"
+      }
+    },
+    {
+      "action": "browser_navigate",
+      "params": {
+        "url": "https://github.com/a/b"
+      }
+    },
+    {
+      "action": "read_screen",
+      "params": {}
+    }
+  ],
+  "completed_steps": [
+    {
+      "index": 1,
+      "action": "web_search",
+      "params": {
+        "query": "websocket library"
+      },
+      "description": "",
+      "status": "completed",
+      "result": "Here's what I found: https://github.com/a/b https://github.com/c/d",
+      "verification": "success",
+      "verified": true,
+      "retries": 0,
+      "error": "",
+      "latency_ms": 0.003337860107421875,
+      "evidence_source": "unknown",
+      "sensitive_reason": ""
+    },
+    {
+      "index": 2,
+      "action": "browser_navigate",
+      "params": {
+        "url": "https://github.com/a/b"
+      },
+      "description": "",
+      "status": "completed",
+      "result": "Opened https://github.com/a/b",
+      "verification": "success",
+      "verified": true,
+      "retries": 0,
+      "error": "",
+      "latency_ms": 0.00286102294921875,
+      "evidence_source": "unknown",
+      "sensitive_reason": ""
+    },
+    {
+      "index": 3,
+      "action": "read_screen",
+      "params": {},
+      "description": "",
+      "status": "completed",
+      "result": "On screen: WebSocket library documentation",
+      "verification": "success",
+      "verified": true,
+      "retries": 0,
+      "error": "",
+      "latency_ms": 0.002384185791015625,
+      "evidence_source": "unknown",
+      "sensitive_reason": ""
+    }
+  ],
+  "current_step": null,
+  "failed_steps": [],
+  "observed_state": "docs visible",
+  "verification_results": [
+    {
+      "step": 1,
+      "action": "web_search",
+      "verified": true,
+      "evidence": "Here's what I found: https://github.com/a/b https://github.com/c/d",
+      "reason": ""
+    },
+    {
+      "step": 2,
+      "action": "browser_navigate",
+      "verified": true,
+      "evidence": "Opened https://github.com/a/b",
+      "reason": ""
+    },
+    {
+      "step": 3,
+      "action": "read_screen",
+      "verified": true,
+      "evidence": "On screen: WebSocket library documentation",
+      "reason": ""
+    }
+  ],
+  "retry_count": 0,
+  "replan_count": 0,
+  "total_steps": 3,
+  "final_status": "SUCCESS",
+  "plan_version": 1,
+  "started_at": 1788782276.3440495,
+  "ended_at": 1788782276.34431,
+  "artifacts": {
+    "urls": [
+      "https://github.com/a/b",
+      "https://github.com/c/d"
+    ],
+    "last_query": "websocket library",
+    "search_results": [
+      "https://github.com/a/b",
+      "https://github.com/c/d"
+    ],
+    "answer": "On screen: WebSocket library documentation",
+    "last_url": "https://github.com/a/b"
+  },
+  "log": [
+    "[TASK] id=a29fb03382e4 goal=\"search and read\"",
+    "[PLAN] v1 steps=3",
+    "[STEP 1/3] web_search",
+    "[VERIFY] success",
+    "[STEP 2/3] browser_navigate",
+    "[VERIFY] success",
+    "[STEP 3/3] read_screen",
+    "[VERIFY] success",
+    "[TASK] COMPLETE",
+    "[TASK] SUCCESS (steps=3 ok, 0 failed, replans=0, latency=0ms)"
+  ],
+  "blocker": "",
+  "evidence_log": [
+    {
+      "fact": "Window: [jetbrains] Diego_Desktop_agent – test_autonomous_lifecycle_events.py\nPage: settings\nWindow: Diego_Desktop_agent – test_autonomous_lifecycle_events.py\nApplication: PyCharm (jetbrains)\nProcess: pycharm (PID 2224)\nSummary: Screen type: settings\nClipboard: PHASE 15F — AUTONOMOUS TASK LIFECYCLE EVENTS\n\nWe are on the `experiment` branch.",
+      "source": "live_observation",
+      "timestamp": 1788782276.3443308,
+      "confidence": 1.0
+    },
+    {
+      "fact": "",
+      "source": "local_knowledge",
+      "timestamp": 1788782276.3443346,
+      "confidence": 0.7156
+    },
+    {
+      "fact": "",
+      "source": "local_knowledge",
+      "timestamp": 1788782276.3443375,
+      "confidence": 0.679
+    },
+    {
+      "fact": "",
+      "source": "local_knowledge",
+      "timestamp": 1788782276.3443391,
+      "confidence": 0.6731
+    }
+  ],
+  "pending_confirmation": null,
+  "confirmation_reason": ""
+}

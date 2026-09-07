@@ -167,7 +167,92 @@ class ActionDispatcher:
         self._track_entity_for_memory(name, params)
         if primary_failure:
             return primary_failure
+
+        # ── General ToolRegistry dispatch (Phase 15B) ─────
+        # The dispatcher has no built-in handler result for this action
+        # name (primary returned nothing) and no fallback applied. If the
+        # name resolves to a registered general tool (terminal, python,
+        # filesystem, git, docker, clipboard_*, notify, …), execute it
+        # there so planned steps can use the existing tool registry.
+        # NOTE: when the primary dispatch REPORTED a failure
+        # (primary_failure set) the registry is NOT consulted — a failed
+        # dispatcher action is never silently re-executed elsewhere.
+        if primary_failure is None:
+            registry_result = await self._execute_via_registry(name, params)
+            if registry_result is not None:
+                return registry_result
+
         return f"Couldn't {name.replace('_', ' ')}"
+
+    async def _execute_via_registry(self, name: str,
+                                     params: Dict[str, Any]) -> Optional[str]:
+        """Execute `name` through the general ToolRegistry, if registered.
+
+        Returns None when `name` is not a registered tool (the caller keeps
+        its existing behavior). The ToolResult is converted HONESTLY:
+          success → the tool's output string (the tool's own success
+                    contract — e.g. exit code — is the verification
+                    evidence for these tools)
+          failure → "Couldn't <name>: <error>" so the existing failure
+                    detection (the dispatcher's _is_failure_result and
+                    Brain's verification fail-fast) treats the result as
+                    a FAILURE, never as a verified success.
+        """
+        try:
+            from core.tool_registry import tool_registry
+            tool_registry.install_builtin_tools()
+            if not tool_registry.is_available(name):
+                return None
+            result = await tool_registry.execute(name, params)
+        except Exception as e:
+            logger.debug("[ACTIONS] ToolRegistry dispatch failed for %s: %s",
+                         name, e)
+            return None
+        if result is None:
+            return None
+        if getattr(result, "success", False):
+            output = result.output or f"{name} completed"
+            # ── Post-effect verification (Phase 15D) ──
+            # When the tool's action + params expose a safe deterministic
+            # observable effect, verify it and record WHAT was checked in
+            # the result evidence. A failed deterministic check becomes
+            # the existing honest "Couldn't ..." failure marker so Brain's
+            # verification fail-fast rejects the result. Tools without a
+            # safe post-effect signal keep the execution-confirmed
+            # contract — execution success is never upgraded to a
+            # post-effect claim.
+            verdict, check = self._post_effect_verify(name, params, result)
+            if verdict is True:
+                logger.info("[ACTIONS] post-effect verified %s: %s",
+                            name, check)
+                return f"{output} [post-effect verified: {check[:120]}]"
+            if verdict is False:
+                logger.warning("[ACTIONS] post-effect check FAILED for %s: %s",
+                               name, check)
+                error = (getattr(result, "error", "")
+                         or "tool reported success but the effect "
+                            "was not verified")
+                return (f"Couldn't {name.replace('_', ' ')}: {error} "
+                        f"(post-effect check failed: {check[:120]})")
+            return output
+        error = getattr(result, "error", "") or getattr(result, "output", "") \
+            or "tool reported failure"
+        return f"Couldn't {name.replace('_', ' ')}: {error}"
+
+    @staticmethod
+    def _post_effect_verify(name: str, params: Dict[str, Any],
+                            result) -> "tuple[Optional[bool], str]":
+        """Delegate to the canonical post-effect verifier in the registry
+        (core/tool_registry.verify_post_effect). Exception-safe: if the
+        verifier is unavailable, the tool stays on the existing
+        execution-confirmed contract (never blocks execution)."""
+        try:
+            from core.tool_registry import verify_post_effect
+            return verify_post_effect(name, params, result)
+        except Exception as e:
+            logger.debug("[ACTIONS] post-effect verification unavailable "
+                         "for %s: %s", name, e)
+            return None, ""
 
     @staticmethod
     def _is_failure_result(result: Any) -> bool:
