@@ -48712,19 +48712,19 @@
     }
   ],
   "crawled_sources": [
-    "https://doc.rust-lang.org/book/",
-    "https://archlinux.org/packages/",
-    "https://git-scm.com/docs",
-    "https://developer.mozilla.org/en-US/docs/Web/",
-    "https://kubernetes.io/docs/",
-    "https://nodejs.org/docs/latest/api/",
+    "https://docs.python.org/3/",
     "https://docs.docker.com/",
+    "https://nodejs.org/docs/latest/api/",
     "https://docs.github.com/en",
-    "https://docs.python.org/3/"
+    "https://archlinux.org/packages/",
+    "https://kubernetes.io/docs/",
+    "https://doc.rust-lang.org/book/",
+    "https://developer.mozilla.org/en-US/docs/Web/",
+    "https://git-scm.com/docs"
   ],
   "action_successes": {},
   "action_failures": {},
   "workflow_patterns": {},
   "learn_count": 517,
-  "updated_at": 1788801550.648296
+  "updated_at": 1788810028.144353
 }

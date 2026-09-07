@@ -73,6 +73,26 @@ from voice.audio_processing import (
 )
 from voice.settings import voice_settings
 
+# AudioBackend abstraction (optional — falls back to direct sounddevice)
+try:
+    from voice.audio_backend import (
+        AudioBackend,
+        SoundDeviceBackend,
+        AudioDeviceInfo,
+        StreamConfig,
+        create_backend,
+        get_default_backend,
+    )
+    _BACKEND_AVAILABLE = True
+except ImportError:
+    _BACKEND_AVAILABLE = False
+    AudioBackend = None  # type: ignore
+    SoundDeviceBackend = None  # type: ignore
+    AudioDeviceInfo = None  # type: ignore
+    StreamConfig = None  # type: ignore
+    create_backend = None  # type: ignore
+    get_default_backend = None  # type: ignore
+
 
 logger = logging.getLogger(__name__)
 
@@ -635,9 +655,13 @@ class AudioManager:
             am.stop()
     """
 
-    def __init__(self):
+    def __init__(self, backend: Optional[AudioBackend] = None):
         self._sd = None
         self._stream = None
+        # AudioBackend abstraction (optional)
+        self._audio_backend: Optional[AudioBackend] = backend
+        if self._audio_backend is None and _BACKEND_AVAILABLE:
+            self._audio_backend = get_default_backend()
         self._ring_buffer = RingBuffer()
         self._vad = VADState()
         self._running = False
@@ -877,23 +901,28 @@ class AudioManager:
 
     def _init_sounddevice(self) -> bool:
         """Initialize sounddevice and run the hardware detector."""
-        try:
-            import sounddevice as sd
-            self._sd = sd
-            self._backend = "sounddevice"
-        except ImportError:
-            logger.error("[AUDIO] sounddevice not available (ImportError)")
-            return False
-        except Exception as e:
-            logger.error("[AUDIO] sounddevice init failed: %s", e, exc_info=True)
-            return False
+        # Prefer AudioBackend abstraction if available
+        if self._audio_backend is not None and self._audio_backend.is_available():
+            self._sd = self._audio_backend._sd  # Access wrapped sounddevice
+            self._backend = self._audio_backend.name
+        else:
+            try:
+                import sounddevice as sd
+                self._sd = sd
+                self._backend = "sounddevice"
+            except ImportError:
+                logger.error("[AUDIO] sounddevice not available (ImportError)")
+                return False
+            except Exception as e:
+                logger.error("[AUDIO] sounddevice init failed: %s", e, exc_info=True)
+                return False
 
         if not self._select_verified_device():
             # STEP 6 already printed the report. NEVER continue.
             return False
 
-        logger.info("[AUDIO] sounddevice initialized — device[%d]: %s (%d Hz, %d ch)",
-                    self._device_index, self._device_name,
+        logger.info("[AUDIO] %s initialized — device[%d]: %s (%d Hz, %d ch)",
+                    self._backend, self._device_index, self._device_name,
                     self._actual_sample_rate, self._device_max_channels)
         return True
 
