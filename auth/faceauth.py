@@ -80,8 +80,14 @@ AUTH_TOTAL_BUDGET = AUTH_ROUNDS * ROUND_DURATION + 6.0
 
 # ── Multi-frame authentication ──────────────────────────────────
 # Number of high-quality stable frames to collect for multi-frame recognition.
-# Encoding costs ~259ms/frame, so keep this bounded (3-4 frames = ~1s total).
+# Encoding costs ~200ms/frame, so keep this bounded (3-4 frames = ~800ms total).
 MAX_ENCODE_FRAMES = 4
+
+# Minimum time gap between collected frames (ms).
+# Frames captured within this window are nearly identical (~67ms apart at ~15 FPS).
+# Skipping near-duplicate frames gives more diverse poses per encoding cost,
+# or fewer encodings for the same diversity.
+MIN_FRAME_GAP_MS = 120
 
 # ── Debug overlay ──────────────────────────────────────────────
 _debug_overlay_enabled = False
@@ -490,16 +496,18 @@ def _aggregate_and_decide(
     encode_times: List[float] = []
 
     for frame, face in frame_face_pairs[:max_encode]:
-        t_enc = time.time()
+        t_enc = time.perf_counter()
         enc = _encode_single_frame(frame, face)
-        encode_times.append(time.time() - t_enc)
+        encode_times.append(time.perf_counter() - t_enc)
         if enc is not None:
             embeddings.append(enc)
 
-    logger.info("[AUTH] Aggregate: %d/%d frames encoded (avg %.2fs, max %.2fs)",
+    total_encode_ms = sum(encode_times) * 1000 if encode_times else 0.0
+    logger.info("[AUTH] Aggregate: %d/%d frames encoded (total %.0fms, avg %.0fms, max %.0fms)",
                 len(embeddings), len(frame_face_pairs[:max_encode]),
-                np.mean(encode_times) if encode_times else 0.0,
-                max(encode_times) if encode_times else 0.0)
+                total_encode_ms,
+                np.mean(encode_times) * 1000 if encode_times else 0.0,
+                max(encode_times) * 1000 if encode_times else 0.0)
 
     if not embeddings:
         logger.warning("[AUTH] Aggregate: no valid embeddings generated")
@@ -543,14 +551,14 @@ def _aggregate_and_decide(
                     uname, identity_median_dist[uname],
                     identity_win_count.get(uname, 0), len(embeddings))
 
-    elapsed = time.time() - t0
+    elapsed_ms = (time.time() - t0) * 1000
 
     # Decision: median distance must be within tolerance AND majority of frames agree
     majority_threshold = max(1, len(embeddings) // 2)
     if best_median < tolerance and best_wins > majority_threshold:
         logger.info("[AUTH] ✅ AUTHENTICATED: '%s' (median_dist=%.4f < tol=%.2f, "
-                    "wins=%d/%d, total=%.2fs)",
-                    best_name, best_median, tolerance, best_wins, len(embeddings), elapsed)
+                    "wins=%d/%d, total=%.0fms)",
+                    best_name, best_median, tolerance, best_wins, len(embeddings), elapsed_ms)
         return best_name
 
     # Rejection with reason category
@@ -559,8 +567,8 @@ def _aggregate_and_decide(
     else:
         reject_reason = f"insufficient_consensus(wins={best_wins}<={majority_threshold})"
 
-    logger.info("[AUTH] ❌ REJECTED: '%s' (%s, total=%.2fs)",
-                best_name, reject_reason, elapsed)
+    logger.info("[AUTH] ❌ REJECTED: '%s' (%s, total=%.0fms)",
+                best_name, reject_reason, elapsed_ms)
     return None
 
 
@@ -643,6 +651,7 @@ def recognize_faces() -> Optional[str]:
         best_stable = 0
         # Multi-frame collection: store (frame, face) pairs for aggregation
         stable_frame_pairs: List[Tuple[np.ndarray, FaceBox]] = []
+        last_frame_collect_time: float = 0.0  # timestamp of last collected frame
         frame_count = 0
         fps_counter = 0
         fps_start = time.time()
@@ -728,18 +737,23 @@ def recognize_faces() -> Optional[str]:
                 best_face = largest_face
                 best_frame = frame.copy()
 
-            # Collect multi-frame pairs for aggregation (bounded)
-            if len(stable_frame_pairs) < MAX_ENCODE_FRAMES:
+            # Collect multi-frame pairs for aggregation (bounded + temporal gap)
+            # Skip near-duplicate frames captured within MIN_FRAME_GAP_MS
+            now_ts = time.time()
+            if (len(stable_frame_pairs) < MAX_ENCODE_FRAMES and
+                    (not stable_frame_pairs or
+                     (now_ts - last_frame_collect_time) * 1000 >= MIN_FRAME_GAP_MS)):
                 stable_frame_pairs.append((frame.copy(), largest_face))
+                last_frame_collect_time = now_ts
 
             if stable_count < TRACKING_STABLE_FRAMES:
                 continue
 
             # ── Face stable for N consecutive frames → multi-frame encode + aggregate ──
             logger.info("[AUTH] Face stable %d frames — multi-frame encoding "
-                        "(%d frames collected, backend=%s, %dx%d, conf=%.3f)",
-                        stable_count, len(stable_frame_pairs), best_face.backend,
-                        best_face.w, best_face.h, best_face.confidence)
+                        "(%d frames collected/%d max, backend=%s, %dx%d, conf=%.3f)",
+                        stable_count, len(stable_frame_pairs), MAX_ENCODE_FRAMES,
+                        best_face.backend, best_face.w, best_face.h, best_face.confidence)
             _save_debug_frame(best_frame, "auth_stable",
                               f"stable={stable_count}, frames={len(stable_frame_pairs)}, "
                               f"backend={best_face.backend}")
@@ -788,9 +802,9 @@ def recognize_faces() -> Optional[str]:
                         round_idx + 1, frame_count, best_stable)
 
     # ── All rounds exhausted ──
-    elapsed = time.time() - t0
-    logger.warning("[AUTH] No face authenticated within %.1fs (%d rounds, reason=%s)",
-                   elapsed, AUTH_ROUNDS, final_reject_reason)
+    elapsed_ms = (time.time() - t0) * 1000
+    logger.warning("[AUTH] No face authenticated within %.0fms (%d rounds, reason=%s)",
+                   elapsed_ms, AUTH_ROUNDS, final_reject_reason)
     if last_frame is not None:
         _save_debug_frame(last_frame, "auth_no_face",
                           f"rounds={AUTH_ROUNDS} reason={final_reject_reason} "
