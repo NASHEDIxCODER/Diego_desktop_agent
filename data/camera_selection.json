@@ -1,0 +1,13 @@
+{
+  "device_name": "ZEB LIVE PRO: ZEB LIVE PRO",
+  "device_label": "ZEB LIVE PRO",
+  "device_path": "/dev/video2",
+  "index": 2,
+  "by_id_path": "/dev/v4l/by-id/usb-BC-250603-ZW_ZEB_LIVE_PRO-video-index0",
+  "usb_path": "../../../1-2:1.0",
+  "external": true,
+  "caps": "0x0",
+  "resolution": "640x480",
+  "fps": 30.0,
+  "updated_at": "2026-09-08T14:08:44+0000"
+}

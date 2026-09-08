@@ -43,6 +43,7 @@ from auth.face_detector import (
     preprocess_frame, face_detector,
     BRIGHTNESS_THRESHOLD, BLUR_THRESHOLD, MIN_FACE_WIDTH, TRACKING_STABLE_FRAMES,
 )
+from auth.camera_selector import get_selector, set_default_index
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,10 @@ BASE_DIR = Path(__file__).resolve().parent
 ENCODINGS_PATH = BASE_DIR / "Known_encodings.p"
 IMAGES_DIR = BASE_DIR / "images"
 DEBUG_DIR = Path(__file__).resolve().parent.parent / "debug"
+
+# Register the configured default with the camera selector so the
+# explicit/persisted selection can fall back to it (priority 3).
+set_default_index(CAM_INDEX)
 
 # Default tolerance — overridden by .env
 # The face_recognition library's standard tolerance is 0.6. A stricter
@@ -136,15 +141,25 @@ def _get_camera() -> Optional[cv.VideoCapture]:
             _release_camera()
 
     try:
-        logger.info("[CAMERA] Opening /dev/video%d with V4L2...", CAM_INDEX)
-        _camera = cv.VideoCapture(CAM_INDEX, cv.CAP_V4L2)
+        # Resolve the camera device through the selector (explicit config /
+        # persisted choice / default / safe fallback), validated by a probe
+        # that is released before this capture opens. Only reached when no
+        # camera is currently held, so the pipeline owns exactly one stream.
+        resolved = get_selector().resolve_camera_index()
+        if resolved is None:
+            logger.error("[CAMERA-SELECT] no working camera available")
+            _camera = None
+            return None
+        cam_index = resolved
+        logger.info("[CAMERA] Opening /dev/video%d with V4L2...", cam_index)
+        _camera = cv.VideoCapture(cam_index, cv.CAP_V4L2)
 
         if not _camera.isOpened():
             logger.warning("[CAMERA] CAP_V4L2 failed, trying default backend")
-            _camera = cv.VideoCapture(CAM_INDEX)
+            _camera = cv.VideoCapture(cam_index)
 
         if not _camera.isOpened():
-            logger.error("[CAMERA] Failed to open /dev/video%d with any backend", CAM_INDEX)
+            logger.error("[CAMERA] Failed to open /dev/video%d with any backend", cam_index)
             _camera = None
             return None
 
@@ -198,6 +213,12 @@ def _release_camera():
                 logger.warning("[CAMERA] Release error: %s", e)
             _camera = None
             _camera_refcount = 0
+            # Fully released: drop any cached selection so the next open
+            # re-probes (detects a swapped / removed camera).
+            try:
+                get_selector().invalidate_cache()
+            except Exception:
+                pass
 
 
 def _get_exposure_props(cam) -> Dict[str, Optional[float]]:
