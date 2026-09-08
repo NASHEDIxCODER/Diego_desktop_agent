@@ -47,7 +47,7 @@ from auth.face_detector import (
 logger = logging.getLogger(__name__)
 
 # ── Configuration ──────────────────────────────────────────────
-CAM_INDEX = 0
+CAM_INDEX = 2
 BASE_DIR = Path(__file__).resolve().parent
 ENCODINGS_PATH = BASE_DIR / "Known_encodings.p"
 IMAGES_DIR = BASE_DIR / "images"

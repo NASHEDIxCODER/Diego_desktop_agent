@@ -1,0 +1,119 @@
+{
+  "task_id": "5010e17cf3be",
+  "original_request": "open firefox then shutdown",
+  "normalized_goal": "open firefox then shutdown",
+  "current_plan": [
+    {
+      "action": "desktop_open",
+      "params": {
+        "app": "firefox"
+      }
+    },
+    {
+      "action": "shutdown",
+      "params": {}
+    }
+  ],
+  "completed_steps": [
+    {
+      "index": 1,
+      "action": "desktop_open",
+      "params": {
+        "app": "firefox"
+      },
+      "description": "",
+      "status": "completed",
+      "result": "Opened firefox",
+      "verification": "success",
+      "verified": true,
+      "retries": 0,
+      "error": "",
+      "latency_ms": 0.0030994415283203125,
+      "evidence_source": "unknown",
+      "sensitive_reason": ""
+    },
+    {
+      "index": 2,
+      "action": "shutdown",
+      "params": {},
+      "description": "",
+      "status": "completed",
+      "result": "System shutting down",
+      "verification": "success",
+      "verified": true,
+      "retries": 0,
+      "error": "",
+      "latency_ms": 0.001430511474609375,
+      "evidence_source": "unknown",
+      "sensitive_reason": "'shutdown' is a sensitive action"
+    }
+  ],
+  "current_step": null,
+  "failed_steps": [],
+  "observed_state": "shutdown",
+  "verification_results": [
+    {
+      "step": 1,
+      "action": "desktop_open",
+      "verified": true,
+      "evidence": "Opened firefox",
+      "reason": ""
+    },
+    {
+      "step": 2,
+      "action": "shutdown",
+      "verified": true,
+      "evidence": "System shutting down",
+      "reason": ""
+    }
+  ],
+  "retry_count": 0,
+  "replan_count": 0,
+  "total_steps": 2,
+  "final_status": "SUCCESS",
+  "plan_version": 1,
+  "started_at": 1788862440.416606,
+  "ended_at": 1788862440.4172554,
+  "artifacts": {
+    "last_app": "firefox"
+  },
+  "log": [
+    "[TASK] id=5010e17cf3be goal=\"open firefox then shutdown\"",
+    "[PLAN] v1 steps=2",
+    "[STEP 1/2] desktop_open",
+    "[VERIFY] success",
+    "[STEP 2/2] shutdown",
+    "[VERIFY] success",
+    "[TASK] COMPLETE",
+    "[TASK] SUCCESS (steps=2 ok, 0 failed, replans=0, latency=1ms)"
+  ],
+  "blocker": "",
+  "evidence_log": [
+    {
+      "fact": "Window: [jetbrains] Diego_Desktop_agent – test_autonomous_goal_continuation.py\nPage: settings\nWindow: Diego_Desktop_agent – test_autonomous_goal_continuation.py\nApplication: PyCharm (jetbrains)\nProcess: pycharm (PID 2292)\nSummary: Screen type: settings\nClipboard: PHASE 19A — REAL AUTONOMOUS GOAL EXECUTION\n\nWe are on the `experiment` branch.\n\n",
+      "source": "live_observation",
+      "timestamp": 1788862440.4172735,
+      "confidence": 1.0
+    },
+    {
+      "fact": "",
+      "source": "local_knowledge",
+      "timestamp": 1788862440.4172752,
+      "confidence": 0.7117
+    },
+    {
+      "fact": "",
+      "source": "local_knowledge",
+      "timestamp": 1788862440.417276,
+      "confidence": 0.7111
+    },
+    {
+      "fact": "",
+      "source": "local_knowledge",
+      "timestamp": 1788862440.4172764,
+      "confidence": 0.7111
+    }
+  ],
+  "pending_confirmation": null,
+  "confirmation_reason": ""
+}

@@ -1057,7 +1057,26 @@ class AgentBrain:
         )
         pending = pending_task_manager.get_pending()
         if pending is None:
-            # No pending confirmation — "yes"/"no" are just conversation.
+            # No LIVE pending confirmation. If one EXPIRED since it was
+            # asked, a late "yes"/"no" gets an HONEST explanation (the stale
+            # prompt can never fire), and the defunct confirmation cannot
+            # execute anything. A bare "yes" with nothing pending — and
+            # nothing ever pending — remains inert conversation.
+            verdict = classify_confirmation(text)
+            expired = pending_task_manager.pop_expired()
+            if expired is not None:
+                # Expiry is terminal: never silently resume the paused task.
+                self._cancel_pending_task_state(expired)
+                if verdict is not None:
+                    result.path = "TASK_CONFIRMATION_EXPIRED"
+                    result.used_llm = False
+                    result.verified = False
+                    result.response = (
+                        "That confirmation has expired. Say the request again "
+                        "if you still want me to go ahead.")
+                    conv_memory.add_assistant(result.response)
+                    result.latency_ms = (time.time() - t0) * 1000
+                    return True
             return False
 
         verdict = classify_confirmation(text)
@@ -1070,6 +1089,9 @@ class AgentBrain:
 
         if verdict == "cancel":
             pending_task_manager.cancel()
+            # The user declined — finalize any real paused task as CANCELLED
+            # so it can never be resumed later (by "continue"/"yes").
+            self._cancel_pending_task_state(pending)
             result.path = "TASK_CONFIRMATION_CANCEL"
             result.used_llm = False
             result.response = "Okay, cancelled."
@@ -1115,6 +1137,9 @@ class AgentBrain:
             result.verified = ok
             result.used_llm = False
             result.path = "TASK_CONFIRMATION_RESUME"
+            # Truthful closed-loop outcome: SUCCESS only when the resumed
+            # action was actually executed AND verified.
+            result.task_status = "SUCCESS" if ok else "FAILED"
             result.speak_immediately = False
             result.response = action_result or self._default_response(result)
             conv_memory.add_assistant(result.response)
@@ -1125,6 +1150,27 @@ class AgentBrain:
 
         # Nothing resumable was stored — drop it and fall through.
         return False
+
+    def _cancel_pending_task_state(self, pending) -> None:
+        """Finalize the underlying TaskStateStore task as CANCELLED when a
+        paused task's confirmation is cancelled or expires.
+
+        Without this, a NEEDS_CONFIRMATION task would stay 'active' in the
+        store after the user declined (or the prompt lapsed) and could be
+        silently resumed later by "continue"/"yes". Cancellation is
+        authoritative: the task can never be resumed as SUCCESS.
+        """
+        task_state = getattr(pending, "task_state", None)
+        if task_state is None:
+            return  # e.g. the YouTube single-action confirmation — no store task
+        try:
+            from agent.task_state import task_state_store
+            active = task_state_store.active
+            if (active is not None
+                    and getattr(task_state, "task_id", None) == active.task_id):
+                task_state_store.cancel_active()
+        except Exception as e:
+            logger.debug("[Brain] Pending task state finalize skipped: %s", e)
 
     async def _maybe_confirm_youtube_playback(self, decision, result: CommandResult,
                                               personality, conv_memory,
