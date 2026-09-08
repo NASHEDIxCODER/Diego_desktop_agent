@@ -50,7 +50,8 @@ CONFIRM_PHRASES = frozenset({
 # confirmation exists.
 CANCEL_PHRASES = frozenset({
     "no", "nope", "nah", "cancel", "cancel it", "stop", "stop it",
-    "don't", "dont", "do not", "no thanks", "never mind", "nevermind",
+    "don't", "dont", "do not", "don't do it", "dont do it", "do not do it",
+    "no thanks", "never mind", "nevermind",
     "forget it", "abort",
 })
 
@@ -68,7 +69,8 @@ _CONFIRM_RE = re.compile(
 _CANCEL_RE = re.compile(
     r"^(?:"
     r"no|nope|nah|cancel|cancel\s+it|stop|stop\s+it|abort|forget\s+it|"
-    r"don'?t|do\s+not|no\s+thanks|never\s*mind"
+    r"don'?t|do\s+not|don'?t\s+do\s+it|do\s+not\s+do\s+it|"
+    r"no\s+thanks|never\s*mind"
     r")[\s!.?]*$",
     re.IGNORECASE,
 )
@@ -157,6 +159,10 @@ class PendingTaskManager:
 
     def __init__(self):
         self._pending: Optional[PendingTask] = None
+        # One-shot record of the most recently EXPIRED pending task. Lets the
+        # Brain answer a late "yes"/"no" with an honest explanation ("that
+        # confirmation has expired") instead of silently dropping it.
+        self._last_expired: Optional[PendingTask] = None
 
     # ── Mutation ────────────────────────────────────────────────
 
@@ -185,6 +191,8 @@ class PendingTaskManager:
             expires_at=now + ttl_s if ttl_s and ttl_s > 0 else 0.0,
         )
         self._pending = pending
+        # A fresh pending task supersedes any previously expired one.
+        self._last_expired = None
         logger.info(
             "[PENDING] set task_id=%s goal=%r resume_step=%s prompt=%r ttl=%.0fs",
             pending.task_id, goal[:60],
@@ -197,11 +205,13 @@ class PendingTaskManager:
         if self._pending is not None:
             logger.info("[PENDING] cleared task_id=%s", self._pending.task_id)
         self._pending = None
+        self._last_expired = None
 
     def cancel(self) -> Optional[PendingTask]:
         """Cancel and drop the pending task. Returns what was cancelled."""
         pending = self._pending
         self._pending = None
+        self._last_expired = None
         if pending is not None:
             logger.info("[PENDING] cancelled task_id=%s", pending.task_id)
         return pending
@@ -212,7 +222,8 @@ class PendingTaskManager:
         """Return the live pending task, or None if absent/expired.
 
         An expired pending task is cleared as a side effect so a stale
-        prompt can never fire later.
+        prompt can never fire later. The expired record is kept (one-shot)
+        so callers can explain the expiry honestly via pop_expired().
         """
         pending = self._pending
         if pending is None:
@@ -222,9 +233,20 @@ class PendingTaskManager:
                 "[PENDING] expired task_id=%s (age=%.0fs)",
                 pending.task_id, (now or time.time()) - pending.created_at,
             )
+            self._last_expired = pending
             self._pending = None
             return None
         return pending
+
+    def pop_expired(self) -> Optional[PendingTask]:
+        """Return (once) the pending task that expired since last checked.
+
+        Returns None after the first call — a late confirmation is answered
+        honestly exactly once; every later utterance is plain conversation.
+        """
+        expired = self._last_expired
+        self._last_expired = None
+        return expired
 
     @property
     def has_pending(self) -> bool:

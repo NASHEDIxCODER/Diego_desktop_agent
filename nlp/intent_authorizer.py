@@ -142,6 +142,18 @@ _DETERMINISTIC_QUERIES: Tuple[str, ...] = (
     "what did i copy", "what's on my clipboard", "whats on my clipboard",
     "what did i run", "last command", "previous command",
     "what was that command", "battery", "battery level",
+    # ── Hinglish system-info cues (Phase 19C) ──
+    # These map natural Hinglish phrasings to the existing system-info
+    # detector (knowledge/system_info.py already keys on \bcpu\b, \bram\b,
+    # \bmemory\b). Listed here so they are classified DETERMINISTIC_COMMAND
+    # (actionable) and reach the Brain, which answers via the existing
+    # system_info snapshot path. The English technical noun is preserved.
+    "mera cpu kitna use ho raha hai",
+    "mera ram kitna hai",
+    "mera system kaisa hai",
+    "cpu kitna use ho raha",
+    "ram kitni hai",
+    "system info do",
 )
 
 # ── Follow-up phrases (context-dependent, actionable) ──────────

@@ -26,6 +26,8 @@ import logging
 import re
 from typing import Dict, List, Optional, Tuple
 
+from nlp.multilingual_lexicon import normalize_multilingual
+
 logger = logging.getLogger(__name__)
 
 
@@ -488,6 +490,14 @@ class CommandNormalizer:
         text = remove_wake_name(text)
         if text != original:
             self._stats["wake_name_removed"] += 1
+
+        # 0b. Multilingual (Phase 19C): normalize Hindi/Hinglish/Devanagari
+        # command vocabulary to canonical English BEFORE the English-centric
+        # pipeline runs. Entity-safe: only action/platform words are mapped;
+        # names/songs/URLs/filenames pass through. The raw transcript stays
+        # available to the engine (this stage only transforms the working
+        # `text` for downstream English regex matching).
+        text = normalize_multilingual(text)
 
         # 1. Clean
         text = text.strip()

@@ -377,6 +377,27 @@ class AgentBrain:
         if await self._handle_pending_confirmation(text, result, conv_memory, t0):
             return result
 
+        # ── Step 0.211: Cancel an IN-FLIGHT autonomous task ────────────
+        # "stop the task", "cancel", "abort" while a closed-loop task is
+        # actually executing (no pending confirmation awaiting an answer)
+        # cooperatively cancels the running TaskRunner via the shared store.
+        # Cancellation is never reported as SUCCESS — the runner sets the
+        # authoritative CANCELLED status between steps.
+        try:
+            from agent.task_state import task_state_store as _rtss
+            from agent.task_state import FollowUpResolver as _fres
+            if _rtss.has_running_task() and _fres.match(text) == ("cancel", None):
+                result.path = "TASK_CANCELLED"
+                result.used_llm = False
+                result.verified = False
+                result.response = "Task cancelled."
+                conv_memory.add_assistant(result.response)
+                result.latency_ms = (time.time() - t0) * 1000
+                logger.info("[Brain] Cancellation requested for running task")
+                return result
+        except Exception:
+            pass  # cancellation registry unavailable — never block the pipeline
+
         # ── Step 0.22: Task follow-up continuation (CLOSED LOOP) ──────
         # "continue", "open the first result", "do the same for Chrome",
         # "close that", "try another one" must operate on the PREVIOUS
@@ -1036,7 +1057,26 @@ class AgentBrain:
         )
         pending = pending_task_manager.get_pending()
         if pending is None:
-            # No pending confirmation — "yes"/"no" are just conversation.
+            # No LIVE pending confirmation. If one EXPIRED since it was
+            # asked, a late "yes"/"no" gets an HONEST explanation (the stale
+            # prompt can never fire), and the defunct confirmation cannot
+            # execute anything. A bare "yes" with nothing pending — and
+            # nothing ever pending — remains inert conversation.
+            verdict = classify_confirmation(text)
+            expired = pending_task_manager.pop_expired()
+            if expired is not None:
+                # Expiry is terminal: never silently resume the paused task.
+                self._cancel_pending_task_state(expired)
+                if verdict is not None:
+                    result.path = "TASK_CONFIRMATION_EXPIRED"
+                    result.used_llm = False
+                    result.verified = False
+                    result.response = (
+                        "That confirmation has expired. Say the request again "
+                        "if you still want me to go ahead.")
+                    conv_memory.add_assistant(result.response)
+                    result.latency_ms = (time.time() - t0) * 1000
+                    return True
             return False
 
         verdict = classify_confirmation(text)
@@ -1049,6 +1089,9 @@ class AgentBrain:
 
         if verdict == "cancel":
             pending_task_manager.cancel()
+            # The user declined — finalize any real paused task as CANCELLED
+            # so it can never be resumed later (by "continue"/"yes").
+            self._cancel_pending_task_state(pending)
             result.path = "TASK_CONFIRMATION_CANCEL"
             result.used_llm = False
             result.response = "Okay, cancelled."
@@ -1094,6 +1137,9 @@ class AgentBrain:
             result.verified = ok
             result.used_llm = False
             result.path = "TASK_CONFIRMATION_RESUME"
+            # Truthful closed-loop outcome: SUCCESS only when the resumed
+            # action was actually executed AND verified.
+            result.task_status = "SUCCESS" if ok else "FAILED"
             result.speak_immediately = False
             result.response = action_result or self._default_response(result)
             conv_memory.add_assistant(result.response)
@@ -1104,6 +1150,27 @@ class AgentBrain:
 
         # Nothing resumable was stored — drop it and fall through.
         return False
+
+    def _cancel_pending_task_state(self, pending) -> None:
+        """Finalize the underlying TaskStateStore task as CANCELLED when a
+        paused task's confirmation is cancelled or expires.
+
+        Without this, a NEEDS_CONFIRMATION task would stay 'active' in the
+        store after the user declined (or the prompt lapsed) and could be
+        silently resumed later by "continue"/"yes". Cancellation is
+        authoritative: the task can never be resumed as SUCCESS.
+        """
+        task_state = getattr(pending, "task_state", None)
+        if task_state is None:
+            return  # e.g. the YouTube single-action confirmation — no store task
+        try:
+            from agent.task_state import task_state_store
+            active = task_state_store.active
+            if (active is not None
+                    and getattr(task_state, "task_id", None) == active.task_id):
+                task_state_store.cancel_active()
+        except Exception as e:
+            logger.debug("[Brain] Pending task state finalize skipped: %s", e)
 
     async def _maybe_confirm_youtube_playback(self, decision, result: CommandResult,
                                               personality, conv_memory,
@@ -1825,6 +1892,30 @@ class AgentBrain:
         "music_volume": ("volume", "music"),
         "music_mute": ("mute", "music"),
         "screenshot": ("screenshot", "capture", "picture of the screen"),
+        # ── General ToolRegistry tools (Phase 15B) ──
+        # These names resolve to existing registered tools in
+        # core/tool_registry.py and are executed via the dispatcher's
+        # registry path, verified by the SAME pipeline as every other
+        # action (failure strings fail verification).
+        "terminal": ("run", "command", "shell", "execute", "terminal",
+                     "script"),
+        "python": ("python", "code", "script", "compute", "run"),
+        "filesystem": ("file", "folder", "directory", "list", "read",
+                       "write", "create"),
+        "git": ("git", "commit", "push", "pull", "branch", "status"),
+        "git_status": ("git", "status", "repository", "repo"),
+        "docker": ("docker", "container", "image"),
+        "browser": ("open", "website", "url", "navigate", "visit"),
+        "open_app": ("open", "launch", "start", "run"),
+        "open_url": ("open", "url", "website", "visit", "go to"),
+        "search": ("search", "google", "look up", "find"),
+        "notify": ("notify", "notification", "alert", "remind"),
+        "clipboard_read": ("clipboard", "paste", "copied"),
+        "clipboard_write": ("clipboard", "copy"),
+        "mouse": ("click", "mouse", "scroll"),
+        "keyboard": ("type", "press", "key", "hotkey"),
+        "volume": ("volume", "mute", "louder", "quieter"),
+        "brightness": ("brightness", "brighter", "dimmer"),
     }
 
     @staticmethod

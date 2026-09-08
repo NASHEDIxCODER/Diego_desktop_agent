@@ -1,0 +1,101 @@
+{
+  "task_id": "2d2ad7052f6b",
+  "original_request": "open firefox then shutdown",
+  "normalized_goal": "open firefox then shutdown",
+  "current_plan": [
+    {
+      "action": "desktop_open",
+      "params": {
+        "app": "firefox"
+      }
+    },
+    {
+      "action": "shutdown",
+      "params": {}
+    }
+  ],
+  "completed_steps": [
+    {
+      "index": 1,
+      "action": "desktop_open",
+      "params": {
+        "app": "firefox"
+      },
+      "description": "",
+      "status": "completed",
+      "result": "Opened firefox",
+      "verification": "success",
+      "verified": true,
+      "retries": 0,
+      "error": "",
+      "latency_ms": 0.0064373016357421875,
+      "evidence_source": "unknown",
+      "sensitive_reason": ""
+    },
+    {
+      "index": 2,
+      "action": "shutdown",
+      "params": {},
+      "description": "",
+      "status": "completed",
+      "result": "System shutting down",
+      "verification": "success",
+      "verified": true,
+      "retries": 0,
+      "error": "",
+      "latency_ms": 0.005245208740234375,
+      "evidence_source": "unknown",
+      "sensitive_reason": "'shutdown' is a sensitive action"
+    }
+  ],
+  "current_step": null,
+  "failed_steps": [],
+  "observed_state": "shutdown",
+  "verification_results": [
+    {
+      "step": 1,
+      "action": "desktop_open",
+      "verified": true,
+      "evidence": "Opened firefox",
+      "reason": ""
+    },
+    {
+      "step": 2,
+      "action": "shutdown",
+      "verified": true,
+      "evidence": "System shutting down",
+      "reason": ""
+    }
+  ],
+  "retry_count": 0,
+  "replan_count": 0,
+  "total_steps": 2,
+  "final_status": "SUCCESS",
+  "plan_version": 1,
+  "started_at": 1788800655.2256703,
+  "ended_at": 1788800655.226723,
+  "artifacts": {
+    "last_app": "firefox"
+  },
+  "log": [
+    "[TASK] id=2d2ad7052f6b goal=\"open firefox then shutdown\"",
+    "[PLAN] v1 steps=2",
+    "[STEP 1/2] desktop_open",
+    "[VERIFY] success",
+    "[STEP 2/2] shutdown",
+    "[VERIFY] success",
+    "[TASK] COMPLETE",
+    "[TASK] SUCCESS (steps=2 ok, 0 failed, replans=0, latency=1ms)"
+  ],
+  "blocker": "",
+  "evidence_log": [
+    {
+      "fact": "Window: [unknown] Diego\nPage: settings\nWindow: Diego\nApplication: Diego (unknown)\nProcess: python3.11 (PID 21050)\nSummary: Screen type: settings\nClipboard: PHASE 18D — AUDIT AND REPAIR PYTHON 3.11 PRODUCTION ENVIRONMENT\n\nGoal:\nMake the ",
+      "source": "live_observation",
+      "timestamp": 1788800655.2267632,
+      "confidence": 1.0
+    }
+  ],
+  "pending_confirmation": null,
+  "confirmation_reason": ""
+}

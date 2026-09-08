@@ -468,17 +468,38 @@ def _is_repeated_hallucination(text: str) -> bool:
     Whisper sometimes emits the same word/fragment over and over (e.g.
     "you you you you"). A real command rarely repeats a single token 3+
     times in a row.
+
+    PHASE 19B FIX (live-audit evidence): hallucination loops are usually
+    PUNCTUATION separated ("Play, play, play on YouTube") or ALTERNATING
+    ("Up and high, up and high, ..." x56) — both previously PASSED this
+    guard because the regex only matched whitespace-separated identical
+    words. Punctuation is normalized before matching, and a 2-4 word
+    n-gram repeated 3+ times is now also treated as a loop. A real
+    command never repeats the same n-gram 3+ times in one utterance.
     """
     t = text.strip().lower()
     if not t:
         return False
-    if _REPEATED_WORD_RE.search(t):
+    # Normalize punctuation so "play, play, play" matches like "play play play".
+    t_norm = re.sub(r"[^a-z0-9\s]", " ", t)
+    t_norm = " ".join(t_norm.split())
+    if _REPEATED_WORD_RE.search(t_norm):
         return True
     # A transcript that is a single word repeated (with spaces) is a
     # hallucination.
-    words = t.split()
+    words = t_norm.split()
     if len(words) >= 3 and len(set(words)) == 1:
         return True
+    # Alternating n-gram loops ("up and high up and high up and high ..."):
+    # no single word repeats consecutively, but a short phrase loops.
+    for n in (2, 3, 4):
+        if len(words) >= n * 3:
+            counts: dict = {}
+            for i in range(len(words) - n + 1):
+                gram = tuple(words[i:i + n])
+                counts[gram] = counts.get(gram, 0) + 1
+            if max(counts.values()) >= 3:
+                return True
     return False
 
 

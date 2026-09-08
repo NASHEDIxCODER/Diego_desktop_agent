@@ -20,7 +20,8 @@ import shutil
 import subprocess
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from core.event_bus import bus
 
@@ -438,6 +439,63 @@ def _run_python(params: Dict[str, Any]) -> ToolResult:
                           error=f"Python code timed out after {timeout}s")
     except Exception as e:
         return ToolResult(success=False, error=str(e))
+
+
+# ═══════════════════════════════════════════════════════════
+# Post-effect verification (Phase 15D)
+# ═══════════════════════════════════════════════════════════
+
+def verify_post_effect(name: str, params: Dict[str, Any],
+                       result: ToolResult) -> Tuple[Optional[bool], str]:
+    """Deterministic POST-EFFECT verification for a registry tool.
+
+    Decides whether the tool's own action + params + result expose enough
+    information for a safe, deterministic, observable-effect check. This
+    extends — never replaces — the existing execution/failure contract:
+
+      Returns (verdict, check_description):
+        (True,  desc) → POST_EFFECT_VERIFIED: a deterministic observable
+                        effect proves the action succeeded.
+        (False, desc) → the deterministic check was performed and FAILED
+                        (the dispatcher converts this into the existing
+                        honest "Couldn't ..." failure marker so Brain's
+                        verification fail-fast rejects the result).
+        (None,  "")   → EXECUTION_CONFIRMED_ONLY: no safe deterministic
+                        post-effect verifier exists for this tool; the
+                        existing execution/failure contract applies.
+
+    SAFETY: only read-only existence/type checks (Path.is_file/is_dir/
+    exists — stat only). No content reads of arbitrary files, no extra
+    code execution, no destructive behavior, no invented semantics for
+    terminal/python/git output.
+    """
+    params = params or {}
+    if name == "filesystem":
+        action = str(params.get("action", "list"))
+        path = str(params.get("path", "") or "").strip()
+        if not path:
+            return None, ""
+        p = Path(path).expanduser()
+        if action == "write":
+            return (p.is_file(), f"target file exists: {p}")
+        if action == "create_dir":
+            return (p.is_dir(), f"target directory exists: {p}")
+        if action == "delete":
+            # Deterministic ABSENCE check. NOTE: the built-in filesystem
+            # tool currently exposes NO delete action; this branch applies
+            # only if such an action is ever executed through this tool
+            # name. The check itself is read-only (existence) and the
+            # action remains confirmation-gated (is_sensitive_action).
+            return (not p.exists(), f"target no longer present: {p}")
+        if action == "read":
+            return (p.is_file(), f"source file exists: {p}")
+        if action == "list":
+            return (p.exists(), f"target path exists: {p}")
+    # terminal / python / git / docker / clipboard_* / notify / mouse /
+    # keyboard / open_* / search / browser / volume / brightness:
+    # no safe deterministic post-effect signal is available from their
+    # existing contracts → EXECUTION_CONFIRMED_ONLY (never inferred).
+    return None, ""
 
 
 # ═══════════════════════════════════════════════════════════

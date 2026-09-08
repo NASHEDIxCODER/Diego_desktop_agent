@@ -1,0 +1,63 @@
+{
+  "task_id": "4e8cbf603d29",
+  "original_request": "shut down",
+  "normalized_goal": "shut down",
+  "current_plan": [
+    {
+      "action": "shutdown",
+      "params": {},
+      "description": "Shut down"
+    }
+  ],
+  "completed_steps": [],
+  "current_step": {
+    "index": 1,
+    "action": "shutdown",
+    "params": {},
+    "description": "Shut down",
+    "status": "needs_confirmation",
+    "result": "",
+    "verification": "awaiting confirmation: 'shutdown' is a sensitive action",
+    "verified": false,
+    "retries": 0,
+    "error": "",
+    "latency_ms": 0.0,
+    "evidence_source": "unknown",
+    "sensitive_reason": "'shutdown' is a sensitive action"
+  },
+  "failed_steps": [],
+  "observed_state": "",
+  "verification_results": [],
+  "retry_count": 0,
+  "replan_count": 0,
+  "total_steps": 1,
+  "final_status": "NEEDS_CONFIRMATION",
+  "plan_version": 1,
+  "started_at": 1788800652.9199095,
+  "ended_at": 1788800652.9200432,
+  "artifacts": {},
+  "log": [
+    "[TASK] id=4e8cbf603d29 goal=\"shut down\"",
+    "[PLAN] v1 steps=1",
+    "[STEP 1/1] shutdown",
+    "[STEP 1] BLOCKED — sensitive action requires confirmation: 'shutdown' is a sensitive action"
+  ],
+  "blocker": "'shutdown' requires your explicit confirmation: 'shutdown' is a sensitive action",
+  "evidence_log": [],
+  "pending_confirmation": {
+    "index": 1,
+    "action": "shutdown",
+    "params": {},
+    "description": "Shut down",
+    "status": "needs_confirmation",
+    "result": "",
+    "verification": "awaiting confirmation: 'shutdown' is a sensitive action",
+    "verified": false,
+    "retries": 0,
+    "error": "",
+    "latency_ms": 0.0,
+    "evidence_source": "unknown",
+    "sensitive_reason": "'shutdown' is a sensitive action"
+  },
+  "confirmation_reason": "'shutdown' is a sensitive action"
+}

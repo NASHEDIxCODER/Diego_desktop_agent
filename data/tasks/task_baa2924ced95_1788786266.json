@@ -1,0 +1,35 @@
+{
+  "task_id": "baa2924ced95",
+  "original_request": "search github websocket",
+  "normalized_goal": "",
+  "current_plan": [],
+  "completed_steps": [],
+  "current_step": null,
+  "failed_steps": [],
+  "observed_state": "",
+  "verification_results": [],
+  "retry_count": 0,
+  "replan_count": 0,
+  "total_steps": 0,
+  "final_status": "SUCCESS",
+  "plan_version": 0,
+  "started_at": 1788786266.499534,
+  "ended_at": null,
+  "artifacts": {
+    "urls": [
+      "https://github.com/a/b",
+      "https://github.com/c/d"
+    ],
+    "last_query": "websocket",
+    "search_results": [
+      "https://github.com/a/b",
+      "https://github.com/c/d"
+    ],
+    "answer": "Here's what I found: https://github.com/a/b https://github.com/c/d"
+  },
+  "log": [],
+  "blocker": "",
+  "evidence_log": [],
+  "pending_confirmation": null,
+  "confirmation_reason": ""
+}

@@ -1,13 +1,13 @@
 {
-  "index": 5,
-  "name": "HD-Audio Generic: ALC256 Analog (hw:2,0)",
+  "index": 6,
+  "name": "ZEB LIVE PRO: USB Audio (hw:3,0)",
   "hostapi": "ALSA",
-  "channels": 2,
+  "channels": 1,
   "default_samplerate": 44100.0,
-  "speech_channel": 1,
-  "rms": 18929.85,
-  "peak": 32767.0,
+  "speech_channel": 0,
+  "rms": 2367.38,
+  "peak": 12411.0,
   "voice_probability": 1.0,
   "verified": true,
-  "measured_at": 1788528875.4310057
+  "measured_at": 1788865688.724936
 }

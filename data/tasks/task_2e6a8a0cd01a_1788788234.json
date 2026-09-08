@@ -1,0 +1,131 @@
+{
+  "task_id": "2e6a8a0cd01a",
+  "original_request": "open firefox and search",
+  "normalized_goal": "open firefox and search",
+  "current_plan": [
+    {
+      "action": "desktop_open",
+      "params": {
+        "app": "firefox"
+      }
+    },
+    {
+      "action": "web_search",
+      "params": {
+        "query": "test query"
+      }
+    }
+  ],
+  "completed_steps": [
+    {
+      "index": 1,
+      "action": "desktop_open",
+      "params": {
+        "app": "firefox"
+      },
+      "description": "",
+      "status": "completed",
+      "result": "Opened firefox",
+      "verification": "success",
+      "verified": true,
+      "retries": 0,
+      "error": "",
+      "latency_ms": 0.0073909759521484375,
+      "evidence_source": "unknown",
+      "sensitive_reason": ""
+    },
+    {
+      "index": 2,
+      "action": "web_search",
+      "params": {
+        "query": "test query"
+      },
+      "description": "",
+      "status": "completed",
+      "result": "Here's what I found: https://github.com/test",
+      "verification": "success",
+      "verified": true,
+      "retries": 0,
+      "error": "",
+      "latency_ms": 0.0054836273193359375,
+      "evidence_source": "unknown",
+      "sensitive_reason": ""
+    }
+  ],
+  "current_step": null,
+  "failed_steps": [],
+  "observed_state": "results shown",
+  "verification_results": [
+    {
+      "step": 1,
+      "action": "desktop_open",
+      "verified": true,
+      "evidence": "Opened firefox",
+      "reason": ""
+    },
+    {
+      "step": 2,
+      "action": "web_search",
+      "verified": true,
+      "evidence": "Here's what I found: https://github.com/test",
+      "reason": ""
+    }
+  ],
+  "retry_count": 0,
+  "replan_count": 0,
+  "total_steps": 2,
+  "final_status": "SUCCESS",
+  "plan_version": 1,
+  "started_at": 1788788234.829653,
+  "ended_at": 1788788234.830799,
+  "artifacts": {
+    "last_app": "firefox",
+    "urls": [
+      "https://github.com/test"
+    ],
+    "last_query": "test query",
+    "search_results": [
+      "https://github.com/test"
+    ],
+    "answer": "Here's what I found: https://github.com/test"
+  },
+  "log": [
+    "[TASK] id=2e6a8a0cd01a goal=\"open firefox and search\"",
+    "[PLAN] v1 steps=2",
+    "[STEP 1/2] desktop_open",
+    "[VERIFY] success",
+    "[STEP 2/2] web_search",
+    "[VERIFY] success",
+    "[TASK] COMPLETE",
+    "[TASK] SUCCESS (steps=2 ok, 0 failed, replans=0, latency=1ms)"
+  ],
+  "blocker": "",
+  "evidence_log": [
+    {
+      "fact": "Window: [jetbrains] Diego_Desktop_agent – test_runtime_shutdown.py\nPage: editor\nWindow: Diego_Desktop_agent – test_runtime_shutdown.py\nApplication: PyCharm (jetbrains)\nProcess: pycharm (PID 2224)\nSummary: Screen type: editor\nClipboard: PHASE 18C — FIX DIEGO RUNTIME SHUTDOWN RECURSION\n\nWe are on the `experiment` bra",
+      "source": "live_observation",
+      "timestamp": 1788788234.8308573,
+      "confidence": 1.0
+    },
+    {
+      "fact": "",
+      "source": "local_knowledge",
+      "timestamp": 1788788234.8308606,
+      "confidence": 1.0699
+    },
+    {
+      "fact": "",
+      "source": "local_knowledge",
+      "timestamp": 1788788234.8308635,
+      "confidence": 1.0699
+    },
+    {
+      "fact": "",
+      "source": "local_knowledge",
+      "timestamp": 1788788234.830865,
+      "confidence": 1.0699
+    }
+  ],
+  "pending_confirmation": null,
+  "confirmation_reason": ""
+}

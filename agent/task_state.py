@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+import json
 import logging
 import os
 import re
@@ -50,7 +51,7 @@ import shutil
 import subprocess
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as _dc_replace
 from enum import Enum
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
@@ -462,6 +463,23 @@ KNOWN_ACTIONS = frozenset({
     "focus_app", "close_window",
 })
 
+def registry_tool_available(name: str) -> bool:
+    """True if `name` resolves to a tool in the general ToolRegistry.
+
+    Phase 15B: the registry's built-in general tools (terminal, python,
+    filesystem, git, docker, clipboard_*, notify, mouse, keyboard, …) are
+    part of the canonical action namespace the autonomous loop may plan,
+    alongside KNOWN_ACTIONS. Lazy + exception-safe: the registry is
+    optional infrastructure and must never break plan validation.
+    """
+    try:
+        from core.tool_registry import tool_registry
+        tool_registry.install_builtin_tools()
+        return tool_registry.is_available(name)
+    except Exception:
+        return False
+
+
 # Required / validated parameters per action.
 PARAM_REQUIREMENTS: Dict[str, Callable[[Dict[str, Any]], Optional[str]]] = {
     "desktop_open": lambda p: None if str(p.get("app", "")).strip() else "app",
@@ -515,7 +533,7 @@ class PlanValidator:
         name = str(step.get("action", "")).strip()
         if not name:
             return False, "step has no action name"
-        if name not in KNOWN_ACTIONS:
+        if name not in KNOWN_ACTIONS and not registry_tool_available(name):
             return False, f"hallucinated/unknown action '{name}'"
         params = step.get("params") or {}
         if not isinstance(params, dict):
@@ -779,6 +797,69 @@ class TaskRunner:
         sig = StepRecord(index=0, action=action, params=params).signature()
         return sig in self._approved_actions
 
+    # ── Lifecycle events (Phase 15F) ──────────────────────────
+    # Task lifecycle transitions are published on the EXISTING event bus
+    # (core/event_bus.py — the single shared bus) so UI/background
+    # components can observe task start, progress, completion, failure,
+    # cancellation, blocking, and replanning. No second event mechanism
+    # is introduced.
+
+    async def _emit_event(self, event_type: str,
+                          state: TaskExecutionState,
+                          **data: Any) -> None:
+        """Emit one task lifecycle event on the existing event bus.
+
+        NON-FATAL BY CONTRACT: bus unavailability, consumer errors, or any
+        emission failure is logged and swallowed — event reporting must
+        never change the task outcome or crash the runner. Payloads carry
+        identifiers, counts, and SHORT reasons only; action params (which
+        may hold user/sensitive content) are never included.
+        """
+        try:
+            from core.event_bus import bus
+            payload: Dict[str, Any] = {
+                "task_id": state.task_id,
+                "status": (state.final_status.value
+                           if state.final_status is not None else ""),
+                "completed_steps": len(state.completed_steps),
+                "failed_steps": len(state.failed_steps),
+                "retry_count": state.retry_count,
+                "replan_count": state.replan_count,
+            }
+            for key, value in data.items():
+                if isinstance(value, str) and len(value) > 160:
+                    value = value[:160] + "…"
+                payload[key] = value
+            await bus.emit(event_type, data=payload, source="task_runner")
+        except Exception as e:
+            logger.debug("[TaskRunner] lifecycle event '%s' not emitted: %s",
+                         event_type, e)
+
+    async def _emit_final_status(self, state: TaskExecutionState) -> None:
+        """Emit the AUTHORITATIVE final lifecycle event for a task.
+
+        Exactly one terminal event per task, derived from the final
+        TaskExecutionState (never from optimistic intentions):
+          SUCCESS → task.completed (only after verified success)
+          CANCELLED → task.cancelled (never followed by task.completed)
+          NEEDS_CONFIRMATION / NEEDS_INPUT → distinct events, never FAILED
+          FAILED / PARTIAL_FAILURE → task.failed
+        """
+        status = state.final_status
+        if status == FinalStatus.SUCCESS:
+            await self._emit_event("task.completed", state)
+        elif status == FinalStatus.CANCELLED:
+            await self._emit_event("task.cancelled", state)
+        elif status == FinalStatus.NEEDS_CONFIRMATION:
+            await self._emit_event("task.needs_confirmation", state,
+                                   reason=state.confirmation_reason)
+        elif status == FinalStatus.NEEDS_INPUT:
+            await self._emit_event("task.needs_input", state,
+                                   blocker=state.blocker)
+        elif status in (FinalStatus.FAILED, FinalStatus.PARTIAL_FAILURE):
+            await self._emit_event("task.failed", state,
+                                   blocker=state.blocker)
+
     # ── Main loop ─────────────────────────────────────────────
 
     async def run(self, request: str,
@@ -796,6 +877,33 @@ class TaskRunner:
             state.observed_state = inherited.observed_state
             state.artifacts = dict(inherited.artifacts)
             state.normalized_goal = inherited.normalized_goal or request
+            # CONTINUATION (Phase 15G): inherit the AUTHORITATIVE record of
+            # previously VERIFIED work so:
+            #   - duplicate validation prevents re-executing verified
+            #     steps (no repeated side effects),
+            #   - re-plans receive the verified history in their context,
+            #   - an already-satisfied task can finish honestly.
+            # Merely-executed but UNVERIFIED steps are NOT trusted — they
+            # are not inherited as completed and will execute/verify again
+            # if the continuation plan contains them.
+            state.completed_steps = [
+                _dc_replace(s) for s in (inherited.completed_steps or [])
+                if s.verified and s.status in (
+                    StepStatus.COMPLETED, StepStatus.ALREADY_SATISFIED)
+            ]
+            state.failed_steps = [
+                _dc_replace(s) for s in (inherited.failed_steps or [])
+            ]
+            # CANCELLED is authoritative across continuation: a persisted
+            # cancelled task is never silently resumed (let alone as
+            # SUCCESS) without an explicit new request.
+            if inherited.final_status == FinalStatus.CANCELLED:
+                state.final_status = FinalStatus.CANCELLED
+                state.note("[TASK] CANCELLED (inherited persisted state — "
+                           "not resumed)")
+                state.ended_at = time.time()
+                await self._emit_final_status(state)
+                return state
 
         plan = self._validator.validate_plan(
             initial_plan or [], state.completed_steps, self._transcript)
@@ -810,10 +918,24 @@ class TaskRunner:
                     reasons.append(reason)
             state.note(f"[TASK] id={state.task_id} goal=\"{request[:80]}\"")
             state.note("[PLAN] v0 rejected — " + "; ".join(reasons[:4]))
+            # CONTINUATION: a plan whose EVERY step is a duplicate of
+            # already-verified completed work means the task is DONE —
+            # honest SUCCESS without repeating any side effect. (A plan
+            # rejected for hallucination/params/auth is still a failure.)
+            if (all(r == "duplicate of an already-completed step"
+                    for r in reasons) and state.completed_steps):
+                state.current_plan = list(initial_plan)
+                state.final_status = FinalStatus.SUCCESS
+                state.note("[TASK] COMPLETE (all steps already verified — "
+                           "nothing to re-execute)")
+                state.ended_at = time.time()
+                await self._emit_final_status(state)
+                return state
             state.final_status = FinalStatus.FAILED
             state.blocker = ("The generated plan contained no executable "
                              "actions: " + "; ".join(reasons[:3]))
             state.ended_at = time.time()
+            await self._emit_final_status(state)
             return state
 
         state.current_plan = plan
@@ -821,6 +943,10 @@ class TaskRunner:
         state.plan_version = 1
         state.note(f"[TASK] id={state.task_id} goal=\"{request[:80]}\"")
         state.note(f"[PLAN] v1 steps={len(plan)}")
+        # NOTE: the raw request/goal text is deliberately NOT included —
+        # it may contain sensitive user content (requirement I). Consumers
+        # correlate via task_id and the inspectable TaskExecutionState.
+        await self._emit_event("task.started", state, steps=len(plan))
 
         pending: List[Dict[str, Any]] = list(plan)
         step_counter = itertools.count(1)
@@ -828,6 +954,25 @@ class TaskRunner:
         # Observe the initial state (baseline for change detection)
         state.observed_state = await self._safe_observe()
 
+        # Self-register so the Brain / UI / voice can request cancellation
+        # of this in-flight task from another async context.
+        task_state_store.register_runner(self)
+        try:
+            return await self._run_loop_internal(state, pending, step_counter,
+                                                 request, initial_plan)
+        finally:
+            task_state_store.unregister_runner()
+
+    async def _run_loop_internal(
+        self,
+        state: TaskExecutionState,
+        pending: List[Dict[str, Any]],
+        step_counter: Any,
+        request: str,
+        initial_plan: Optional[List[Dict[str, Any]]] = None,
+    ) -> TaskExecutionState:
+        """Internal closed-loop execution (extracted so runner registration
+        and cleanup are always paired)."""
         while True:
             # ── Safety gates ──────────────────────────────────
             if self._cancelled:
@@ -901,6 +1046,8 @@ class TaskRunner:
                              status=StepStatus.RUNNING)
             state.current_step = rec
             state.note(f"[STEP {idx}/{max(state.total_steps, idx)}] {action}")
+            await self._emit_event("task.step.started", state,
+                                   step=idx, action=action)
 
             # ── Idempotency: desired state already true? ──────
             already = await self._idempotency.check(action, params, state)
@@ -916,6 +1063,9 @@ class TaskRunner:
                      "evidence": already})
                 state.add_evidence(already, EvidenceSource.DETERMINISTIC_SYSTEM)
                 state.note(f"[VERIFY] success (idempotent — {already})")
+                await self._emit_event("task.step.completed", state,
+                                       step=idx, action=action,
+                                       evidence=already)
                 continue
 
             # ── HUMAN SAFETY: sensitive action confirmation ────
@@ -935,6 +1085,7 @@ class TaskRunner:
                     state.note(f"[STEP {idx}] BLOCKED — sensitive action "
                                f"requires confirmation: {sensitive_reason}")
                     state.ended_at = time.time()
+                    await self._emit_final_status(state)
                     return state
 
             # ── Execute ONE step ──────────────────────────────
@@ -971,11 +1122,21 @@ class TaskRunner:
                  "evidence": rec.result[:200], "reason": verify_reason})
             state.note(f"[VERIFY] {'success' if verified else 'failure'}"
                        + (f" — {verify_reason}" if verify_reason else ""))
+            if not verified:
+                await self._emit_event("task.step.failed", state,
+                                       step=idx, action=action,
+                                       reason=verify_reason)
+                await self._emit_event("task.verification.failed", state,
+                                       step=idx, action=action,
+                                       reason=verify_reason)
 
             if verified:
                 rec.status = StepStatus.COMPLETED
                 state.completed_steps.append(rec)
                 extract_artifacts(action, params, rec.result, state.artifacts)
+                await self._emit_event("task.step.completed", state,
+                                       step=idx, action=action,
+                                       evidence=rec.result[:160])
                 loop_hit = self._loops.record_action(rec.signature())
                 state_hit = self._loops.record_state(
                     self._state_signature(post_state))
@@ -1006,6 +1167,13 @@ class TaskRunner:
             while (kind in (FailureKind.TRANSIENT, FailureKind.WRONG_PARAMS,
                             FailureKind.CHANGED_STATE)
                    and rec.retries < self._limits.max_retries_per_step):
+                # CANCELLED is authoritative: a cancellation requested
+                # during a failing step must NOT burn the retry budget.
+                # Breaking here falls through to the failed-step record,
+                # and the pre-replan cancellation check below returns the
+                # task to the top of the loop where CANCELLED is set.
+                if self._cancelled:
+                    break
                 new_params = adjust_params_for_retry(action, params)
                 if new_params == params and kind != FailureKind.TRANSIENT:
                     break  # no safe adjustment possible — stop retrying
@@ -1013,6 +1181,11 @@ class TaskRunner:
                 state.retry_count += 1
                 state.note(f"[RETRY] {action} attempt {rec.retries}"
                            f"/{self._limits.max_retries_per_step} ({kind.value})")
+                await self._emit_event("task.retry", state,
+                                       step=idx, action=action,
+                                       retry=rec.retries,
+                                       max_retries=self._limits.max_retries_per_step,
+                                       reason=kind.value)
                 t0 = time.time()
                 try:
                     exec_ok2, exec_result2 = await self._executor(
@@ -1061,6 +1234,12 @@ class TaskRunner:
                 break
 
             # ── Re-plan from the CURRENT state ────────────────
+            # CANCELLED is authoritative: never start a re-plan after the
+            # user cancelled. `continue` returns to the top of the loop,
+            # where the cancellation gate sets FinalStatus.CANCELLED.
+            if self._cancelled:
+                state.note("[TASK] cancellation requested — no re-plan")
+                continue
             if not self._replans_left(state):
                 state.final_status = self._partial_or_failed(state)
                 state.blocker = (state.blocker or
@@ -1107,6 +1286,7 @@ class TaskRunner:
                    f"{len(state.failed_steps)} failed, "
                    f"replans={state.replan_count}, "
                    f"latency={state.total_latency_ms:.0f}ms)")
+        await self._emit_final_status(state)
         return state
 
     # ── Internals ─────────────────────────────────────────────
@@ -1213,6 +1393,10 @@ class TaskRunner:
         state.note(f"[REPLAN] state changed, replan {state.replan_count}"
                    f"/{self._limits.max_replans}, "
                    f"remaining goal: {state.normalized_goal[:60]}")
+        await self._emit_event("task.replan", state,
+                               replan=state.replan_count,
+                               max_replans=self._limits.max_replans,
+                               reason=failure_context or "plan exhausted")
         try:
             plan = await self._planner(request, context)
         except Exception as e:
@@ -1282,9 +1466,72 @@ class FollowUpResolver:
 class TaskStateStore:
     """Preserves task execution state across conversational follow-ups."""
 
+    # Directory for lightweight JSON snapshots of finished task states
+    # (diagnosis / interruption recovery). No database is introduced.
+    TASK_DIR = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "data", "tasks",
+    )
+
     def __init__(self):
         self.last: Optional[TaskExecutionState] = None
         self.active: Optional[TaskExecutionState] = None  # resumable task
+        self._active_runner = None                        # running TaskRunner
+
+    def register_runner(self, runner) -> None:
+        """Register the currently executing TaskRunner so it can be
+        cooperatively cancelled by the Brain / UI / voice."""
+        self._active_runner = runner
+
+    def unregister_runner(self) -> None:
+        """Clear the runner reference when the in-flight task ends."""
+        self._active_runner = None
+
+    def has_running_task(self) -> bool:
+        return self._active_runner is not None
+
+    # ── Lightweight JSON persistence (diagnosis / resume) ────
+
+    def persist(self, state: TaskExecutionState) -> Optional[str]:
+        """Snapshot a finished task state to JSON under data/tasks/.
+
+        Returns the snapshot path, or None when persistence is disabled
+        or fails. Persistence failure is never fatal for the task loop.
+        """
+        if os.environ.get("DIEGO_TASK_PERSIST", "1") == "0":
+            return None
+        if state is None:
+            return None
+        try:
+            os.makedirs(self.TASK_DIR, exist_ok=True)
+            path = os.path.join(
+                self.TASK_DIR, f"task_{state.task_id}_{int(time.time())}.json")
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(
+                    _task_state_to_dict(state), fh,
+                    ensure_ascii=False, indent=2, default=str)
+            return path
+        except Exception as e:
+            logger.debug("[TaskState] persistence skipped: %s", e)
+            return None
+
+    def load(self, task_id: str) -> Optional[TaskExecutionState]:
+        """Load the most recent snapshot for a task id (if any)."""
+        if not os.path.isdir(self.TASK_DIR):
+            return None
+        try:
+            candidates = []
+            for name in os.listdir(self.TASK_DIR):
+                if name.startswith(f"task_{task_id}_") and name.endswith(".json"):
+                    candidates.append(os.path.join(self.TASK_DIR, name))
+            if not candidates:
+                return None
+            latest = max(candidates, key=os.path.getmtime)
+            with open(latest, "r", encoding="utf-8") as fh:
+                return _task_state_from_dict(json.load(fh))
+        except Exception as e:
+            logger.debug("[TaskState] load skipped: %s", e)
+            return None
 
     def save(self, state: TaskExecutionState) -> None:
         self.last = state
@@ -1294,6 +1541,8 @@ class TaskStateStore:
             self.active = state   # "continue" / "yes" can resume this
         else:
             self.active = None    # SUCCESS/FAILED/CANCELLED — keep last for refs
+        # Lightweight JSON snapshot of the finished/paused state.
+        self.persist(state)
 
     def cancel_active(self) -> bool:
         if self.active is not None:
@@ -1302,6 +1551,22 @@ class TaskStateStore:
             self.active = None
             return True
         return False
+
+    def cancel_active_runner(self) -> bool:
+        """Request cooperative cancellation of a running TaskRunner.
+
+        The runner checks the cancel flag between steps (never mid-action)
+        and sets the authoritative CANCELLED final status itself, so this
+        method can never leave the task in a fabricated SUCCESS state.
+        """
+        runner = getattr(self, "_active_runner", None)
+        if runner is None:
+            return False
+        try:
+            runner.cancel()
+            return True
+        except Exception:
+            return False
 
     def build_continuation(
         self, text: str,
@@ -1385,6 +1650,132 @@ class TaskStateStore:
             if sig not in done_sigs:
                 remaining.append(step)
         return remaining
+
+
+# ═══════════════════════════════════════════════════════════════
+# JSON serialization for lightweight state persistence
+# ═══════════════════════════════════════════════════════════════
+
+def _evidence_to_dict(ev: Evidence) -> Dict[str, Any]:
+    return {
+        "fact": getattr(ev, "fact", ""),
+        "source": getattr(ev, "source", EvidenceSource.UNKNOWN).value,
+        "timestamp": getattr(ev, "timestamp", time.time()),
+        "confidence": getattr(ev, "confidence", 1.0),
+    }
+
+
+def _evidence_from_dict(data: Dict[str, Any]) -> Evidence:
+    return Evidence(
+        fact=str(data.get("fact", "")),
+        source=EvidenceSource(str(data.get("source", EvidenceSource.UNKNOWN.value))),
+        timestamp=float(data.get("timestamp", time.time())),
+        confidence=float(data.get("confidence", 1.0)),
+    )
+
+
+def _step_record_to_dict(rec: StepRecord) -> Dict[str, Any]:
+    return {
+        "index": getattr(rec, "index", 0),
+        "action": getattr(rec, "action", ""),
+        "params": dict(getattr(rec, "params", {}) or {}),
+        "description": getattr(rec, "description", ""),
+        "status": getattr(rec, "status", StepStatus.PENDING).value,
+        "result": getattr(rec, "result", ""),
+        "verification": getattr(rec, "verification", ""),
+        "verified": bool(getattr(rec, "verified", False)),
+        "retries": getattr(rec, "retries", 0),
+        "error": getattr(rec, "error", ""),
+        "latency_ms": getattr(rec, "latency_ms", 0.0),
+        "evidence_source": getattr(rec, "evidence_source", EvidenceSource.UNKNOWN).value,
+        "sensitive_reason": getattr(rec, "sensitive_reason", ""),
+    }
+
+
+def _step_record_from_dict(data: Dict[str, Any]) -> StepRecord:
+    return StepRecord(
+        index=int(data.get("index", 0)),
+        action=str(data.get("action", "")),
+        params=dict(data.get("params") or {}),
+        description=str(data.get("description", "")),
+        status=StepStatus(str(data.get("status", StepStatus.PENDING.value))),
+        result=str(data.get("result", "")),
+        verification=str(data.get("verification", "")),
+        verified=bool(data.get("verified", False)),
+        retries=int(data.get("retries", 0)),
+        error=str(data.get("error", "")),
+        latency_ms=float(data.get("latency_ms", 0.0)),
+        evidence_source=EvidenceSource(
+            str(data.get("evidence_source", EvidenceSource.UNKNOWN.value))),
+        sensitive_reason=str(data.get("sensitive_reason", "")),
+    )
+
+
+def _task_state_to_dict(state: TaskExecutionState) -> Dict[str, Any]:
+    """Serialize a TaskExecutionState into a JSON-able dict.
+
+    Used for lightweight persistence of task state so interrupted tasks
+    can be diagnosed (and resumed when supported) without a database.
+    """
+    return {
+        "task_id": getattr(state, "task_id", ""),
+        "original_request": getattr(state, "original_request", ""),
+        "normalized_goal": getattr(state, "normalized_goal", ""),
+        "current_plan": list(getattr(state, "current_plan", []) or []),
+        "completed_steps": [_step_record_to_dict(r) for r in getattr(state, "completed_steps", []) or []],
+        "current_step": (_step_record_to_dict(state.current_step)
+                         if getattr(state, "current_step", None) is not None else None),
+        "failed_steps": [_step_record_to_dict(r) for r in getattr(state, "failed_steps", []) or []],
+        "observed_state": getattr(state, "observed_state", ""),
+        "verification_results": list(getattr(state, "verification_results", []) or []),
+        "retry_count": getattr(state, "retry_count", 0),
+        "replan_count": getattr(state, "replan_count", 0),
+        "total_steps": getattr(state, "total_steps", 0),
+        "final_status": (state.final_status.value
+                         if getattr(state, "final_status", None) is not None else None),
+        "plan_version": getattr(state, "plan_version", 0),
+        "started_at": getattr(state, "started_at", time.time()),
+        "ended_at": getattr(state, "ended_at", None),
+        "artifacts": dict(getattr(state, "artifacts", {}) or {}),
+        "log": list(getattr(state, "log", []) or []),
+        "blocker": getattr(state, "blocker", ""),
+        "evidence_log": [_evidence_to_dict(ev) for ev in getattr(state, "evidence_log", []) or []],
+        "pending_confirmation": (_step_record_to_dict(state.pending_confirmation)
+                                 if getattr(state, "pending_confirmation", None) is not None else None),
+        "confirmation_reason": getattr(state, "confirmation_reason", ""),
+    }
+
+
+def _task_state_from_dict(data: Dict[str, Any]) -> TaskExecutionState:
+    """Rebuild a TaskExecutionState from a JSON-able dict."""
+    state = TaskExecutionState(
+        task_id=str(data.get("task_id", "")),
+        original_request=str(data.get("original_request", "")),
+        normalized_goal=str(data.get("normalized_goal", "")),
+        current_plan=list(data.get("current_plan") or []),
+        completed_steps=[_step_record_from_dict(d) for d in data.get("completed_steps") or []],
+        current_step=(_step_record_from_dict(data["current_step"])
+                      if data.get("current_step") else None),
+        failed_steps=[_step_record_from_dict(d) for d in data.get("failed_steps") or []],
+        observed_state=str(data.get("observed_state", "")),
+        verification_results=list(data.get("verification_results") or []),
+        retry_count=int(data.get("retry_count", 0)),
+        replan_count=int(data.get("replan_count", 0)),
+        total_steps=int(data.get("total_steps", 0)),
+        final_status=(FinalStatus(str(data["final_status"]))
+                      if data.get("final_status") else None),
+        plan_version=int(data.get("plan_version", 0)),
+        started_at=float(data.get("started_at", time.time())),
+        ended_at=(float(data["ended_at"]) if data.get("ended_at") is not None else None),
+        artifacts=dict(data.get("artifacts") or {}),
+        log=list(data.get("log") or []),
+        blocker=str(data.get("blocker", "")),
+        evidence_log=[_evidence_from_dict(d) for d in data.get("evidence_log") or []],
+        pending_confirmation=(_step_record_from_dict(data["pending_confirmation"])
+                              if data.get("pending_confirmation") else None),
+        confirmation_reason=str(data.get("confirmation_reason", "")),
+    )
+    return state
 
 
 # Global singleton — task state survives across conversational turns.

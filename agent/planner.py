@@ -22,6 +22,47 @@ from agent.executor import agent_executor
 
 logger = logging.getLogger(__name__)
 
+
+def registry_tools_prompt_section() -> str:
+    """Derive the GENERAL-TOOL section of the planner prompt from the
+    canonical ToolRegistry (core/tool_registry.py) — the single source of
+    truth for registered tool names, parameter names/types, and
+    descriptions.
+
+    Contract alignment (Phase 15C):
+      - Every tool listed here resolves in PlanValidator (registry check)
+        and executes through ActionDispatcher's registry path with the
+        SAME canonical action name and parameter names.
+      - Registry tools already covered by KNOWN_ACTIONS are NOT listed
+        again (no duplicate/conflicting definitions).
+      - The registry does not track required/optional flags; tools report
+        honest failures for missing required parameters (existing
+        verification path).
+      - Returns "" when the registry is unavailable — the planner then
+        advertises only KNOWN_ACTIONS, exactly as before.
+    """
+    try:
+        from agent.task_state import KNOWN_ACTIONS
+        from core.tool_registry import tool_registry
+        tool_registry.install_builtin_tools()
+    except Exception:
+        return ""  # registry unavailable — KNOWN_ACTIONS only (old behavior)
+    lines = []
+    for tool in tool_registry.all():
+        if tool.name in KNOWN_ACTIONS:
+            continue  # already advertised — never define twice
+        params = ", ".join(
+            f"{pname}:{spec.get('type', 'any') if isinstance(spec, dict) else 'any'}"
+            for pname, spec in (tool.parameters or {}).items()
+        )
+        description = (tool.description or "").strip()
+        lines.append(f"- {tool.name}({params}) — {description}")
+    if not lines:
+        return ""
+    return ("General tools (tool registry) — valid actions, same step "
+            "format and parameter names:\n" + "\n".join(lines) + "\n")
+
+
 # System prompt for the planner LLM
 PLANNER_SYSTEM_PROMPT = """You are Diego, a desktop AI agent that controls the user's computer.
 
@@ -69,6 +110,11 @@ Available actions (use EXACTLY these names):
 - switch_window_prev() — Switch to previous window
 - switch_tab() — Switch to next tab
 - switch_tab_prev() — Switch to previous tab
+
+Additional GENERAL TOOLS from Diego's tool registry may be listed after
+this section — they are valid actions with the SAME step format, using
+the canonical tool name and the exact parameter names shown. Tools report
+honest failures when a required parameter is missing or invalid.
 
 Output ONLY a JSON array of steps. Each step has:
 {"action": "action_name", "params": {"key": "value"}, "description": "what this does"}
@@ -262,7 +308,12 @@ class AgentPlanner:
                 replan_ctx += ("  Output ONLY the REMAINING steps needed to "
                                "finish the goal from the current state.\n")
 
-            prompt = (f"{PLANNER_SYSTEM_PROMPT}\n\nContext:\n{memory_ctx}"
+            # The registry-tool section is derived LIVE from the canonical
+            # ToolRegistry so advertised tools always match what the
+            # PlanValidator accepts and the ActionDispatcher dispatches.
+            prompt = (f"{PLANNER_SYSTEM_PROMPT}\n"
+                      f"{registry_tools_prompt_section()}"
+                      f"\nContext:\n{memory_ctx}"
                       f"{replan_ctx}\n\nUser request: {request}\n\nPlan:")
 
             # CRITICAL FIX: chat() is async — MUST await it.

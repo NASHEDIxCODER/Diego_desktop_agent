@@ -1,0 +1,67 @@
+{
+  "task_id": "e9c63f6a53b7",
+  "original_request": "open vscode and start working",
+  "normalized_goal": "open vscode and start working",
+  "current_plan": [
+    {
+      "action": "desktop_open",
+      "params": {
+        "app": "code"
+      },
+      "description": "Open code"
+    }
+  ],
+  "completed_steps": [
+    {
+      "index": 1,
+      "action": "desktop_open",
+      "params": {
+        "app": "code"
+      },
+      "description": "Open code",
+      "status": "completed",
+      "result": "Executed desktop_open",
+      "verification": "success",
+      "verified": true,
+      "retries": 0,
+      "error": "",
+      "latency_ms": 1684.6084594726562,
+      "evidence_source": "unknown",
+      "sensitive_reason": ""
+    }
+  ],
+  "current_step": null,
+  "failed_steps": [],
+  "observed_state": "",
+  "verification_results": [
+    {
+      "step": 1,
+      "action": "desktop_open",
+      "verified": true,
+      "evidence": "Executed desktop_open",
+      "reason": ""
+    }
+  ],
+  "retry_count": 0,
+  "replan_count": 0,
+  "total_steps": 1,
+  "final_status": "SUCCESS",
+  "plan_version": 1,
+  "started_at": 1788800146.8916864,
+  "ended_at": 1788800148.642651,
+  "artifacts": {
+    "last_app": "code"
+  },
+  "log": [
+    "[TASK] id=e9c63f6a53b7 goal=\"open vscode and start working\"",
+    "[PLAN] v1 steps=1",
+    "[STEP 1/1] desktop_open",
+    "[VERIFY] success",
+    "[TASK] COMPLETE",
+    "[TASK] SUCCESS (steps=1 ok, 0 failed, replans=0, latency=1751ms)"
+  ],
+  "blocker": "",
+  "evidence_log": [],
+  "pending_confirmation": null,
+  "confirmation_reason": ""
+}
