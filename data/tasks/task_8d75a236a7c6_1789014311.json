@@ -1,0 +1,69 @@
+{
+  "task_id": "8d75a236a7c6",
+  "original_request": "open this unit",
+  "normalized_goal": "open this unit",
+  "current_plan": [
+    {
+      "action": "open_url",
+      "params": {
+        "url": "https://www.google.com/search?q=open+this+unit"
+      },
+      "description": "Search for instructions on how to open a unit"
+    }
+  ],
+  "completed_steps": [
+    {
+      "index": 1,
+      "action": "open_url",
+      "params": {
+        "url": "https://www.google.com/search?q=open+this+unit"
+      },
+      "description": "Search for instructions on how to open a unit",
+      "status": "completed",
+      "result": "Opened https://www.google.com/search?q=open+this+unit",
+      "verification": "success",
+      "verified": true,
+      "retries": 0,
+      "error": "",
+      "latency_ms": 41.98861122131348,
+      "evidence_source": "unknown",
+      "sensitive_reason": ""
+    }
+  ],
+  "current_step": null,
+  "failed_steps": [],
+  "observed_state": "Window: [chrome] LEO Desktop Assistant Update - Google Chrome\nPage: terminal\nA11y: 0 clickable, 1 nodes (x11_window)\nWindow: LEO Desktop Assistant Update - Google Chrome\nApplication: Chrome (chrome)\nAccessibility: 1 nodes, 0 clickable\n♿ window \"LEO Desktop Assistant Update - Google Chrome\" @(0,0,1920x1068) [FOCUSED] [x11_window]\nSummary: Screen type: terminal | Interactive: buttons: update\nFocused: window 'LEO Desktop Assistant Update - Google Chrome'\nClipboard: PHASE 20B — QUALITY-GATED MULTILINGUAL ASR\n\nGoal:\nImplement a production-safe hy\nBrowser: LEO Desktop Assistant Update",
+  "verification_results": [
+    {
+      "step": 1,
+      "action": "open_url",
+      "verified": true,
+      "evidence": "Opened https://www.google.com/search?q=open+this+unit",
+      "reason": ""
+    }
+  ],
+  "retry_count": 0,
+  "replan_count": 0,
+  "total_steps": 1,
+  "final_status": "SUCCESS",
+  "plan_version": 1,
+  "started_at": 1789014311.0509417,
+  "ended_at": 1789014311.2549913,
+  "artifacts": {
+    "urls": [
+      "https://www.google.com/search?q=open+this+unit"
+    ]
+  },
+  "log": [
+    "[TASK] id=8d75a236a7c6 goal=\"open this unit\"",
+    "[PLAN] v1 steps=1",
+    "[STEP 1/1] open_url",
+    "[VERIFY] success",
+    "[TASK] COMPLETE",
+    "[TASK] SUCCESS (steps=1 ok, 0 failed, replans=0, latency=204ms)"
+  ],
+  "blocker": "",
+  "evidence_log": [],
+  "pending_confirmation": null,
+  "confirmation_reason": ""
+}

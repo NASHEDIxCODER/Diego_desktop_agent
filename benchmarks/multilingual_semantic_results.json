@@ -1,0 +1,270 @@
+{
+  "phase": "20C",
+  "task": "benchmark-only; no production changes",
+  "dataset": "/home/nashedi_x_coder/Workspace/PycharmProjects/Diego_desktop_agent/benchmarks/multilingual_semantic_dataset.json",
+  "repeats": 1,
+  "host": {
+    "mem_total_mb": 15395,
+    "mem_used_mb": 10657,
+    "mem_available_mb": 4737,
+    "gpu_mem_total_mb": 4096.0,
+    "gpu_mem_used_mb": 15.0
+  },
+  "pathA_baseline": {
+    "path": "A-existing-normalizer",
+    "routing_ok_rate": 0.8276,
+    "avg_ms_per_prompt": 0.45,
+    "by_language": {
+      "en": {
+        "n": 14,
+        "routing_ok": 0.7143,
+        "entity_preserved": 1.0
+      },
+      "mixed": {
+        "n": 10,
+        "routing_ok": 1.0,
+        "entity_preserved": 1.0
+      },
+      "hi": {
+        "n": 5,
+        "routing_ok": 0.8,
+        "entity_preserved": 0.6
+      }
+    },
+    "per_case": [
+      {
+        "id": "en-01",
+        "normalized": "Open firefox",
+        "category": "DETERMINISTIC_COMMAND",
+        "actionable": true,
+        "routing_ok": true,
+        "entity_preserved": 1.0
+      },
+      {
+        "id": "en-02",
+        "normalized": "open terminal",
+        "category": "DETERMINISTIC_COMMAND",
+        "actionable": true,
+        "routing_ok": true,
+        "entity_preserved": 1.0
+      },
+      {
+        "id": "en-03",
+        "normalized": "play believer on youtube",
+        "category": "DETERMINISTIC_COMMAND",
+        "actionable": true,
+        "routing_ok": true,
+        "entity_preserved": 1.0
+      },
+      {
+        "id": "en-04",
+        "normalized": "search my ram",
+        "category": "SEARCH_REQUEST",
+        "actionable": true,
+        "routing_ok": true,
+        "entity_preserved": 1.0
+      },
+      {
+        "id": "en-05",
+        "normalized": "Turn the volume down",
+        "category": "CONVERSATIONAL",
+        "actionable": false,
+        "routing_ok": false,
+        "entity_preserved": 1.0
+      },
+      {
+        "id": "en-06",
+        "normalized": "Open https://github.com/NASHEDIxCODER/Diego_desktop_agent",
+        "category": "DETERMINISTIC_COMMAND",
+        "actionable": true,
+        "routing_ok": true,
+        "entity_preserved": 1.0
+      },
+      {
+        "id": "en-07",
+        "normalized": "Open my project file test.py",
+        "category": "LOCAL_KNOWLEDGE",
+        "actionable": false,
+        "routing_ok": false,
+        "entity_preserved": 1.0
+      },
+      {
+        "id": "en-08",
+        "normalized": "Set brightness to 50",
+        "category": "DETERMINISTIC_COMMAND",
+        "actionable": true,
+        "routing_ok": true,
+        "entity_preserved": 1.0
+      },
+      {
+        "id": "en-09",
+        "normalized": "What time is it",
+        "category": "DETERMINISTIC_COMMAND",
+        "actionable": true,
+        "routing_ok": true,
+        "entity_preserved": 1.0
+      },
+      {
+        "id": "en-10",
+        "normalized": "open firefox when you get a chance",
+        "category": "DETERMINISTIC_COMMAND",
+        "actionable": true,
+        "routing_ok": true,
+        "entity_preserved": 1.0
+      },
+      {
+        "id": "en-11",
+        "normalized": "blorpt flim wuzzle",
+        "category": "CONVERSATIONAL",
+        "actionable": false,
+        "routing_ok": true,
+        "entity_preserved": 1.0
+      },
+      {
+        "id": "en-12",
+        "normalized": "hello, how are you today",
+        "category": "CONVERSATIONAL",
+        "actionable": false,
+        "routing_ok": true,
+        "entity_preserved": 1.0
+      },
+      {
+        "id": "hi-01",
+        "normalized": "open firefox",
+        "category": "DETERMINISTIC_COMMAND",
+        "actionable": true,
+        "routing_ok": true,
+        "entity_preserved": 1.0
+      },
+      {
+        "id": "hi-02",
+        "normalized": "open terminal",
+        "category": "DETERMINISTIC_COMMAND",
+        "actionable": true,
+        "routing_ok": true,
+        "entity_preserved": 1.0
+      },
+      {
+        "id": "hi-03",
+        "normalized": "play believer on youtube",
+        "category": "DETERMINISTIC_COMMAND",
+        "actionable": true,
+        "routing_ok": true,
+        "entity_preserved": 1.0
+      },
+      {
+        "id": "hi-04",
+        "normalized": "volume down",
+        "category": "DETERMINISTIC_COMMAND",
+        "actionable": true,
+        "routing_ok": true,
+        "entity_preserved": 1.0
+      },
+      {
+        "id": "hi-05",
+        "normalized": "Mera CPU kitna use ho raha hai",
+        "category": "DETERMINISTIC_COMMAND",
+        "actionable": true,
+        "routing_ok": true,
+        "entity_preserved": 1.0
+      },
+      {
+        "id": "hi-06",
+        "normalized": "open फ़ायरफ़ॉक्स",
+        "category": "DETERMINISTIC_COMMAND",
+        "actionable": true,
+        "routing_ok": true,
+        "entity_preserved": 0.0
+      },
+      {
+        "id": "hi-07",
+        "normalized": "open टर्मिनल",
+        "category": "DETERMINISTIC_COMMAND",
+        "actionable": true,
+        "routing_ok": true,
+        "entity_preserved": 0.0
+      },
+      {
+        "id": "hi-08",
+        "normalized": "play गाना on youtube",
+        "category": "DETERMINISTIC_COMMAND",
+        "actionable": true,
+        "routing_ok": true,
+        "entity_preserved": 1.0
+      },
+      {
+        "id": "hi-09",
+        "normalized": "आवाज़ थोड़ी down",
+        "category": "CONVERSATIONAL",
+        "actionable": false,
+        "routing_ok": false,
+        "entity_preserved": 1.0
+      },
+      {
+        "id": "hi-10",
+        "normalized": "mera CPU kitna use ho raha hai",
+        "category": "DETERMINISTIC_COMMAND",
+        "actionable": true,
+        "routing_ok": true,
+        "entity_preserved": 1.0
+      },
+      {
+        "id": "mx-01",
+        "normalized": "play arijit singh ka song on youtube",
+        "category": "DETERMINISTIC_COMMAND",
+        "actionable": true,
+        "routing_ok": true,
+        "entity_preserved": 1.0
+      },
+      {
+        "id": "mx-02",
+        "normalized": "open firefox on github",
+        "category": "DETERMINISTIC_COMMAND",
+        "actionable": true,
+        "routing_ok": true,
+        "entity_preserved": 1.0
+      },
+      {
+        "id": "mx-03",
+        "normalized": "open मेरी project file test.py",
+        "category": "DETERMINISTIC_COMMAND",
+        "actionable": true,
+        "routing_ok": true,
+        "entity_preserved": 1.0
+      },
+      {
+        "id": "mx-04",
+        "normalized": "open firefox on https://example.com/path",
+        "category": "DETERMINISTIC_COMMAND",
+        "actionable": true,
+        "routing_ok": true,
+        "entity_preserved": 1.0
+      },
+      {
+        "id": "mx-05",
+        "normalized": "kal mausam kaisa rahega",
+        "category": "CONVERSATIONAL",
+        "actionable": false,
+        "routing_ok": true,
+        "entity_preserved": 1.0
+      },
+      {
+        "id": "amb-01",
+        "normalized": "play it",
+        "category": "DETERMINISTIC_COMMAND",
+        "actionable": true,
+        "routing_ok": false,
+        "entity_preserved": 1.0
+      },
+      {
+        "id": "amb-02",
+        "normalized": "open that thing",
+        "category": "DETERMINISTIC_COMMAND",
+        "actionable": true,
+        "routing_ok": false,
+        "entity_preserved": 1.0
+      }
+    ]
+  },
+  "candidates": []
+}

@@ -1,0 +1,2312 @@
+{
+  "summary": {
+    "latency": {
+      "A_forced_en": {
+        "n": 33,
+        "median_ms": 540.8,
+        "p95_ms": 668.0,
+        "mean_ms": 566.8
+      },
+      "B_forced_hi": {
+        "n": 33,
+        "median_ms": 544.4,
+        "p95_ms": 580.6,
+        "mean_ms": 548.9
+      },
+      "C_auto": {
+        "n": 33,
+        "median_ms": 1050.2,
+        "p95_ms": 1242.3,
+        "mean_ms": 1103.4
+      },
+      "D_dual_pass_sim": {
+        "n": 11,
+        "median_ms": 1087.7,
+        "p95_ms": 1415.3,
+        "mean_ms": 1118.5,
+        "note": "sequential en-pass + hi-pass on the SAME audio (simulated)"
+      }
+    },
+    "detection": {
+      "A_forced_en": {
+        "correct": 9,
+        "total": 11,
+        "detail": [
+          {
+            "id": "en_open_firefox",
+            "acoustic": "en",
+            "detected": "en",
+            "expected_match": true
+          },
+          {
+            "id": "en_play_believer",
+            "acoustic": "en",
+            "detected": "en",
+            "expected_match": true
+          },
+          {
+            "id": "en_whats_my_ram",
+            "acoustic": "en",
+            "detected": "en",
+            "expected_match": true
+          },
+          {
+            "id": "hi_firefox_kholo",
+            "acoustic": "hinglish",
+            "detected": "en",
+            "expected_match": true
+          },
+          {
+            "id": "hi_youtube_pe_music_chalao",
+            "acoustic": "hinglish",
+            "detected": "en",
+            "expected_match": true
+          },
+          {
+            "id": "hi_volume_thoda_kam_karo",
+            "acoustic": "hinglish",
+            "detected": "en",
+            "expected_match": true
+          },
+          {
+            "id": "hi_mera_cpu_kitna",
+            "acoustic": "hinglish",
+            "detected": "en",
+            "expected_match": true
+          },
+          {
+            "id": "dev_youtube_gana_chalao",
+            "acoustic": "hi",
+            "detected": "en",
+            "expected_match": false
+          },
+          {
+            "id": "dev_firefox_kholo",
+            "acoustic": "hi",
+            "detected": "en",
+            "expected_match": false
+          },
+          {
+            "id": "mix_arijit_singh",
+            "acoustic": "hinglish",
+            "detected": "en",
+            "expected_match": true
+          },
+          {
+            "id": "prob_thodi_der",
+            "acoustic": "hinglish",
+            "detected": "en",
+            "expected_match": true
+          }
+        ]
+      },
+      "B_forced_hi": {
+        "correct": 8,
+        "total": 11,
+        "detail": [
+          {
+            "id": "en_open_firefox",
+            "acoustic": "en",
+            "detected": "hi",
+            "expected_match": false
+          },
+          {
+            "id": "en_play_believer",
+            "acoustic": "en",
+            "detected": "hi",
+            "expected_match": false
+          },
+          {
+            "id": "en_whats_my_ram",
+            "acoustic": "en",
+            "detected": "hi",
+            "expected_match": false
+          },
+          {
+            "id": "hi_firefox_kholo",
+            "acoustic": "hinglish",
+            "detected": "hi",
+            "expected_match": true
+          },
+          {
+            "id": "hi_youtube_pe_music_chalao",
+            "acoustic": "hinglish",
+            "detected": "hi",
+            "expected_match": true
+          },
+          {
+            "id": "hi_volume_thoda_kam_karo",
+            "acoustic": "hinglish",
+            "detected": "hi",
+            "expected_match": true
+          },
+          {
+            "id": "hi_mera_cpu_kitna",
+            "acoustic": "hinglish",
+            "detected": "hi",
+            "expected_match": true
+          },
+          {
+            "id": "dev_youtube_gana_chalao",
+            "acoustic": "hi",
+            "detected": "hi",
+            "expected_match": true
+          },
+          {
+            "id": "dev_firefox_kholo",
+            "acoustic": "hi",
+            "detected": "hi",
+            "expected_match": true
+          },
+          {
+            "id": "mix_arijit_singh",
+            "acoustic": "hinglish",
+            "detected": "hi",
+            "expected_match": true
+          },
+          {
+            "id": "prob_thodi_der",
+            "acoustic": "hinglish",
+            "detected": "hi",
+            "expected_match": true
+          }
+        ]
+      },
+      "C_auto": {
+        "correct": 8,
+        "total": 11,
+        "detail": [
+          {
+            "id": "en_open_firefox",
+            "acoustic": "en",
+            "detected": "en",
+            "expected_match": true
+          },
+          {
+            "id": "en_play_believer",
+            "acoustic": "en",
+            "detected": "en",
+            "expected_match": true
+          },
+          {
+            "id": "en_whats_my_ram",
+            "acoustic": "en",
+            "detected": "en",
+            "expected_match": true
+          },
+          {
+            "id": "hi_firefox_kholo",
+            "acoustic": "hinglish",
+            "detected": "en",
+            "expected_match": true
+          },
+          {
+            "id": "hi_youtube_pe_music_chalao",
+            "acoustic": "hinglish",
+            "detected": "hi",
+            "expected_match": true
+          },
+          {
+            "id": "hi_volume_thoda_kam_karo",
+            "acoustic": "hinglish",
+            "detected": "bn",
+            "expected_match": false
+          },
+          {
+            "id": "hi_mera_cpu_kitna",
+            "acoustic": "hinglish",
+            "detected": "hi",
+            "expected_match": true
+          },
+          {
+            "id": "dev_youtube_gana_chalao",
+            "acoustic": "hi",
+            "detected": "hi",
+            "expected_match": true
+          },
+          {
+            "id": "dev_firefox_kholo",
+            "acoustic": "hi",
+            "detected": "en",
+            "expected_match": false
+          },
+          {
+            "id": "mix_arijit_singh",
+            "acoustic": "hinglish",
+            "detected": "ur",
+            "expected_match": false
+          },
+          {
+            "id": "prob_thodi_der",
+            "acoustic": "hinglish",
+            "detected": "en",
+            "expected_match": true
+          }
+        ]
+      }
+    },
+    "outcomes": {
+      "A_forced_en": {
+        "actionable": 3,
+        "uncertain": 5,
+        "rejected": 3
+      },
+      "B_forced_hi": {
+        "actionable": 3,
+        "uncertain": 5,
+        "rejected": 3
+      },
+      "C_auto": {
+        "actionable": 3,
+        "uncertain": 7,
+        "rejected": 1
+      }
+    }
+  },
+  "results": [
+    {
+      "mode": "A_forced_en",
+      "mode_lang_arg": "en",
+      "utterance_id": "en_open_firefox",
+      "utterance": "Open Firefox",
+      "acoustic_lang": "en",
+      "audio_duration_ms": 1680.0,
+      "word_count": 2,
+      "transcript_postprocessed": "Open Firefox",
+      "normalized": "Open firefox",
+      "low_quality_guard": false,
+      "validate_accepted": true,
+      "validate_failure_reason": "",
+      "intent": {
+        "category": "DETERMINISTIC_COMMAND",
+        "actionable": true,
+        "llm_allowed": true,
+        "confidence": 0.9,
+        "reason": "imperative command verb 'open'"
+      },
+      "decision": {
+        "path": "DIRECT_EXECUTION",
+        "needs_llm": false,
+        "action": {
+          "action": "desktop_open",
+          "params": {
+            "app": "firefox"
+          }
+        }
+      },
+      "outcome": "actionable",
+      "hallucination": {
+        "repeated_hallucination": false,
+        "garbage": false,
+        "no_expected_overlap": false,
+        "expected_overlap": [
+          "firefox",
+          "open"
+        ]
+      },
+      "reps": [
+        {
+          "rep": 0,
+          "transcript_raw": "Open Firefox.",
+          "confidence_avg_logprob": -0.373,
+          "stt_latency_ms": 533.4,
+          "detected_language": "en",
+          "language_probability": 1.0
+        },
+        {
+          "rep": 1,
+          "transcript_raw": "Open Firefox.",
+          "confidence_avg_logprob": -0.373,
+          "stt_latency_ms": 531.7,
+          "detected_language": "en",
+          "language_probability": 1.0
+        },
+        {
+          "rep": 2,
+          "transcript_raw": "Open Firefox.",
+          "confidence_avg_logprob": -0.373,
+          "stt_latency_ms": 528.0,
+          "detected_language": "en",
+          "language_probability": 1.0
+        }
+      ]
+    },
+    {
+      "mode": "A_forced_en",
+      "mode_lang_arg": "en",
+      "utterance_id": "en_play_believer",
+      "utterance": "Play Believer on YouTube",
+      "acoustic_lang": "en",
+      "audio_duration_ms": 1992.0,
+      "word_count": 4,
+      "transcript_postprocessed": "Play believer on YouTube",
+      "normalized": "play believer on youtube",
+      "low_quality_guard": false,
+      "validate_accepted": true,
+      "validate_failure_reason": "",
+      "intent": {
+        "category": "DETERMINISTIC_COMMAND",
+        "actionable": true,
+        "llm_allowed": true,
+        "confidence": 0.9,
+        "reason": "imperative command verb 'play'"
+      },
+      "decision": {
+        "path": "DIRECT_EXECUTION",
+        "needs_llm": false,
+        "action": {
+          "action": "play_media",
+          "params": {
+            "youtube": true,
+            "query": "believer"
+          }
+        }
+      },
+      "outcome": "actionable",
+      "hallucination": {
+        "repeated_hallucination": false,
+        "garbage": false,
+        "no_expected_overlap": false,
+        "expected_overlap": [
+          "believer",
+          "play",
+          "youtube"
+        ]
+      },
+      "reps": [
+        {
+          "rep": 0,
+          "transcript_raw": "Play believer on YouTube.",
+          "confidence_avg_logprob": -0.388,
+          "stt_latency_ms": 575.2,
+          "detected_language": "en",
+          "language_probability": 1.0
+        },
+        {
+          "rep": 1,
+          "transcript_raw": "Play believer on YouTube.",
+          "confidence_avg_logprob": -0.388,
+          "stt_latency_ms": 552.4,
+          "detected_language": "en",
+          "language_probability": 1.0
+        },
+        {
+          "rep": 2,
+          "transcript_raw": "Play believer on YouTube.",
+          "confidence_avg_logprob": -0.388,
+          "stt_latency_ms": 546.2,
+          "detected_language": "en",
+          "language_probability": 1.0
+        }
+      ]
+    },
+    {
+      "mode": "A_forced_en",
+      "mode_lang_arg": "en",
+      "utterance_id": "en_whats_my_ram",
+      "utterance": "What's my RAM?",
+      "acoustic_lang": "en",
+      "audio_duration_ms": 1440.0,
+      "word_count": 3,
+      "transcript_postprocessed": "What's my RAM",
+      "normalized": "search my ram",
+      "low_quality_guard": false,
+      "validate_accepted": true,
+      "validate_failure_reason": "",
+      "intent": {
+        "category": "KNOWLEDGE_QUESTION",
+        "actionable": false,
+        "llm_allowed": true,
+        "confidence": 0.7,
+        "reason": "factual question"
+      },
+      "decision": {
+        "path": "SYSTEM_INFO",
+        "needs_llm": false,
+        "action": null
+      },
+      "outcome": "uncertain",
+      "hallucination": {
+        "repeated_hallucination": false,
+        "garbage": false,
+        "no_expected_overlap": false,
+        "expected_overlap": [
+          "ram"
+        ]
+      },
+      "reps": [
+        {
+          "rep": 0,
+          "transcript_raw": "What's my RAM?",
+          "confidence_avg_logprob": -0.141,
+          "stt_latency_ms": 668.0,
+          "detected_language": "en",
+          "language_probability": 1.0
+        },
+        {
+          "rep": 1,
+          "transcript_raw": "What's my RAM?",
+          "confidence_avg_logprob": -0.141,
+          "stt_latency_ms": 540.3,
+          "detected_language": "en",
+          "language_probability": 1.0
+        },
+        {
+          "rep": 2,
+          "transcript_raw": "What's my RAM?",
+          "confidence_avg_logprob": -0.141,
+          "stt_latency_ms": 529.2,
+          "detected_language": "en",
+          "language_probability": 1.0
+        }
+      ]
+    },
+    {
+      "mode": "A_forced_en",
+      "mode_lang_arg": "en",
+      "utterance_id": "hi_firefox_kholo",
+      "utterance": "Firefox kholo",
+      "acoustic_lang": "hinglish",
+      "audio_duration_ms": 1656.0,
+      "word_count": 3,
+      "transcript_postprocessed": "5 forks color",
+      "normalized": "5 forks color",
+      "low_quality_guard": false,
+      "validate_accepted": true,
+      "validate_failure_reason": "",
+      "intent": {
+        "category": "CONVERSATIONAL",
+        "actionable": false,
+        "llm_allowed": true,
+        "confidence": 0.55,
+        "reason": "coherent statement"
+      },
+      "decision": {
+        "path": "LLM",
+        "needs_llm": true,
+        "action": null
+      },
+      "outcome": "uncertain",
+      "hallucination": {
+        "repeated_hallucination": false,
+        "garbage": false,
+        "no_expected_overlap": true,
+        "expected_overlap": []
+      },
+      "reps": [
+        {
+          "rep": 0,
+          "transcript_raw": "5 forks color",
+          "confidence_avg_logprob": -0.88,
+          "stt_latency_ms": 535.9,
+          "detected_language": "en",
+          "language_probability": 1.0
+        },
+        {
+          "rep": 1,
+          "transcript_raw": "5 forks color",
+          "confidence_avg_logprob": -0.88,
+          "stt_latency_ms": 540.8,
+          "detected_language": "en",
+          "language_probability": 1.0
+        },
+        {
+          "rep": 2,
+          "transcript_raw": "5 forks color",
+          "confidence_avg_logprob": -0.88,
+          "stt_latency_ms": 526.7,
+          "detected_language": "en",
+          "language_probability": 1.0
+        }
+      ]
+    },
+    {
+      "mode": "A_forced_en",
+      "mode_lang_arg": "en",
+      "utterance_id": "hi_youtube_pe_music_chalao",
+      "utterance": "YouTube pe music chalao",
+      "acoustic_lang": "hinglish",
+      "audio_duration_ms": 2136.0,
+      "word_count": 4,
+      "transcript_postprocessed": "YouTube Pay Music Chalau",
+      "normalized": "youtube Pay Music Chalau",
+      "low_quality_guard": false,
+      "validate_accepted": true,
+      "validate_failure_reason": "",
+      "intent": {
+        "category": "CONVERSATIONAL",
+        "actionable": false,
+        "llm_allowed": true,
+        "confidence": 0.55,
+        "reason": "coherent statement"
+      },
+      "decision": {
+        "path": "LLM",
+        "needs_llm": true,
+        "action": null
+      },
+      "outcome": "uncertain",
+      "hallucination": {
+        "repeated_hallucination": false,
+        "garbage": false,
+        "no_expected_overlap": false,
+        "expected_overlap": [
+          "music",
+          "youtube"
+        ]
+      },
+      "reps": [
+        {
+          "rep": 0,
+          "transcript_raw": "YouTube Pay Music Chalau",
+          "confidence_avg_logprob": -0.411,
+          "stt_latency_ms": 535.1,
+          "detected_language": "en",
+          "language_probability": 1.0
+        },
+        {
+          "rep": 1,
+          "transcript_raw": "YouTube Pay Music Chalau",
+          "confidence_avg_logprob": -0.411,
+          "stt_latency_ms": 534.4,
+          "detected_language": "en",
+          "language_probability": 1.0
+        },
+        {
+          "rep": 2,
+          "transcript_raw": "YouTube Pay Music Chalau",
+          "confidence_avg_logprob": -0.411,
+          "stt_latency_ms": 533.4,
+          "detected_language": "en",
+          "language_probability": 1.0
+        }
+      ]
+    },
+    {
+      "mode": "A_forced_en",
+      "mode_lang_arg": "en",
+      "utterance_id": "hi_volume_thoda_kam_karo",
+      "utterance": "volume thoda kam karo",
+      "acoustic_lang": "hinglish",
+      "audio_duration_ms": 1944.0,
+      "word_count": 4,
+      "transcript_postprocessed": "Volume Thola Cum Caro",
+      "normalized": "Volume Thola Cum Caro",
+      "low_quality_guard": false,
+      "validate_accepted": false,
+      "validate_failure_reason": "LOW_CONFIDENCE",
+      "intent": {
+        "category": "UNCERTAIN",
+        "actionable": false,
+        "llm_allowed": false,
+        "confidence": 0.45,
+        "reason": "actionable intent but confidence -1.440 < -1.0 (hallucination band) — asking for clarification"
+      },
+      "decision": null,
+      "outcome": "rejected",
+      "hallucination": {
+        "repeated_hallucination": false,
+        "garbage": false,
+        "no_expected_overlap": false,
+        "expected_overlap": [
+          "volume"
+        ]
+      },
+      "reps": [
+        {
+          "rep": 0,
+          "transcript_raw": "Volume Thola Cum Caro",
+          "confidence_avg_logprob": -1.44,
+          "stt_latency_ms": 537.3,
+          "detected_language": "en",
+          "language_probability": 1.0
+        },
+        {
+          "rep": 1,
+          "transcript_raw": "Volume Thola Cum Caro",
+          "confidence_avg_logprob": -1.44,
+          "stt_latency_ms": 542.5,
+          "detected_language": "en",
+          "language_probability": 1.0
+        },
+        {
+          "rep": 2,
+          "transcript_raw": "Volume Thola Cum Caro",
+          "confidence_avg_logprob": -1.44,
+          "stt_latency_ms": 540.2,
+          "detected_language": "en",
+          "language_probability": 1.0
+        }
+      ]
+    },
+    {
+      "mode": "A_forced_en",
+      "mode_lang_arg": "en",
+      "utterance_id": "hi_mera_cpu_kitna",
+      "utterance": "mera CPU kitna use ho raha hai",
+      "acoustic_lang": "hinglish",
+      "audio_duration_ms": 3192.0,
+      "word_count": 6,
+      "transcript_postprocessed": "My CPU is so much better",
+      "normalized": "My CPU is so much better",
+      "low_quality_guard": false,
+      "validate_accepted": true,
+      "validate_failure_reason": "",
+      "intent": {
+        "category": "CONVERSATIONAL",
+        "actionable": false,
+        "llm_allowed": true,
+        "confidence": 0.55,
+        "reason": "coherent statement"
+      },
+      "decision": {
+        "path": "SYSTEM_INFO",
+        "needs_llm": false,
+        "action": null
+      },
+      "outcome": "uncertain",
+      "hallucination": {
+        "repeated_hallucination": false,
+        "garbage": false,
+        "no_expected_overlap": false,
+        "expected_overlap": [
+          "cpu"
+        ]
+      },
+      "reps": [
+        {
+          "rep": 0,
+          "transcript_raw": "My CPU is so much better.",
+          "confidence_avg_logprob": -0.861,
+          "stt_latency_ms": 552.8,
+          "detected_language": "en",
+          "language_probability": 1.0
+        },
+        {
+          "rep": 1,
+          "transcript_raw": "My CPU is so much better.",
+          "confidence_avg_logprob": -0.861,
+          "stt_latency_ms": 541.2,
+          "detected_language": "en",
+          "language_probability": 1.0
+        },
+        {
+          "rep": 2,
+          "transcript_raw": "My CPU is so much better.",
+          "confidence_avg_logprob": -0.861,
+          "stt_latency_ms": 549.0,
+          "detected_language": "en",
+          "language_probability": 1.0
+        }
+      ]
+    },
+    {
+      "mode": "A_forced_en",
+      "mode_lang_arg": "en",
+      "utterance_id": "dev_youtube_gana_chalao",
+      "utterance": "यूट्यूब पर गाना चलाओ",
+      "acoustic_lang": "hi",
+      "audio_duration_ms": 2040.0,
+      "word_count": 3,
+      "transcript_postprocessed": "Go to YouTube",
+      "normalized": "open youtube",
+      "low_quality_guard": false,
+      "validate_accepted": false,
+      "validate_failure_reason": "LOW_CONFIDENCE",
+      "intent": {
+        "category": "UNCERTAIN",
+        "actionable": false,
+        "llm_allowed": false,
+        "confidence": 0.2,
+        "reason": "confidence -1.126 < -1.3 (deep hallucination band)"
+      },
+      "decision": null,
+      "outcome": "rejected",
+      "hallucination": {
+        "repeated_hallucination": false,
+        "garbage": false,
+        "no_expected_overlap": false,
+        "expected_overlap": [
+          "youtube"
+        ]
+      },
+      "reps": [
+        {
+          "rep": 0,
+          "transcript_raw": "Go to YouTube.",
+          "confidence_avg_logprob": -1.126,
+          "stt_latency_ms": 870.5,
+          "detected_language": "en",
+          "language_probability": 1.0
+        },
+        {
+          "rep": 1,
+          "transcript_raw": "Go to YouTube.",
+          "confidence_avg_logprob": -1.126,
+          "stt_latency_ms": 893.1,
+          "detected_language": "en",
+          "language_probability": 1.0
+        },
+        {
+          "rep": 2,
+          "transcript_raw": "Go to YouTube.",
+          "confidence_avg_logprob": -1.126,
+          "stt_latency_ms": 555.9,
+          "detected_language": "en",
+          "language_probability": 1.0
+        }
+      ]
+    },
+    {
+      "mode": "A_forced_en",
+      "mode_lang_arg": "en",
+      "utterance_id": "dev_firefox_kholo",
+      "utterance": "फ़ायरफ़ॉक्स खोलो",
+      "acoustic_lang": "hi",
+      "audio_duration_ms": 1632.0,
+      "word_count": 2,
+      "transcript_postprocessed": "Firefox Kulu",
+      "normalized": "firefox Kulu",
+      "low_quality_guard": false,
+      "validate_accepted": true,
+      "validate_failure_reason": "",
+      "intent": {
+        "category": "CONVERSATIONAL",
+        "actionable": false,
+        "llm_allowed": true,
+        "confidence": 0.4,
+        "reason": "coherent statement"
+      },
+      "decision": {
+        "path": "LLM",
+        "needs_llm": true,
+        "action": null
+      },
+      "outcome": "uncertain",
+      "hallucination": {
+        "repeated_hallucination": false,
+        "garbage": false,
+        "no_expected_overlap": false,
+        "expected_overlap": [
+          "firefox"
+        ]
+      },
+      "reps": [
+        {
+          "rep": 0,
+          "transcript_raw": "Firefox Kulu",
+          "confidence_avg_logprob": -0.926,
+          "stt_latency_ms": 521.1,
+          "detected_language": "en",
+          "language_probability": 1.0
+        },
+        {
+          "rep": 1,
+          "transcript_raw": "Firefox Kulu",
+          "confidence_avg_logprob": -0.926,
+          "stt_latency_ms": 528.3,
+          "detected_language": "en",
+          "language_probability": 1.0
+        },
+        {
+          "rep": 2,
+          "transcript_raw": "Firefox Kulu",
+          "confidence_avg_logprob": -0.926,
+          "stt_latency_ms": 523.2,
+          "detected_language": "en",
+          "language_probability": 1.0
+        }
+      ]
+    },
+    {
+      "mode": "A_forced_en",
+      "mode_lang_arg": "en",
+      "utterance_id": "mix_arijit_singh",
+      "utterance": "YouTube pe Arijit Singh ka song chalao",
+      "acoustic_lang": "hinglish",
+      "audio_duration_ms": 3264.0,
+      "word_count": 4,
+      "transcript_postprocessed": "on YouTube, Arigit Sinkason",
+      "normalized": "on youtube, Arigit Sinkason",
+      "low_quality_guard": false,
+      "validate_accepted": false,
+      "validate_failure_reason": "LOW_CONFIDENCE",
+      "intent": {
+        "category": "UNCERTAIN",
+        "actionable": false,
+        "llm_allowed": false,
+        "confidence": 0.2,
+        "reason": "confidence -1.065 < -1.3 (deep hallucination band)"
+      },
+      "decision": null,
+      "outcome": "rejected",
+      "hallucination": {
+        "repeated_hallucination": false,
+        "garbage": false,
+        "no_expected_overlap": false,
+        "expected_overlap": [
+          "youtube"
+        ]
+      },
+      "reps": [
+        {
+          "rep": 0,
+          "transcript_raw": "on YouTube, Arigit Sinkason.",
+          "confidence_avg_logprob": -1.065,
+          "stt_latency_ms": 573.6,
+          "detected_language": "en",
+          "language_probability": 1.0
+        },
+        {
+          "rep": 1,
+          "transcript_raw": "on YouTube, Arigit Sinkason.",
+          "confidence_avg_logprob": -1.065,
+          "stt_latency_ms": 566.7,
+          "detected_language": "en",
+          "language_probability": 1.0
+        },
+        {
+          "rep": 2,
+          "transcript_raw": "on YouTube, Arigit Sinkason.",
+          "confidence_avg_logprob": -1.065,
+          "stt_latency_ms": 568.4,
+          "detected_language": "en",
+          "language_probability": 1.0
+        }
+      ]
+    },
+    {
+      "mode": "A_forced_en",
+      "mode_lang_arg": "en",
+      "utterance_id": "prob_thodi_der",
+      "utterance": "play thodi der on youtube",
+      "acoustic_lang": "hinglish",
+      "audio_duration_ms": 2328.0,
+      "word_count": 5,
+      "transcript_postprocessed": "Play Thorie Dare on YouTube",
+      "normalized": "play thorie dare on youtube",
+      "low_quality_guard": false,
+      "validate_accepted": true,
+      "validate_failure_reason": "",
+      "intent": {
+        "category": "DETERMINISTIC_COMMAND",
+        "actionable": true,
+        "llm_allowed": true,
+        "confidence": 0.8,
+        "reason": "imperative command verb 'play'"
+      },
+      "decision": {
+        "path": "DIRECT_EXECUTION",
+        "needs_llm": false,
+        "action": {
+          "action": "play_media",
+          "params": {
+            "youtube": true,
+            "query": "thorie dare"
+          }
+        }
+      },
+      "outcome": "actionable",
+      "hallucination": {
+        "repeated_hallucination": false,
+        "garbage": false,
+        "no_expected_overlap": false,
+        "expected_overlap": [
+          "play",
+          "youtube"
+        ]
+      },
+      "reps": [
+        {
+          "rep": 0,
+          "transcript_raw": "Play Thorie Dare on YouTube.",
+          "confidence_avg_logprob": -0.605,
+          "stt_latency_ms": 544.2,
+          "detected_language": "en",
+          "language_probability": 1.0
+        },
+        {
+          "rep": 1,
+          "transcript_raw": "Play Thorie Dare on YouTube.",
+          "confidence_avg_logprob": -0.605,
+          "stt_latency_ms": 546.1,
+          "detected_language": "en",
+          "language_probability": 1.0
+        },
+        {
+          "rep": 2,
+          "transcript_raw": "Play Thorie Dare on YouTube.",
+          "confidence_avg_logprob": -0.605,
+          "stt_latency_ms": 539.8,
+          "detected_language": "en",
+          "language_probability": 1.0
+        }
+      ]
+    },
+    {
+      "mode": "B_forced_hi",
+      "mode_lang_arg": "hi",
+      "utterance_id": "en_open_firefox",
+      "utterance": "Open Firefox",
+      "acoustic_lang": "en",
+      "audio_duration_ms": 1680.0,
+      "word_count": 2,
+      "transcript_postprocessed": "Open Firefox",
+      "normalized": "Open firefox",
+      "low_quality_guard": false,
+      "validate_accepted": true,
+      "validate_failure_reason": "",
+      "intent": {
+        "category": "DETERMINISTIC_COMMAND",
+        "actionable": true,
+        "llm_allowed": true,
+        "confidence": 0.8,
+        "reason": "imperative command verb 'open'"
+      },
+      "decision": {
+        "path": "DIRECT_EXECUTION",
+        "needs_llm": false,
+        "action": {
+          "action": "desktop_open",
+          "params": {
+            "app": "firefox"
+          }
+        }
+      },
+      "outcome": "actionable",
+      "hallucination": {
+        "repeated_hallucination": false,
+        "garbage": false,
+        "no_expected_overlap": false,
+        "expected_overlap": [
+          "firefox",
+          "open"
+        ]
+      },
+      "reps": [
+        {
+          "rep": 0,
+          "transcript_raw": "Open Firefox",
+          "confidence_avg_logprob": -0.532,
+          "stt_latency_ms": 518.2,
+          "detected_language": "hi",
+          "language_probability": 1.0
+        },
+        {
+          "rep": 1,
+          "transcript_raw": "Open Firefox",
+          "confidence_avg_logprob": -0.532,
+          "stt_latency_ms": 520.7,
+          "detected_language": "hi",
+          "language_probability": 1.0
+        },
+        {
+          "rep": 2,
+          "transcript_raw": "Open Firefox",
+          "confidence_avg_logprob": -0.532,
+          "stt_latency_ms": 520.6,
+          "detected_language": "hi",
+          "language_probability": 1.0
+        }
+      ]
+    },
+    {
+      "mode": "B_forced_hi",
+      "mode_lang_arg": "hi",
+      "utterance_id": "en_play_believer",
+      "utterance": "Play Believer on YouTube",
+      "acoustic_lang": "en",
+      "audio_duration_ms": 1992.0,
+      "word_count": 4,
+      "transcript_postprocessed": "Play Believer on YouTube",
+      "normalized": "play believer on youtube",
+      "low_quality_guard": false,
+      "validate_accepted": true,
+      "validate_failure_reason": "",
+      "intent": {
+        "category": "DETERMINISTIC_COMMAND",
+        "actionable": true,
+        "llm_allowed": true,
+        "confidence": 0.9,
+        "reason": "imperative command verb 'play'"
+      },
+      "decision": {
+        "path": "DIRECT_EXECUTION",
+        "needs_llm": false,
+        "action": {
+          "action": "play_media",
+          "params": {
+            "youtube": true,
+            "query": "believer"
+          }
+        }
+      },
+      "outcome": "actionable",
+      "hallucination": {
+        "repeated_hallucination": false,
+        "garbage": false,
+        "no_expected_overlap": false,
+        "expected_overlap": [
+          "believer",
+          "play",
+          "youtube"
+        ]
+      },
+      "reps": [
+        {
+          "rep": 0,
+          "transcript_raw": "Play Believer on YouTube",
+          "confidence_avg_logprob": -0.364,
+          "stt_latency_ms": 539.6,
+          "detected_language": "hi",
+          "language_probability": 1.0
+        },
+        {
+          "rep": 1,
+          "transcript_raw": "Play Believer on YouTube",
+          "confidence_avg_logprob": -0.364,
+          "stt_latency_ms": 539.2,
+          "detected_language": "hi",
+          "language_probability": 1.0
+        },
+        {
+          "rep": 2,
+          "transcript_raw": "Play Believer on YouTube",
+          "confidence_avg_logprob": -0.364,
+          "stt_latency_ms": 538.2,
+          "detected_language": "hi",
+          "language_probability": 1.0
+        }
+      ]
+    },
+    {
+      "mode": "B_forced_hi",
+      "mode_lang_arg": "hi",
+      "utterance_id": "en_whats_my_ram",
+      "utterance": "What's my RAM?",
+      "acoustic_lang": "en",
+      "audio_duration_ms": 1440.0,
+      "word_count": 3,
+      "transcript_postprocessed": "What's my RAM",
+      "normalized": "search my ram",
+      "low_quality_guard": false,
+      "validate_accepted": true,
+      "validate_failure_reason": "",
+      "intent": {
+        "category": "KNOWLEDGE_QUESTION",
+        "actionable": false,
+        "llm_allowed": true,
+        "confidence": 0.7,
+        "reason": "factual question"
+      },
+      "decision": {
+        "path": "SYSTEM_INFO",
+        "needs_llm": false,
+        "action": null
+      },
+      "outcome": "uncertain",
+      "hallucination": {
+        "repeated_hallucination": false,
+        "garbage": false,
+        "no_expected_overlap": false,
+        "expected_overlap": [
+          "ram"
+        ]
+      },
+      "reps": [
+        {
+          "rep": 0,
+          "transcript_raw": "What's my RAM?",
+          "confidence_avg_logprob": -0.27,
+          "stt_latency_ms": 542.2,
+          "detected_language": "hi",
+          "language_probability": 1.0
+        },
+        {
+          "rep": 1,
+          "transcript_raw": "What's my RAM?",
+          "confidence_avg_logprob": -0.27,
+          "stt_latency_ms": 558.7,
+          "detected_language": "hi",
+          "language_probability": 1.0
+        },
+        {
+          "rep": 2,
+          "transcript_raw": "What's my RAM?",
+          "confidence_avg_logprob": -0.27,
+          "stt_latency_ms": 547.4,
+          "detected_language": "hi",
+          "language_probability": 1.0
+        }
+      ]
+    },
+    {
+      "mode": "B_forced_hi",
+      "mode_lang_arg": "hi",
+      "utterance_id": "hi_firefox_kholo",
+      "utterance": "Firefox kholo",
+      "acoustic_lang": "hinglish",
+      "audio_duration_ms": 1656.0,
+      "word_count": 4,
+      "transcript_postprocessed": "5 4 X Kolo",
+      "normalized": "5 4 X Kolo",
+      "low_quality_guard": false,
+      "validate_accepted": false,
+      "validate_failure_reason": "LOW_CONFIDENCE",
+      "intent": {
+        "category": "UNCERTAIN",
+        "actionable": false,
+        "llm_allowed": false,
+        "confidence": 0.2,
+        "reason": "confidence -1.201 < -1.3 (deep hallucination band)"
+      },
+      "decision": null,
+      "outcome": "rejected",
+      "hallucination": {
+        "repeated_hallucination": false,
+        "garbage": false,
+        "no_expected_overlap": true,
+        "expected_overlap": []
+      },
+      "reps": [
+        {
+          "rep": 0,
+          "transcript_raw": "5 4 X Kolo",
+          "confidence_avg_logprob": -1.201,
+          "stt_latency_ms": 541.6,
+          "detected_language": "hi",
+          "language_probability": 1.0
+        },
+        {
+          "rep": 1,
+          "transcript_raw": "5 4 X Kolo",
+          "confidence_avg_logprob": -1.201,
+          "stt_latency_ms": 539.3,
+          "detected_language": "hi",
+          "language_probability": 1.0
+        },
+        {
+          "rep": 2,
+          "transcript_raw": "5 4 X Kolo",
+          "confidence_avg_logprob": -1.201,
+          "stt_latency_ms": 537.8,
+          "detected_language": "hi",
+          "language_probability": 1.0
+        }
+      ]
+    },
+    {
+      "mode": "B_forced_hi",
+      "mode_lang_arg": "hi",
+      "utterance_id": "hi_youtube_pe_music_chalao",
+      "utterance": "YouTube pe music chalao",
+      "acoustic_lang": "hinglish",
+      "audio_duration_ms": 2136.0,
+      "word_count": 4,
+      "transcript_postprocessed": "YouTube Pay Music Chalau",
+      "normalized": "youtube Pay Music Chalau",
+      "low_quality_guard": false,
+      "validate_accepted": true,
+      "validate_failure_reason": "",
+      "intent": {
+        "category": "CONVERSATIONAL",
+        "actionable": false,
+        "llm_allowed": true,
+        "confidence": 0.55,
+        "reason": "coherent statement"
+      },
+      "decision": {
+        "path": "LLM",
+        "needs_llm": true,
+        "action": null
+      },
+      "outcome": "uncertain",
+      "hallucination": {
+        "repeated_hallucination": false,
+        "garbage": false,
+        "no_expected_overlap": false,
+        "expected_overlap": [
+          "music",
+          "youtube"
+        ]
+      },
+      "reps": [
+        {
+          "rep": 0,
+          "transcript_raw": "YouTube Pay Music Chalau",
+          "confidence_avg_logprob": -0.514,
+          "stt_latency_ms": 541.0,
+          "detected_language": "hi",
+          "language_probability": 1.0
+        },
+        {
+          "rep": 1,
+          "transcript_raw": "YouTube Pay Music Chalau",
+          "confidence_avg_logprob": -0.514,
+          "stt_latency_ms": 537.6,
+          "detected_language": "hi",
+          "language_probability": 1.0
+        },
+        {
+          "rep": 2,
+          "transcript_raw": "YouTube Pay Music Chalau",
+          "confidence_avg_logprob": -0.514,
+          "stt_latency_ms": 550.2,
+          "detected_language": "hi",
+          "language_probability": 1.0
+        }
+      ]
+    },
+    {
+      "mode": "B_forced_hi",
+      "mode_lang_arg": "hi",
+      "utterance_id": "hi_volume_thoda_kam_karo",
+      "utterance": "volume thoda kam karo",
+      "acoustic_lang": "hinglish",
+      "audio_duration_ms": 1944.0,
+      "word_count": 3,
+      "transcript_postprocessed": "volumthola kam karo",
+      "normalized": "volumthola down",
+      "low_quality_guard": false,
+      "validate_accepted": true,
+      "validate_failure_reason": "",
+      "intent": {
+        "category": "CONVERSATIONAL",
+        "actionable": false,
+        "llm_allowed": true,
+        "confidence": 0.55,
+        "reason": "coherent statement"
+      },
+      "decision": {
+        "path": "LLM",
+        "needs_llm": true,
+        "action": null
+      },
+      "outcome": "uncertain",
+      "hallucination": {
+        "repeated_hallucination": false,
+        "garbage": false,
+        "no_expected_overlap": false,
+        "expected_overlap": [
+          "kam"
+        ]
+      },
+      "reps": [
+        {
+          "rep": 0,
+          "transcript_raw": "volumthola kam karo",
+          "confidence_avg_logprob": -0.851,
+          "stt_latency_ms": 543.0,
+          "detected_language": "hi",
+          "language_probability": 1.0
+        },
+        {
+          "rep": 1,
+          "transcript_raw": "volumthola kam karo",
+          "confidence_avg_logprob": -0.851,
+          "stt_latency_ms": 544.4,
+          "detected_language": "hi",
+          "language_probability": 1.0
+        },
+        {
+          "rep": 2,
+          "transcript_raw": "volumthola kam karo",
+          "confidence_avg_logprob": -0.851,
+          "stt_latency_ms": 543.5,
+          "detected_language": "hi",
+          "language_probability": 1.0
+        }
+      ]
+    },
+    {
+      "mode": "B_forced_hi",
+      "mode_lang_arg": "hi",
+      "utterance_id": "hi_mera_cpu_kitna",
+      "utterance": "mera CPU kitna use ho raha hai",
+      "acoustic_lang": "hinglish",
+      "audio_duration_ms": 3192.0,
+      "word_count": 9,
+      "transcript_postprocessed": "My CPU is so much that it is running",
+      "normalized": "My CPU is so much that it is running",
+      "low_quality_guard": false,
+      "validate_accepted": false,
+      "validate_failure_reason": "LOW_CONFIDENCE",
+      "intent": {
+        "category": "UNCERTAIN",
+        "actionable": false,
+        "llm_allowed": false,
+        "confidence": 0.2,
+        "reason": "confidence -1.134 < -1.3 (deep hallucination band)"
+      },
+      "decision": null,
+      "outcome": "rejected",
+      "hallucination": {
+        "repeated_hallucination": false,
+        "garbage": false,
+        "no_expected_overlap": false,
+        "expected_overlap": [
+          "cpu"
+        ]
+      },
+      "reps": [
+        {
+          "rep": 0,
+          "transcript_raw": "My CPU is so much that it is running.",
+          "confidence_avg_logprob": -1.134,
+          "stt_latency_ms": 560.0,
+          "detected_language": "hi",
+          "language_probability": 1.0
+        },
+        {
+          "rep": 1,
+          "transcript_raw": "My CPU is so much that it is running.",
+          "confidence_avg_logprob": -1.134,
+          "stt_latency_ms": 559.8,
+          "detected_language": "hi",
+          "language_probability": 1.0
+        },
+        {
+          "rep": 2,
+          "transcript_raw": "My CPU is so much that it is running.",
+          "confidence_avg_logprob": -1.134,
+          "stt_latency_ms": 560.5,
+          "detected_language": "hi",
+          "language_probability": 1.0
+        }
+      ]
+    },
+    {
+      "mode": "B_forced_hi",
+      "mode_lang_arg": "hi",
+      "utterance_id": "dev_youtube_gana_chalao",
+      "utterance": "यूट्यूब पर गाना चलाओ",
+      "acoustic_lang": "hi",
+      "audio_duration_ms": 2040.0,
+      "word_count": 3,
+      "transcript_postprocessed": "YouTube Pargana Chalau",
+      "normalized": "youtube Pargana Chalau",
+      "low_quality_guard": false,
+      "validate_accepted": true,
+      "validate_failure_reason": "",
+      "intent": {
+        "category": "CONVERSATIONAL",
+        "actionable": false,
+        "llm_allowed": true,
+        "confidence": 0.55,
+        "reason": "coherent statement"
+      },
+      "decision": {
+        "path": "LLM",
+        "needs_llm": true,
+        "action": null
+      },
+      "outcome": "uncertain",
+      "hallucination": {
+        "repeated_hallucination": false,
+        "garbage": false,
+        "no_expected_overlap": false,
+        "expected_overlap": [
+          "chalau",
+          "youtube"
+        ]
+      },
+      "reps": [
+        {
+          "rep": 0,
+          "transcript_raw": "YouTube Pargana Chalau",
+          "confidence_avg_logprob": -0.545,
+          "stt_latency_ms": 609.8,
+          "detected_language": "hi",
+          "language_probability": 1.0
+        },
+        {
+          "rep": 1,
+          "transcript_raw": "YouTube Pargana Chalau",
+          "confidence_avg_logprob": -0.545,
+          "stt_latency_ms": 541.6,
+          "detected_language": "hi",
+          "language_probability": 1.0
+        },
+        {
+          "rep": 2,
+          "transcript_raw": "YouTube Pargana Chalau",
+          "confidence_avg_logprob": -0.545,
+          "stt_latency_ms": 544.8,
+          "detected_language": "hi",
+          "language_probability": 1.0
+        }
+      ]
+    },
+    {
+      "mode": "B_forced_hi",
+      "mode_lang_arg": "hi",
+      "utterance_id": "dev_firefox_kholo",
+      "utterance": "फ़ायरफ़ॉक्स खोलो",
+      "acoustic_lang": "hi",
+      "audio_duration_ms": 1632.0,
+      "word_count": 3,
+      "transcript_postprocessed": "5 o'clock school",
+      "normalized": "5 o'clock school",
+      "low_quality_guard": false,
+      "validate_accepted": false,
+      "validate_failure_reason": "LOW_CONFIDENCE",
+      "intent": {
+        "category": "UNCERTAIN",
+        "actionable": false,
+        "llm_allowed": false,
+        "confidence": 0.2,
+        "reason": "confidence -1.364 < -1.3 (deep hallucination band)"
+      },
+      "decision": null,
+      "outcome": "rejected",
+      "hallucination": {
+        "repeated_hallucination": false,
+        "garbage": false,
+        "no_expected_overlap": true,
+        "expected_overlap": []
+      },
+      "reps": [
+        {
+          "rep": 0,
+          "transcript_raw": "5 o'clock school",
+          "confidence_avg_logprob": -1.364,
+          "stt_latency_ms": 533.6,
+          "detected_language": "hi",
+          "language_probability": 1.0
+        },
+        {
+          "rep": 1,
+          "transcript_raw": "5 o'clock school",
+          "confidence_avg_logprob": -1.364,
+          "stt_latency_ms": 555.1,
+          "detected_language": "hi",
+          "language_probability": 1.0
+        },
+        {
+          "rep": 2,
+          "transcript_raw": "5 o'clock school",
+          "confidence_avg_logprob": -1.364,
+          "stt_latency_ms": 544.5,
+          "detected_language": "hi",
+          "language_probability": 1.0
+        }
+      ]
+    },
+    {
+      "mode": "B_forced_hi",
+      "mode_lang_arg": "hi",
+      "utterance_id": "mix_arijit_singh",
+      "utterance": "YouTube pe Arijit Singh ka song chalao",
+      "acoustic_lang": "hinglish",
+      "audio_duration_ms": 3264.0,
+      "word_count": 5,
+      "transcript_postprocessed": "YouTube'e Arijit Singh Kasson Chalau",
+      "normalized": "youtube'e Arijit Singh Kasson Chalau",
+      "low_quality_guard": false,
+      "validate_accepted": true,
+      "validate_failure_reason": "",
+      "intent": {
+        "category": "CONVERSATIONAL",
+        "actionable": false,
+        "llm_allowed": true,
+        "confidence": 0.55,
+        "reason": "coherent statement"
+      },
+      "decision": {
+        "path": "LLM",
+        "needs_llm": true,
+        "action": null
+      },
+      "outcome": "uncertain",
+      "hallucination": {
+        "repeated_hallucination": false,
+        "garbage": false,
+        "no_expected_overlap": false,
+        "expected_overlap": [
+          "arijit",
+          "singh"
+        ]
+      },
+      "reps": [
+        {
+          "rep": 0,
+          "transcript_raw": "YouTube'e Arijit Singh Kasson Chalau",
+          "confidence_avg_logprob": -0.73,
+          "stt_latency_ms": 580.6,
+          "detected_language": "hi",
+          "language_probability": 1.0
+        },
+        {
+          "rep": 1,
+          "transcript_raw": "YouTube'e Arijit Singh Kasson Chalau",
+          "confidence_avg_logprob": -0.73,
+          "stt_latency_ms": 581.9,
+          "detected_language": "hi",
+          "language_probability": 1.0
+        },
+        {
+          "rep": 2,
+          "transcript_raw": "YouTube'e Arijit Singh Kasson Chalau",
+          "confidence_avg_logprob": -0.73,
+          "stt_latency_ms": 579.8,
+          "detected_language": "hi",
+          "language_probability": 1.0
+        }
+      ]
+    },
+    {
+      "mode": "B_forced_hi",
+      "mode_lang_arg": "hi",
+      "utterance_id": "prob_thodi_der",
+      "utterance": "play thodi der on youtube",
+      "acoustic_lang": "hinglish",
+      "audio_duration_ms": 2328.0,
+      "word_count": 5,
+      "transcript_postprocessed": "Play Thoree Dare on YouTube",
+      "normalized": "play thoree dare on youtube",
+      "low_quality_guard": false,
+      "validate_accepted": true,
+      "validate_failure_reason": "",
+      "intent": {
+        "category": "DETERMINISTIC_COMMAND",
+        "actionable": true,
+        "llm_allowed": true,
+        "confidence": 0.8,
+        "reason": "imperative command verb 'play'"
+      },
+      "decision": {
+        "path": "DIRECT_EXECUTION",
+        "needs_llm": false,
+        "action": {
+          "action": "play_media",
+          "params": {
+            "youtube": true,
+            "query": "thoree dare"
+          }
+        }
+      },
+      "outcome": "actionable",
+      "hallucination": {
+        "repeated_hallucination": false,
+        "garbage": false,
+        "no_expected_overlap": false,
+        "expected_overlap": [
+          "play",
+          "youtube"
+        ]
+      },
+      "reps": [
+        {
+          "rep": 0,
+          "transcript_raw": "Play Thoree Dare on YouTube",
+          "confidence_avg_logprob": -0.606,
+          "stt_latency_ms": 551.1,
+          "detected_language": "hi",
+          "language_probability": 1.0
+        },
+        {
+          "rep": 1,
+          "transcript_raw": "Play Thoree Dare on YouTube",
+          "confidence_avg_logprob": -0.606,
+          "stt_latency_ms": 554.4,
+          "detected_language": "hi",
+          "language_probability": 1.0
+        },
+        {
+          "rep": 2,
+          "transcript_raw": "Play Thoree Dare on YouTube",
+          "confidence_avg_logprob": -0.606,
+          "stt_latency_ms": 552.4,
+          "detected_language": "hi",
+          "language_probability": 1.0
+        }
+      ]
+    },
+    {
+      "mode": "C_auto",
+      "mode_lang_arg": null,
+      "utterance_id": "en_open_firefox",
+      "utterance": "Open Firefox",
+      "acoustic_lang": "en",
+      "audio_duration_ms": 1680.0,
+      "word_count": 2,
+      "transcript_postprocessed": "Open Firefox",
+      "normalized": "Open firefox",
+      "low_quality_guard": false,
+      "validate_accepted": true,
+      "validate_failure_reason": "",
+      "intent": {
+        "category": "DETERMINISTIC_COMMAND",
+        "actionable": true,
+        "llm_allowed": true,
+        "confidence": 0.9,
+        "reason": "imperative command verb 'open'"
+      },
+      "decision": {
+        "path": "DIRECT_EXECUTION",
+        "needs_llm": false,
+        "action": {
+          "action": "desktop_open",
+          "params": {
+            "app": "firefox"
+          }
+        }
+      },
+      "outcome": "actionable",
+      "hallucination": {
+        "repeated_hallucination": false,
+        "garbage": false,
+        "no_expected_overlap": false,
+        "expected_overlap": [
+          "firefox",
+          "open"
+        ]
+      },
+      "reps": [
+        {
+          "rep": 0,
+          "transcript_raw": "Open Firefox.",
+          "confidence_avg_logprob": -0.373,
+          "stt_latency_ms": 1069.3,
+          "detected_language": "en",
+          "language_probability": 0.8815
+        },
+        {
+          "rep": 1,
+          "transcript_raw": "Open Firefox.",
+          "confidence_avg_logprob": -0.373,
+          "stt_latency_ms": 1201.5,
+          "detected_language": "en",
+          "language_probability": 0.8815
+        },
+        {
+          "rep": 2,
+          "transcript_raw": "Open Firefox.",
+          "confidence_avg_logprob": -0.373,
+          "stt_latency_ms": 1040.2,
+          "detected_language": "en",
+          "language_probability": 0.8815
+        }
+      ]
+    },
+    {
+      "mode": "C_auto",
+      "mode_lang_arg": null,
+      "utterance_id": "en_play_believer",
+      "utterance": "Play Believer on YouTube",
+      "acoustic_lang": "en",
+      "audio_duration_ms": 1992.0,
+      "word_count": 4,
+      "transcript_postprocessed": "Play believer on YouTube",
+      "normalized": "play believer on youtube",
+      "low_quality_guard": false,
+      "validate_accepted": true,
+      "validate_failure_reason": "",
+      "intent": {
+        "category": "DETERMINISTIC_COMMAND",
+        "actionable": true,
+        "llm_allowed": true,
+        "confidence": 0.9,
+        "reason": "imperative command verb 'play'"
+      },
+      "decision": {
+        "path": "DIRECT_EXECUTION",
+        "needs_llm": false,
+        "action": {
+          "action": "play_media",
+          "params": {
+            "youtube": true,
+            "query": "believer"
+          }
+        }
+      },
+      "outcome": "actionable",
+      "hallucination": {
+        "repeated_hallucination": false,
+        "garbage": false,
+        "no_expected_overlap": false,
+        "expected_overlap": [
+          "believer",
+          "play",
+          "youtube"
+        ]
+      },
+      "reps": [
+        {
+          "rep": 0,
+          "transcript_raw": "Play believer on YouTube.",
+          "confidence_avg_logprob": -0.388,
+          "stt_latency_ms": 1049.5,
+          "detected_language": "en",
+          "language_probability": 0.821
+        },
+        {
+          "rep": 1,
+          "transcript_raw": "Play believer on YouTube.",
+          "confidence_avg_logprob": -0.388,
+          "stt_latency_ms": 1050.2,
+          "detected_language": "en",
+          "language_probability": 0.821
+        },
+        {
+          "rep": 2,
+          "transcript_raw": "Play believer on YouTube.",
+          "confidence_avg_logprob": -0.388,
+          "stt_latency_ms": 1087.2,
+          "detected_language": "en",
+          "language_probability": 0.821
+        }
+      ]
+    },
+    {
+      "mode": "C_auto",
+      "mode_lang_arg": null,
+      "utterance_id": "en_whats_my_ram",
+      "utterance": "What's my RAM?",
+      "acoustic_lang": "en",
+      "audio_duration_ms": 1440.0,
+      "word_count": 3,
+      "transcript_postprocessed": "What's my RAM",
+      "normalized": "search my ram",
+      "low_quality_guard": false,
+      "validate_accepted": true,
+      "validate_failure_reason": "",
+      "intent": {
+        "category": "KNOWLEDGE_QUESTION",
+        "actionable": false,
+        "llm_allowed": true,
+        "confidence": 0.7,
+        "reason": "factual question"
+      },
+      "decision": {
+        "path": "SYSTEM_INFO",
+        "needs_llm": false,
+        "action": null
+      },
+      "outcome": "uncertain",
+      "hallucination": {
+        "repeated_hallucination": false,
+        "garbage": false,
+        "no_expected_overlap": false,
+        "expected_overlap": [
+          "ram"
+        ]
+      },
+      "reps": [
+        {
+          "rep": 0,
+          "transcript_raw": "What's my RAM?",
+          "confidence_avg_logprob": -0.141,
+          "stt_latency_ms": 1040.3,
+          "detected_language": "en",
+          "language_probability": 0.8526
+        },
+        {
+          "rep": 1,
+          "transcript_raw": "What's my RAM?",
+          "confidence_avg_logprob": -0.141,
+          "stt_latency_ms": 1041.2,
+          "detected_language": "en",
+          "language_probability": 0.8526
+        },
+        {
+          "rep": 2,
+          "transcript_raw": "What's my RAM?",
+          "confidence_avg_logprob": -0.141,
+          "stt_latency_ms": 1039.9,
+          "detected_language": "en",
+          "language_probability": 0.8526
+        }
+      ]
+    },
+    {
+      "mode": "C_auto",
+      "mode_lang_arg": null,
+      "utterance_id": "hi_firefox_kholo",
+      "utterance": "Firefox kholo",
+      "acoustic_lang": "hinglish",
+      "audio_duration_ms": 1656.0,
+      "word_count": 3,
+      "transcript_postprocessed": "5 forks color",
+      "normalized": "5 forks color",
+      "low_quality_guard": false,
+      "validate_accepted": true,
+      "validate_failure_reason": "",
+      "intent": {
+        "category": "CONVERSATIONAL",
+        "actionable": false,
+        "llm_allowed": true,
+        "confidence": 0.55,
+        "reason": "coherent statement"
+      },
+      "decision": {
+        "path": "LLM",
+        "needs_llm": true,
+        "action": null
+      },
+      "outcome": "uncertain",
+      "hallucination": {
+        "repeated_hallucination": false,
+        "garbage": false,
+        "no_expected_overlap": true,
+        "expected_overlap": []
+      },
+      "reps": [
+        {
+          "rep": 0,
+          "transcript_raw": "5 forks color",
+          "confidence_avg_logprob": -0.88,
+          "stt_latency_ms": 1040.7,
+          "detected_language": "en",
+          "language_probability": 0.6429
+        },
+        {
+          "rep": 1,
+          "transcript_raw": "5 forks color",
+          "confidence_avg_logprob": -0.88,
+          "stt_latency_ms": 1242.3,
+          "detected_language": "en",
+          "language_probability": 0.6429
+        },
+        {
+          "rep": 2,
+          "transcript_raw": "5 forks color",
+          "confidence_avg_logprob": -0.88,
+          "stt_latency_ms": 1038.6,
+          "detected_language": "en",
+          "language_probability": 0.6429
+        }
+      ]
+    },
+    {
+      "mode": "C_auto",
+      "mode_lang_arg": null,
+      "utterance_id": "hi_youtube_pe_music_chalao",
+      "utterance": "YouTube pe music chalao",
+      "acoustic_lang": "hinglish",
+      "audio_duration_ms": 2136.0,
+      "word_count": 4,
+      "transcript_postprocessed": "YouTube Pay Music Chalau",
+      "normalized": "youtube Pay Music Chalau",
+      "low_quality_guard": false,
+      "validate_accepted": true,
+      "validate_failure_reason": "",
+      "intent": {
+        "category": "CONVERSATIONAL",
+        "actionable": false,
+        "llm_allowed": true,
+        "confidence": 0.55,
+        "reason": "coherent statement"
+      },
+      "decision": {
+        "path": "LLM",
+        "needs_llm": true,
+        "action": null
+      },
+      "outcome": "uncertain",
+      "hallucination": {
+        "repeated_hallucination": false,
+        "garbage": false,
+        "no_expected_overlap": false,
+        "expected_overlap": [
+          "music",
+          "youtube"
+        ]
+      },
+      "reps": [
+        {
+          "rep": 0,
+          "transcript_raw": "YouTube Pay Music Chalau",
+          "confidence_avg_logprob": -0.411,
+          "stt_latency_ms": 1044.2,
+          "detected_language": "hi",
+          "language_probability": 0.3832
+        },
+        {
+          "rep": 1,
+          "transcript_raw": "YouTube Pay Music Chalau",
+          "confidence_avg_logprob": -0.411,
+          "stt_latency_ms": 1044.0,
+          "detected_language": "hi",
+          "language_probability": 0.3832
+        },
+        {
+          "rep": 2,
+          "transcript_raw": "YouTube Pay Music Chalau",
+          "confidence_avg_logprob": -0.411,
+          "stt_latency_ms": 1048.1,
+          "detected_language": "hi",
+          "language_probability": 0.3832
+        }
+      ]
+    },
+    {
+      "mode": "C_auto",
+      "mode_lang_arg": null,
+      "utterance_id": "hi_volume_thoda_kam_karo",
+      "utterance": "volume thoda kam karo",
+      "acoustic_lang": "hinglish",
+      "audio_duration_ms": 1944.0,
+      "word_count": 3,
+      "transcript_postprocessed": "volumthola kam karo",
+      "normalized": "volumthola down",
+      "low_quality_guard": false,
+      "validate_accepted": true,
+      "validate_failure_reason": "",
+      "intent": {
+        "category": "CONVERSATIONAL",
+        "actionable": false,
+        "llm_allowed": true,
+        "confidence": 0.55,
+        "reason": "coherent statement"
+      },
+      "decision": {
+        "path": "LLM",
+        "needs_llm": true,
+        "action": null
+      },
+      "outcome": "uncertain",
+      "hallucination": {
+        "repeated_hallucination": false,
+        "garbage": false,
+        "no_expected_overlap": false,
+        "expected_overlap": [
+          "kam"
+        ]
+      },
+      "reps": [
+        {
+          "rep": 0,
+          "transcript_raw": "volumthola kam karo",
+          "confidence_avg_logprob": -0.851,
+          "stt_latency_ms": 1047.3,
+          "detected_language": "bn",
+          "language_probability": 0.4125
+        },
+        {
+          "rep": 1,
+          "transcript_raw": "volumthola kam karo",
+          "confidence_avg_logprob": -0.851,
+          "stt_latency_ms": 1048.6,
+          "detected_language": "bn",
+          "language_probability": 0.4125
+        },
+        {
+          "rep": 2,
+          "transcript_raw": "volumthola kam karo",
+          "confidence_avg_logprob": -0.851,
+          "stt_latency_ms": 1047.3,
+          "detected_language": "bn",
+          "language_probability": 0.4125
+        }
+      ]
+    },
+    {
+      "mode": "C_auto",
+      "mode_lang_arg": null,
+      "utterance_id": "hi_mera_cpu_kitna",
+      "utterance": "mera CPU kitna use ho raha hai",
+      "acoustic_lang": "hinglish",
+      "audio_duration_ms": 3192.0,
+      "word_count": 9,
+      "transcript_postprocessed": "My CPU is so much that it is running",
+      "normalized": "My CPU is so much that it is running",
+      "low_quality_guard": false,
+      "validate_accepted": false,
+      "validate_failure_reason": "LOW_CONFIDENCE",
+      "intent": {
+        "category": "UNCERTAIN",
+        "actionable": false,
+        "llm_allowed": false,
+        "confidence": 0.2,
+        "reason": "confidence -1.134 < -1.3 (deep hallucination band)"
+      },
+      "decision": null,
+      "outcome": "rejected",
+      "hallucination": {
+        "repeated_hallucination": false,
+        "garbage": false,
+        "no_expected_overlap": false,
+        "expected_overlap": [
+          "cpu"
+        ]
+      },
+      "reps": [
+        {
+          "rep": 0,
+          "transcript_raw": "My CPU is so much that it is running.",
+          "confidence_avg_logprob": -1.134,
+          "stt_latency_ms": 1063.3,
+          "detected_language": "hi",
+          "language_probability": 0.5396
+        },
+        {
+          "rep": 1,
+          "transcript_raw": "My CPU is so much that it is running.",
+          "confidence_avg_logprob": -1.134,
+          "stt_latency_ms": 1628.3,
+          "detected_language": "hi",
+          "language_probability": 0.5396
+        },
+        {
+          "rep": 2,
+          "transcript_raw": "My CPU is so much that it is running.",
+          "confidence_avg_logprob": -1.134,
+          "stt_latency_ms": 1087.2,
+          "detected_language": "hi",
+          "language_probability": 0.5396
+        }
+      ]
+    },
+    {
+      "mode": "C_auto",
+      "mode_lang_arg": null,
+      "utterance_id": "dev_youtube_gana_chalao",
+      "utterance": "यूट्यूब पर गाना चलाओ",
+      "acoustic_lang": "hi",
+      "audio_duration_ms": 2040.0,
+      "word_count": 3,
+      "transcript_postprocessed": "YouTube Pargana Chalau",
+      "normalized": "youtube Pargana Chalau",
+      "low_quality_guard": false,
+      "validate_accepted": true,
+      "validate_failure_reason": "",
+      "intent": {
+        "category": "CONVERSATIONAL",
+        "actionable": false,
+        "llm_allowed": true,
+        "confidence": 0.55,
+        "reason": "coherent statement"
+      },
+      "decision": {
+        "path": "LLM",
+        "needs_llm": true,
+        "action": null
+      },
+      "outcome": "uncertain",
+      "hallucination": {
+        "repeated_hallucination": false,
+        "garbage": false,
+        "no_expected_overlap": false,
+        "expected_overlap": [
+          "chalau",
+          "youtube"
+        ]
+      },
+      "reps": [
+        {
+          "rep": 0,
+          "transcript_raw": "YouTube Pargana Chalau",
+          "confidence_avg_logprob": -0.545,
+          "stt_latency_ms": 1059.4,
+          "detected_language": "hi",
+          "language_probability": 0.8809
+        },
+        {
+          "rep": 1,
+          "transcript_raw": "YouTube Pargana Chalau",
+          "confidence_avg_logprob": -0.545,
+          "stt_latency_ms": 1068.5,
+          "detected_language": "hi",
+          "language_probability": 0.8809
+        },
+        {
+          "rep": 2,
+          "transcript_raw": "YouTube Pargana Chalau",
+          "confidence_avg_logprob": -0.545,
+          "stt_latency_ms": 1066.1,
+          "detected_language": "hi",
+          "language_probability": 0.8809
+        }
+      ]
+    },
+    {
+      "mode": "C_auto",
+      "mode_lang_arg": null,
+      "utterance_id": "dev_firefox_kholo",
+      "utterance": "फ़ायरफ़ॉक्स खोलो",
+      "acoustic_lang": "hi",
+      "audio_duration_ms": 1632.0,
+      "word_count": 2,
+      "transcript_postprocessed": "Firefox Kulu",
+      "normalized": "firefox Kulu",
+      "low_quality_guard": false,
+      "validate_accepted": true,
+      "validate_failure_reason": "",
+      "intent": {
+        "category": "CONVERSATIONAL",
+        "actionable": false,
+        "llm_allowed": true,
+        "confidence": 0.4,
+        "reason": "coherent statement"
+      },
+      "decision": {
+        "path": "LLM",
+        "needs_llm": true,
+        "action": null
+      },
+      "outcome": "uncertain",
+      "hallucination": {
+        "repeated_hallucination": false,
+        "garbage": false,
+        "no_expected_overlap": false,
+        "expected_overlap": [
+          "firefox"
+        ]
+      },
+      "reps": [
+        {
+          "rep": 0,
+          "transcript_raw": "Firefox Kulu",
+          "confidence_avg_logprob": -0.926,
+          "stt_latency_ms": 1040.4,
+          "detected_language": "en",
+          "language_probability": 0.5845
+        },
+        {
+          "rep": 1,
+          "transcript_raw": "Firefox Kulu",
+          "confidence_avg_logprob": -0.926,
+          "stt_latency_ms": 1038.7,
+          "detected_language": "en",
+          "language_probability": 0.5845
+        },
+        {
+          "rep": 2,
+          "transcript_raw": "Firefox Kulu",
+          "confidence_avg_logprob": -0.926,
+          "stt_latency_ms": 1042.1,
+          "detected_language": "en",
+          "language_probability": 0.5845
+        }
+      ]
+    },
+    {
+      "mode": "C_auto",
+      "mode_lang_arg": null,
+      "utterance_id": "mix_arijit_singh",
+      "utterance": "YouTube pe Arijit Singh ka song chalao",
+      "acoustic_lang": "hinglish",
+      "audio_duration_ms": 3264.0,
+      "word_count": 4,
+      "transcript_postprocessed": "ارجیت سنکہ سون چلاو",
+      "normalized": "ارجیت سنکہ سون چلاو",
+      "low_quality_guard": false,
+      "validate_accepted": true,
+      "validate_failure_reason": "",
+      "intent": {
+        "category": "CONVERSATIONAL",
+        "actionable": false,
+        "llm_allowed": true,
+        "confidence": 0.55,
+        "reason": "coherent statement"
+      },
+      "decision": {
+        "path": "LLM",
+        "needs_llm": true,
+        "action": null
+      },
+      "outcome": "uncertain",
+      "hallucination": {
+        "repeated_hallucination": false,
+        "garbage": false,
+        "no_expected_overlap": true,
+        "expected_overlap": []
+      },
+      "reps": [
+        {
+          "rep": 0,
+          "transcript_raw": "ارجیت سنکہ سون چلاو",
+          "confidence_avg_logprob": -0.651,
+          "stt_latency_ms": 1090.3,
+          "detected_language": "ur",
+          "language_probability": 0.6915
+        },
+        {
+          "rep": 1,
+          "transcript_raw": "ارجیت سنکہ سون چلاو",
+          "confidence_avg_logprob": -0.651,
+          "stt_latency_ms": 1715.5,
+          "detected_language": "ur",
+          "language_probability": 0.6915
+        },
+        {
+          "rep": 2,
+          "transcript_raw": "ارجیت سنکہ سون چلاو",
+          "confidence_avg_logprob": -0.651,
+          "stt_latency_ms": 1100.6,
+          "detected_language": "ur",
+          "language_probability": 0.6915
+        }
+      ]
+    },
+    {
+      "mode": "C_auto",
+      "mode_lang_arg": null,
+      "utterance_id": "prob_thodi_der",
+      "utterance": "play thodi der on youtube",
+      "acoustic_lang": "hinglish",
+      "audio_duration_ms": 2328.0,
+      "word_count": 5,
+      "transcript_postprocessed": "Play Thorie Dare on YouTube",
+      "normalized": "play thorie dare on youtube",
+      "low_quality_guard": false,
+      "validate_accepted": true,
+      "validate_failure_reason": "",
+      "intent": {
+        "category": "DETERMINISTIC_COMMAND",
+        "actionable": true,
+        "llm_allowed": true,
+        "confidence": 0.8,
+        "reason": "imperative command verb 'play'"
+      },
+      "decision": {
+        "path": "DIRECT_EXECUTION",
+        "needs_llm": false,
+        "action": {
+          "action": "play_media",
+          "params": {
+            "youtube": true,
+            "query": "thorie dare"
+          }
+        }
+      },
+      "outcome": "actionable",
+      "hallucination": {
+        "repeated_hallucination": false,
+        "garbage": false,
+        "no_expected_overlap": false,
+        "expected_overlap": [
+          "play",
+          "youtube"
+        ]
+      },
+      "reps": [
+        {
+          "rep": 0,
+          "transcript_raw": "Play Thorie Dare on YouTube.",
+          "confidence_avg_logprob": -0.605,
+          "stt_latency_ms": 1061.6,
+          "detected_language": "en",
+          "language_probability": 0.5938
+        },
+        {
+          "rep": 1,
+          "transcript_raw": "Play Thorie Dare on YouTube.",
+          "confidence_avg_logprob": -0.605,
+          "stt_latency_ms": 1062.1,
+          "detected_language": "en",
+          "language_probability": 0.5938
+        },
+        {
+          "rep": 2,
+          "transcript_raw": "Play Thorie Dare on YouTube.",
+          "confidence_avg_logprob": -0.605,
+          "stt_latency_ms": 1066.4,
+          "detected_language": "en",
+          "language_probability": 0.5938
+        }
+      ]
+    }
+  ]
+}
