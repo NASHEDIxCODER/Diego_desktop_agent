@@ -43,7 +43,7 @@ from agent.task_state import TaskLimits  # noqa: E402
 from ai.reasoning_model import get_reasoning_model  # noqa: E402
 
 WORKSPACE = str(ROOT)
-REPORT_JSON = ROOT / "data" / "phase21a_scenarios.json"
+REPORT_JSON = ROOT / "data" / "scenarios.json"
 REPORT_MD = ROOT / "docs" / "PHASE21A_SCENARIOS.md"
 
 
