@@ -11,13 +11,13 @@
 
 ### Steps
 
-- `desktop_open` {'app': 'firefox'} → VERIFIED: firefox is already open
+- `desktop_open` {'app': 'firefox'} → VERIFIED: launched firefox (pid group started)
 - `open_folder` {'path': '~/Documents'} → VERIFIED: opened folder /home/nashedi_x_coder/Documents in the file manager
 
 ### Lessons
 
-- [successful_strategy] strategy that worked: desktop_open → open_folder (evidence=verified_success, conf=0.8)
-- [tool_preference] firefox launches reliably via desktop_open on this system (evidence=verified_success, conf=0.85)
+- [successful_strategy] strategy that worked: desktop_open → open_folder (evidence=verified_success, conf=0.1)
+- [tool_preference] firefox launches reliably via desktop_open on this system (evidence=verified_success, conf=0.35)
 
 ## Scenario B — Find a file in my workspace and report its size.
 
@@ -49,7 +49,7 @@
 
 ### Lessons
 
-- [successful_strategy] strategy that worked: find_file → read_file_head (evidence=verified_success, conf=0.95)
+- [successful_strategy] strategy that worked: find_file → read_file_head (evidence=verified_success, conf=1.0)
 
 ## Scenario D — Report the size of the event bus file (start from a wrong path on purpose so the agent must recover).
 
@@ -64,8 +64,8 @@
 - `file_info` {'path': 'core/event_bus.py'} → VERIFIED: /home/nashedi_x_coder/Workspace/PycharmProjects/Diego_desktop_agent/core/event_bus.py: 3293 bytes, modified 2026-08-23 1
 - `file_info` {'path': 'core/does_not_exist_eventbus.py'} → FAILED: file not found: /home/nashedi_x_coder/Workspace/PycharmProjects/Diego_desktop_agent/core/does_not_exist_eventbus.py
 
-- failure diagnosis: `wrong_params` → strategy `ask_user`
+- failure diagnosis: `wrong_params` → strategy `retry`
 
 ### Lessons
 
-- [successful_strategy] strategy that worked: find_file → file_info (evidence=verified_success, conf=1.0)
+- [successful_strategy] strategy that worked: find_file → file_info (evidence=verified_success, conf=0.55)

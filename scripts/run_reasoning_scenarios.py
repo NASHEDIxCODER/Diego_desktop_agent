@@ -329,6 +329,7 @@ async def run_scenario(key: str, store: TaskLessonStore) -> Dict[str, Any]:
         "scenario": key,
         "goal": spec["goal"],
         "mode": result.mode.value,
+        "model_used": getattr(agent._model, "name", "none"),
         "plan": [dict(s) for s in state.current_plan],
         "steps": [
             {"action": s.action, "params": s.params,

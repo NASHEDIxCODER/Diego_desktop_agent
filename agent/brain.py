@@ -154,6 +154,13 @@ class AgentBrain:
         self._perception = None
         self._decision_engine = None
         self._initialized = False
+        # Phase 21B: production reasoning state (None until a complex
+        # goal is routed). _reasoning_model may be injected by tests;
+        # when None the configured reasoning model is used lazily.
+        self._reasoning_model = None
+        self._last_reasoning_mode: Optional[str] = None
+        self._last_reasoning_result: Optional[Any] = None
+        self._last_reasoning_agent: Optional[Any] = None
         self._active_goal: Optional[Goal] = None
         self._goal_history: List[Goal] = []
         self._goal_manager = None  # Set after GoalManager is created
@@ -738,10 +745,24 @@ class AgentBrain:
             result.path = "LLM"
             result.used_llm = True
 
+            # Phase 21B — production reasoning routing (reuses the
+            # existing intent authorization + Phase 21A choose_mode; no
+            # second routing system). ONLY explicit compound/autonomous
+            # goals enter the ReasoningAgent loop — deterministic and
+            # single-action LLM goals keep the existing path below.
+            reasoning_mode = (
+                self._reasoning_route(text, auth)
+                if tool_execution_allowed else None)
+            if reasoning_mode is not None:
+                logger.info(
+                    "[Brain] Reasoning mode=%s routed: '%s'",
+                    reasoning_mode, text[:50])
+
             # Step 3: Plan (ONLY for actionable intents — requirement 6:
             # non-actionable transcripts must never invoke the planner).
             plan = (await self._plan(text, perception_ctx)
-                    if tool_execution_allowed else None)
+                    if tool_execution_allowed and reasoning_mode is None
+                    else None)
             if plan is None and not tool_execution_allowed:
                 logger.info("[Brain] Planner SKIPPED — intent is not "
                             "actionable (LLM-only answer): '%s'", text[:50])
@@ -754,7 +775,17 @@ class AgentBrain:
             # after one plan or one failed action, and never repeats the
             # exact failed action indefinitely.
             task_summary = ""
-            if plan:
+            if reasoning_mode is not None:
+                # ── Reasoning path: ReasoningAgent owns the whole loop
+                # (plan → execute → observe → verify → reflect → lessons)
+                # over the SAME TaskRunner + dispatch + verification.
+                reasoning_result = await self._run_reasoning_task(
+                    text, reasoning_mode)
+                self._last_reasoning_mode = reasoning_mode
+                self._last_reasoning_result = reasoning_result
+                self._fill_result_from_state(result, reasoning_result.task_state)
+                task_summary = reasoning_result.task_state.summary()
+            elif plan:
                 task_state = await self._run_task_loop(text, plan)
                 self._fill_result_from_state(result, task_state)
                 task_summary = task_state.summary()
@@ -962,6 +993,110 @@ class AgentBrain:
             logger.warning("[Brain] Re-plan failed: %s", e)
             return None
 
+    def _reasoning_route(self, text: str, auth) -> Optional[str]:
+        """Phase 21B — production routing gate (NOT a second routing system).
+
+        Uses the Phase 21A choose_mode() on top of the EXISTING intent
+        authorization. Only EXPLICIT compound / autonomous goals advance
+        to the ReasoningAgent loop:
+
+          - mode AUTONOMOUS (explicit multi-step phrasing), or
+          - the authorizer already classified the goal MULTI_STEP_TASK.
+
+        Everything else keeps its existing path: DETERMINISTIC_COMMAND /
+        VISION_COMMAND stay deterministic, SEARCH_REQUEST stays on the
+        search path, CONVERSATIONAL / KNOWLEDGE_QUESTION stay on their
+        answer paths, and all unanswered single-action LLM goals keep the
+        existing plan→run loop (with the adaptive step adapter now
+        enabled by default). Returns a reasoning Mode name or None.
+        """
+        from agent.reasoning_agent import choose_mode, Mode
+        mode = choose_mode(text)
+        if mode is Mode.AUTONOMOUS:
+            return mode.value
+        if auth is not None:
+            try:
+                cat = getattr(auth, "category", None)
+                name = getattr(cat, "value", None) or str(cat or "")
+            except Exception:
+                name = ""
+            if name == "MULTI_STEP_TASK":
+                return Mode.REASONING.value
+        return None
+
+    async def _run_reasoning_task(self, goal: str, mode: str):
+        """Phase 21B — run a complex/autonomous goal through the Phase 21A
+        ReasoningAgent loop (understand → plan → execute → observe →
+        verify → reflect → bounded lessons) with the SAME dispatch /
+        observe / verify / planner callables, authorization gate,
+        confirmation flow, limits and persistence as `_run_task_loop`.
+
+        The reasoning model can only PROPOSE. Every action still passes
+        the deterministic PlanValidator + the authorization gate, and the
+        TaskRunner owns verification, confirmation, cancellation,
+        retry/replan limits and loop detection.
+        """
+        from agent.reasoning_agent import ReasoningAgent, Mode
+        from agent.reasoning_context import ReasoningContextComposer
+        from agent.lessons import task_lesson_store
+        from ai.reasoning_model import get_reasoning_model
+        from agent.task_state import (  # noqa: F401
+            FinalStatus, task_state_store,
+        )
+        reasoning_agent = ReasoningAgent(
+            executor=self._dispatch_and_verify,
+            observer=self._observe_state,
+            planner=self._plan_with_context,
+            reasoning_model=(self._reasoning_model
+                             or get_reasoning_model()),
+            confirmation_callback=None,   # existing pause→confirm→resume flow
+            action_gate=self._planner_action_allowed,
+            lesson_store=task_lesson_store,
+            composer=ReasoningContextComposer(),
+            transcript=goal,
+        )
+        self._last_reasoning_agent = reasoning_agent
+        try:
+            result = await reasoning_agent.run(
+                goal, mode=Mode(mode))
+        except Exception as e:
+            # Honest safe failure: reasoning must never crash the pipeline.
+            logger.warning("[Brain] Reasoning task failed safely: %s", e)
+            result = reasoning_agent.error_result(goal, str(e))  # type: ignore
+        task_state = result.task_state
+        # Same persistence / pending-confirmation / experience recording
+        # as the existing _run_task_loop (continuation keeps working).
+        try:
+            task_state_store.save(task_state)
+        except Exception as e:
+            logger.debug("[Brain] reasoning task save skipped: %s", e)
+        if (task_state.final_status == FinalStatus.NEEDS_CONFIRMATION
+                and task_state.pending_confirmation is not None):
+            try:
+                self._register_pending_confirmation(task_state)
+            except Exception as e:
+                logger.debug("[Brain] pending confirmation reg skipped: %s", e)
+        try:
+            from learning.experience_db import experience_db
+            experience_db.record(
+                goal=goal,
+                plan_steps=[s.action for s in
+                            task_state.completed_steps + task_state.failed_steps],
+                plan_actions=[],
+                success=task_state.final_status == FinalStatus.SUCCESS,
+                result=task_state.summary(),
+                latency_ms=task_state.total_latency_ms,
+                error=task_state.blocker,
+                recovery_action=f"replans={task_state.replan_count} "
+                                f"(reasoning mode={mode})",
+                recovery_success=(task_state.replan_count > 0
+                                  and task_state.final_status == FinalStatus.SUCCESS),
+                used_fallback=task_state.replan_count > 0,
+            )
+        except Exception as e:
+            logger.debug("[Brain] reasoning experience recording skipped: %s", e)
+        return result
+
     async def _run_task_loop(self, request: str,
                              plan: List[Dict[str, Any]],
                              inherited: Optional["TaskExecutionState"] = None,
@@ -984,7 +1119,7 @@ class AgentBrain:
         # revision, enforces the replan budget and loop detection, and
         # the model can never execute anything itself.
         step_adapter = None
-        if os.environ.get("DIEGO_REASONING_ADAPTER", "0") == "1":
+        if os.environ.get("DIEGO_REASONING_ADAPTER", "1") != "0":
             try:
                 from agent.reasoning_agent import ReasoningAgent
                 from ai.reasoning_model import get_reasoning_model

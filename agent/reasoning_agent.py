@@ -29,8 +29,10 @@ Trivial commands are NEVER sent through expensive reasoning.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
@@ -150,6 +152,11 @@ class ReasoningRunResult:
     reflection: Optional[TaskReflection] = None
     lessons: List[TaskLesson] = field(default_factory=list)
     mode: Mode = Mode.REASONING
+    # Phase timing profile (ms) populated by _phase() / _model_call().
+    # Keys: context, lessons, plan, plan_model, execute, revise, diagnose,
+    # replan, replan_model, reflect, reflection_model, validate, persist,
+    # total, plus model_calls (int) and context_tokens (int).
+    profile: Dict[str, Any] = field(default_factory=dict)
 
     @property
     def success(self) -> bool:
@@ -199,6 +206,14 @@ class ReasoningAgent:
         self._approved_actions = approved_actions or frozenset()
         self.current_runner: Optional[Any] = None
         self.rs: Optional[ReasoningState] = None
+        # Instrumentation (Phase 21B): how many reasoning-model calls this
+        # agent actually made. Deterministic modes must keep it 0.
+        self.model_calls: int = 0
+        # Phase 21C: per-phase timing profile (latency in ms) + model-call
+        # counts + context token usage. Populated during run() and attached
+        # to the result.profile. Zero-cost (perf_counter) when not read.
+        self._profile: Dict[str, Any] = {}
+        self._context_tokens: int = 0
         # Lessons consulted during THIS run (for reuse feedback, Task 10).
         self._lessons_used: List[Tuple[TaskLesson, float]] = []
         self.last_diagnosis: Optional[FailureAnalysis] = None
@@ -208,6 +223,28 @@ class ReasoningAgent:
     def cancel(self) -> None:
         if self.current_runner is not None:
             self.current_runner.cancel()
+
+    # ── Phase 21C: minimal latency instrumentation ─────────────
+
+    @contextlib.contextmanager
+    def _phase(self, name: str):
+        """Time a (sync or async) phase, accumulating ms into _profile[name]."""
+        t0 = time.perf_counter()
+        try:
+            yield
+        finally:
+            ms = (time.perf_counter() - t0) * 1000.0
+            self._profile[name] = self._profile.get(name, 0.0) + ms
+
+    async def _model_call(self, name: str, coro) -> Any:
+        """Time one reasoning-model call, record ms + increment model_calls."""
+        t0 = time.perf_counter()
+        try:
+            return await coro
+        finally:
+            ms = (time.perf_counter() - t0) * 1000.0
+            self._profile[name] = self._profile.get(name, 0.0) + ms
+            self.model_calls += 1
 
     # ── Main entry (Task 4 loop) ───────────────────────────────
 
@@ -220,6 +257,7 @@ class ReasoningAgent:
             FinalStatus, PlanValidator, TaskRunner,
         )
         mode = mode or choose_mode(goal)
+        self._mode = mode  # Phase 21C: lets model-call sites respect mode
 
         # ── UNDERSTAND ─────────────────────────────────────────
         rs = ReasoningState(goal=goal)
@@ -243,16 +281,17 @@ class ReasoningAgent:
         self.rs = rs
 
         # ── Memory reuse BEFORE planning (Task 10) ─────────────
-        self._lessons_used = []
-        pattern = task_pattern_from_goal(goal)
-        lesson_hits = self._lesson_store.retrieve(
-            f"{pattern} {goal}", limit=4) if self._lesson_store else []
-        self._lessons_used = list(lesson_hits)
-        lesson_lines = [lesson.line() for lesson, _s in lesson_hits]
-        for lesson, _score in lesson_hits:
-            rs.context_refs.append(f"lesson:{lesson.id}")
-            rs.note_assumption(
-                f"prior evidence suggests: {lesson.lesson[:80]}")
+        with self._phase("lessons"):
+            self._lessons_used = []
+            pattern = task_pattern_from_goal(goal)
+            lesson_hits = self._lesson_store.retrieve(
+                f"{pattern} {goal}", limit=4) if self._lesson_store else []
+            self._lessons_used = list(lesson_hits)
+            lesson_lines = [lesson.line() for lesson, _s in lesson_hits]
+            for lesson, _score in lesson_hits:
+                rs.context_refs.append(f"lesson:{lesson.id}")
+                rs.note_assumption(
+                    f"prior evidence suggests: {lesson.lesson[:80]}")
 
         # Tool reliability snapshot (bounded, best-effort).
         try:
@@ -266,9 +305,11 @@ class ReasoningAgent:
         plan = initial_plan
         plan_assumptions: List[str] = []
         if not plan and mode is not Mode.DETERMINISTIC:
-            plan, plan_assumptions = await self._initial_plan(
-                goal, rs, lesson_lines, pattern)
-        plan = self._validated(plan)
+            with self._phase("plan"):
+                plan, plan_assumptions = await self._initial_plan(
+                    goal, rs, lesson_lines, pattern)
+        with self._phase("validate"):
+            plan = self._validated(plan)
         if plan:
             rs.plan = plan
             rs.plan_version = 1
@@ -282,21 +323,22 @@ class ReasoningAgent:
 
         # ── EXECUTE (existing bounded closed loop) ─────────────
         rs.phase = ReasoningPhase.EXECUTE
-        runner = TaskRunner(
-            executor=self._executor,
-            observer=self._observer,
-            planner=self._replan_adapter,
-            validator=PlanValidator(action_gate=self._action_gate),
-            limits=self._limits,
-            transcript=self._transcript or goal,
-            confirmation_callback=self._wrap_confirmation(),
-            approved_actions=self._approved_actions,
-            step_adapter=(self._adaptive_step_hook
-                          if mode is not Mode.DETERMINISTIC else None),
-        )
-        self.current_runner = runner
-        task_state = await runner.run(goal, plan, inherited=inherited)
-        self.current_runner = None
+        with self._phase("execute"):
+            runner = TaskRunner(
+                executor=self._executor,
+                observer=self._observer,
+                planner=self._replan_adapter,
+                validator=PlanValidator(action_gate=self._action_gate),
+                limits=self._limits,
+                transcript=self._transcript or goal,
+                confirmation_callback=self._wrap_confirmation(),
+                approved_actions=self._approved_actions,
+                step_adapter=(self._adaptive_step_hook
+                              if mode is not Mode.DETERMINISTIC else None),
+            )
+            self.current_runner = runner
+            task_state = await runner.run(goal, plan, inherited=inherited)
+            self.current_runner = None
 
         # ── Sync reasoning state from the AUTHORITATIVE record ─
         self._sync_from_task_state(rs, task_state)
@@ -311,21 +353,30 @@ class ReasoningAgent:
 
         # ── REFLECT + learn (Tasks 11 / 9) ─────────────────────
         rs.phase = ReasoningPhase.REFLECT
-        reflection = await self._build_reflection(goal, task_state, rs)
-        lessons: List[TaskLesson] = []
-        try:
-            lessons = self._lesson_store.record_task_outcome(task_state)
-        except Exception as e:
-            logger.debug("[ReasoningAgent] lesson extraction failed: %s", e)
-        reflection.lesson = (lessons[0].to_dict() if lessons else None)
+        with self._phase("reflect"):
+            reflection = await self._build_reflection(goal, task_state, rs)
         reflection.confidence = rs.confidence
+        with self._phase("persist"):
+            lessons = []
+            try:
+                lessons = self._lesson_store.record_task_outcome(task_state)
+            except Exception as e:
+                logger.debug("[ReasoningAgent] lesson extraction failed: %s", e)
+        reflection.lesson = (lessons[0].to_dict() if lessons else None)
         rs.phase = ReasoningPhase.DONE
+        # Attach the timing profile (Phase 21C). Includes per-phase ms,
+        # total wall-clock, model-call count and context-token usage.
+        self._profile["total"] = sum(
+            v for v in self._profile.values() if isinstance(v, (int, float)))
+        self._profile["model_calls_total"] = self.model_calls
+        self._profile["context_tokens"] = self._context_tokens
         return ReasoningRunResult(
             task_state=task_state,
             reasoning_state=rs,
             reflection=reflection,
             lessons=lessons,
             mode=mode,
+            profile=dict(self._profile),
         )
 
     # ── Planning helpers ───────────────────────────────────────
@@ -366,7 +417,9 @@ class ReasoningAgent:
                                        List[str]]:
         """PLAN phase: deterministic planner first, reasoning model second.
         Both proposals are VALIDATED by the runtime before execution."""
-        composed = self._compose_context(goal, rs, lesson_lines)
+        with self._phase("context"):
+            composed = self._compose_context(goal, rs, lesson_lines)
+        self._context_tokens = composed.tokens_used
         planner_context = {
             "goal": goal,
             "observed_state": rs.observations[-1] if rs.observations else "",
@@ -379,14 +432,16 @@ class ReasoningAgent:
             "replan": 0,
         }
         if self._planner:
-            try:
-                plan = await self._planner(goal, planner_context)
-                if plan:
-                    return plan, []
-            except Exception as e:
-                logger.warning("[ReasoningAgent] planner failed: %s", e)
+            with self._phase("plan_adapters"):
+                try:
+                    plan = await self._planner(goal, planner_context)
+                    if plan:
+                        return plan, []
+                except Exception as e:
+                    logger.warning("[ReasoningAgent] planner failed: %s", e)
         if self._model is not None:
-            result = await self._model.plan(goal, composed.text)
+            result = await self._model_call(
+                "plan_model", self._model.plan(goal, composed.text))
             if result.ok:
                 data = result.data or {}
                 if data.get("needs_input"):
@@ -422,12 +477,15 @@ class ReasoningAgent:
         error = failure_context or last_failed
 
         diagnosis: Optional[FailureAnalysis] = None
-        if self._model is not None:
+        if (self._model is not None
+                and self._mode is not Mode.DETERMINISTIC):
             try:
-                result = await self._model.diagnose(
-                    request, action,
-                    str(context.get("observed_state", "")), error,
-                    attempt=len(failed_list) + 1)
+                result = await self._model_call(
+                    "diagnose",
+                    self._model.diagnose(
+                        request, action,
+                        str(context.get("observed_state", "")), error,
+                        attempt=len(failed_list) + 1))
                 if result.ok:
                     d = result.data or {}
                     strategy = str(d.get("next_strategy", ""))
@@ -453,7 +511,8 @@ class ReasoningAgent:
             rs.note_alternative(diagnosis.alternative)
 
         lesson_lines = self._current_lesson_lines()
-        composed = self._compose_context(request, rs, lesson_lines)
+        with self._phase("context_replan"):
+            composed = self._compose_context(request, rs, lesson_lines)
         enriched = dict(context)
         enriched["failure_diagnosis"] = diagnosis.to_dict()
         enriched["lessons"] = lesson_lines
@@ -463,17 +522,21 @@ class ReasoningAgent:
                            "verify the current environment"
 
         if self._planner:
-            try:
-                plan = await self._planner(request, enriched)
-                if plan:
-                    return plan
-            except Exception as e:
-                logger.warning("[ReasoningAgent] replan planner failed: %s", e)
-        if self._model is not None:
+            with self._phase("plan_adapters_replan"):
+                try:
+                    plan = await self._planner(request, enriched)
+                    if plan:
+                        return plan
+                except Exception as e:
+                    logger.warning("[ReasoningAgent] replan planner failed: %s", e)
+        if (self._model is not None
+                and self._mode is not Mode.DETERMINISTIC):
             diag_block = (f"FAILURE DIAGNOSIS: {diagnosis.to_dict()}\n"
                           f"CONTEXT:\n{composed.text}")
             try:
-                result = await self._model.plan(request, diag_block)
+                result = await self._model_call(
+                    "replan_model",
+                    self._model.plan(request, diag_block))
             except Exception as e:
                 logger.debug("[ReasoningAgent] model replan failed: %s", e)
                 result = None
@@ -505,12 +568,14 @@ class ReasoningAgent:
             rs.note_completed_step(
                 f"{rec.action} {rec.params} — verified")
         try:
-            result = await self._model.revise_plan(
-                state.normalized_goal,
-                state.observed_state or rec.result or "",
-                [f"{s.action} {s.params}" for s in state.completed_steps],
-                remaining,
-            )
+            result = await self._model_call(
+                "revise",
+                self._model.revise_plan(
+                    state.normalized_goal,
+                    state.observed_state or rec.result or "",
+                    [f"{s.action} {s.params}" for s in state.completed_steps],
+                    remaining,
+                ))
         except Exception as e:
             logger.debug("[ReasoningAgent] revise_plan failed: %s", e)
             return None
@@ -611,13 +676,15 @@ class ReasoningAgent:
             replanning_required=(task_state.replan_count > 0),
             confidence=rs.confidence,
         )
-        if self._model is not None:
+        if (self._model is not None
+                and self._mode is not Mode.DETERMINISTIC):
             outcome = (
                 f"status={task_state.final_status.value if task_state.final_status else ''} "
                 f"completed={len(completed)} failed={len(failed)} "
                 f"replans={task_state.replan_count} blocker={task_state.blocker[:100]}")
             try:
-                result = await self._model.reflect(goal, outcome)
+                result = await self._model_call(
+                    "reflect_model", self._model.reflect(goal, outcome))
             except Exception as e:
                 logger.debug("[ReasoningAgent] model reflect failed: %s", e)
                 result = None
@@ -650,6 +717,30 @@ class ReasoningAgent:
 
     def mode(self) -> Mode:
         return Mode.REASONING
+
+    def error_result(self, goal: str, error: str) -> ReasoningRunResult:
+        """Safe, honest failure result when the loop itself cannot start
+        (must never be SUCCESS). Used by the Brain orchestrator only."""
+        from agent.task_state import (
+            FinalStatus, TaskExecutionState, task_state_store,
+        )
+        state = TaskExecutionState(original_request=goal,
+                                   normalized_goal=goal)
+        state.final_status = FinalStatus.FAILED
+        state.blocker = str(error)[:200]
+        state.ended_at = time.time()
+        state.note("[TASK] Reasoning loop failed safely — honest failure")
+        try:
+            task_state_store.save(state)
+        except Exception:
+            pass
+        return ReasoningRunResult(
+            task_state=state,
+            reasoning_state=self.rs,
+            reflection=None,
+            lessons=[],
+            mode=Mode.REASONING,
+        )
 
 
 def mode_changed_needed(mode: Mode) -> bool:
