@@ -1,0 +1,666 @@
+"""
+ReasoningAgent — reasoning-capable autonomous task core (Phase 21A).
+
+Upgrades the EXISTING bounded loop (agent.task_state.TaskRunner +
+agent.task_controller.AutonomousTaskController) with a reasoning layer.
+This is NOT a competing architecture: the deterministic runtime keeps full
+authority over authorization, tool execution, confirmation, state
+transitions, verification, retry limits, cancellation, timeouts and
+persistence. The model only:
+
+    understand goals → reason about options → construct plans →
+    interpret observations → propose recovery → summarize outcomes →
+    extract reusable lessons
+
+Reasoning loop (bounded by the existing TaskLimits + LoopDetector):
+
+    GOAL → UNDERSTAND → PLAN → EXECUTE → OBSERVE → VERIFY → REFLECT
+         → CONTINUE / RECOVER / REPLAN / ASK
+
+Reasoning modes (Task 14):
+    DETERMINISTIC — simple known commands stay fast (no model calls)
+    REASONING     — complex/ambiguous goals use the reasoning model
+    AUTONOMOUS    — multi-step goals: planning + execution + verification
+    RECOVERY      — failures trigger diagnosis + alternative strategy
+    REFLECTION    — completed tasks produce reusable lessons
+
+Trivial commands are NEVER sent through expensive reasoning.
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+from dataclasses import dataclass, field
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
+
+from agent.reasoning_context import ReasoningContextComposer
+from agent.reasoning_state import (
+    FailureAnalysis,
+    NEXT_STRATEGIES,
+    ReasoningPhase,
+    ReasoningState,
+    TaskReflection,
+    extract_constraints,
+)
+from agent.lessons import (
+    TaskLesson,
+    TaskLessonStore,
+    task_lesson_store,
+    task_pattern_from_goal,
+)
+
+logger = logging.getLogger(__name__)
+
+
+from enum import Enum
+
+
+class Mode(str, Enum):
+    DETERMINISTIC = "deterministic"
+    REASONING = "reasoning"
+    AUTONOMOUS = "autonomous"
+    RECOVERY = "recovery"
+    REFLECTION = "reflection"
+
+
+# Backwards-friendly alias (single canonical enum)
+ReasoningMode = Mode  # noqa: F811
+
+# ── Mode selection (Task 14) — deterministic heuristics only ──
+
+_SIMPLE_PATTERNS = (
+    r"^(open|launch|start)\s+[\w.\- ]+$",
+    r"^(close|quit|kill)\s+[\w.\- ]+$",
+    r"^(volume|brightness)\s+(up|down|mute)$",
+    r"^(volume|brightness)\s+(to|set)\s*\d+%?$",
+    r"^set\s+(volume|brightness)\s+(to\s*)?\d+%?$",
+    r"^what('s| is)?\s+(the\s+)?(time|date)(\s+now|\s+today)?$",
+    r"^(pause|resume|next|previous|stop)\s*(music|song|track)?$",
+    r"^play\s+.+$",
+    r"^(turn\s+)(on|off)\s+(wifi|bluetooth)$",
+    r"^(mute|unmute)$",
+)
+_MULTI_STEP_MARKERS = re.compile(
+    r"\b(then|after that|and then|afterwards|following that|" +
+    r"first\b.*\bthen\b)\b", re.IGNORECASE)
+
+
+def choose_mode(text: str) -> Mode:
+    """Mode A/B/C selection. Recovery (D) and reflection (E) are loop
+    outcomes rather than entry modes."""
+    t = " ".join((text or "").lower().strip().split())
+    if not t:
+        return Mode.DETERMINISTIC
+    # Multi-step goals are checked FIRST: a simple-command pattern can
+    # otherwise swallow phrases like "open firefox and then nautilus".
+    if _MULTI_STEP_MARKERS.search(t):
+        return Mode.AUTONOMOUS
+    for pattern in _SIMPLE_PATTERNS:
+        if re.match(pattern, t):
+            return Mode.DETERMINISTIC
+    return Mode.REASONING
+
+
+# ── Task 6: deterministic failure diagnosis (fallback path) ──
+
+_KIND_TO_STRATEGY = {
+    "transient": (True, "retry"),
+    "wrong_params": (True, "repair_params"),
+    "changed_state": (True, "observe_and_adapt"),
+    "wrong_tool": (False, "alternative_tool"),
+    "unavailable_capability": (False, "ask_user"),
+    "impossible": (False, "stop"),
+    "unknown": (False, "replan"),
+}
+
+
+def diagnose_failure_deterministic(action: str, error: str,
+                                   attempt: int) -> FailureAnalysis:
+    """Structured failure context WITHOUT a model (existing classifier)."""
+    from agent.task_state import classify_failure
+    kind = classify_failure(action, "", error)
+    kind_value = kind.value if hasattr(kind, "value") else str(kind)
+    retry_suitable, strategy = _KIND_TO_STRATEGY.get(
+        kind_value, (False, "replan"))
+    probable = {
+        "transient": "temporary/system timing issue — a retry can succeed",
+        "wrong_params": "parameters did not match reality",
+        "changed_state": "the environment moved between plan and action",
+        "wrong_tool": "the chosen action is not available/appropriate",
+        "unavailable_capability": "the capability is not installed/available",
+        "impossible": "the requested effect cannot be achieved",
+        "unknown": "insufficient evidence for a specific cause",
+    }.get(kind_value, "insufficient evidence")
+    return FailureAnalysis(
+        action=action,
+        observed_result=(error or "")[:400],
+        failure_kind=kind_value,
+        probable_cause=probable,
+        retry_suitable=retry_suitable,
+        next_strategy=strategy if strategy in NEXT_STRATEGIES else "replan",
+    )
+
+
+@dataclass
+class ReasoningRunResult:
+    """Outcome of one reasoning-agent run (bounded, structured)."""
+    task_state: Any = None                # TaskExecutionState (authoritative)
+    reasoning_state: Optional[ReasoningState] = None
+    reflection: Optional[TaskReflection] = None
+    lessons: List[TaskLesson] = field(default_factory=list)
+    mode: Mode = Mode.REASONING
+
+    @property
+    def success(self) -> bool:
+        from agent.task_state import FinalStatus
+        return (self.task_state is not None
+                and self.task_state.final_status == FinalStatus.SUCCESS)
+
+
+class ReasoningAgent:
+    """Reasoning wrapper around the EXISTING bounded TaskRunner loop.
+
+    The agent owns the structured reasoning state (agent.reasoning_state),
+    the layered context (agent.reasoning_context over ai.context_monitor),
+    lesson retrieval/reinforcement (agent.lessons) and model-backed
+    diagnosis / adaptive plan revision (ai.reasoning_model). Execution,
+    verification, confirmation, cancellation and every limit remain in
+    the deterministic runtime.
+    """
+
+    def __init__(self,
+                 executor: Callable[[Dict[str, Any]],
+                                     Awaitable[Tuple[bool, str]]],
+                 observer: Optional[Callable[[], Awaitable[str]]] = None,
+                 planner: Optional[Callable[[str, Dict[str, Any]],
+                                            Awaitable[Optional[
+                                                List[Dict[str, Any]]]]]] = None,
+                 reasoning_model: Optional[Any] = None,
+                 limits: Optional[Any] = None,
+                 confirmation_callback: Optional[Callable] = None,
+                 action_gate: Optional[Callable] = None,
+                 lesson_store: Optional[TaskLessonStore] = None,
+                 composer: Optional[ReasoningContextComposer] = None,
+                 transcript: str = "",
+                 approved_actions: Optional[frozenset] = None,
+                 ):
+        from agent.task_state import TaskLimits
+        self._executor = executor
+        self._observer = observer
+        self._planner = planner
+        self._model = reasoning_model
+        self._limits = limits or TaskLimits()
+        self._confirmation_callback = confirmation_callback
+        self._action_gate = action_gate
+        self._lesson_store = lesson_store or task_lesson_store
+        self._composer = composer or ReasoningContextComposer()
+        self._transcript = transcript
+        self._approved_actions = approved_actions or frozenset()
+        self.current_runner: Optional[Any] = None
+        self.rs: Optional[ReasoningState] = None
+        # Lessons consulted during THIS run (for reuse feedback, Task 10).
+        self._lessons_used: List[Tuple[TaskLesson, float]] = []
+        self.last_diagnosis: Optional[FailureAnalysis] = None
+
+    # ── Control ────────────────────────────────────────────────
+
+    def cancel(self) -> None:
+        if self.current_runner is not None:
+            self.current_runner.cancel()
+
+    # ── Main entry (Task 4 loop) ───────────────────────────────
+
+    async def run(self, goal: str,
+                  initial_plan: Optional[List[Dict[str, Any]]] = None,
+                  inherited: Optional[Any] = None,
+                  mode: Optional[Mode] = None,
+                  ) -> ReasoningRunResult:
+        from agent.task_state import (
+            FinalStatus, PlanValidator, TaskRunner,
+        )
+        mode = mode or choose_mode(goal)
+
+        # ── UNDERSTAND ─────────────────────────────────────────
+        rs = ReasoningState(goal=goal)
+        for constraint in extract_constraints(goal):
+            rs.note_constraint(constraint)
+        if inherited is not None:
+            # Task continuation: inherit observed state + verified record
+            # so reasoning is never lost between continuations.
+            if inherited.observed_state:
+                rs.note_observation(inherited.observed_state)
+            for s in inherited.completed_steps or []:
+                if s.verified:
+                    rs.note_completed_step(
+                        f"{s.action} {s.params} — {s.verification}")
+            for s in inherited.failed_steps or []:
+                rs.note_failure(diagnose_failure_deterministic(
+                    s.action, s.error or s.result, s.retries))
+            for k, v in (inherited.artifacts or {}).items():
+                if k in ("urls", "last_url", "last_app", "last_query"):
+                    rs.context_refs.append(f"artifact:{k}={v}")
+        self.rs = rs
+
+        # ── Memory reuse BEFORE planning (Task 10) ─────────────
+        self._lessons_used = []
+        pattern = task_pattern_from_goal(goal)
+        lesson_hits = self._lesson_store.retrieve(
+            f"{pattern} {goal}", limit=4) if self._lesson_store else []
+        self._lessons_used = list(lesson_hits)
+        lesson_lines = [lesson.line() for lesson, _s in lesson_hits]
+        for lesson, _score in lesson_hits:
+            rs.context_refs.append(f"lesson:{lesson.id}")
+            rs.note_assumption(
+                f"prior evidence suggests: {lesson.lesson[:80]}")
+
+        # Tool reliability snapshot (bounded, best-effort).
+        try:
+            from core.tool_reliability import tool_reliability
+            rs.set_tool_reliability(tool_reliability.all_confidences())
+        except Exception as e:
+            logger.debug("[ReasoningAgent] tool reliability unavailable: %s", e)
+
+        # ── PLAN ───────────────────────────────────────────────
+        rs.phase = ReasoningPhase.PLAN
+        plan = initial_plan
+        plan_assumptions: List[str] = []
+        if not plan and mode is not Mode.DETERMINISTIC:
+            plan, plan_assumptions = await self._initial_plan(
+                goal, rs, lesson_lines, pattern)
+        plan = self._validated(plan)
+        if plan:
+            rs.plan = plan
+            rs.plan_version = 1
+            rs.current_objective = (plan[0].get("description")
+                                    or str(plan[0].get("action", "")))
+            rs.next_action = str(plan[0].get("action", ""))
+        for a in plan_assumptions[:8]:
+            rs.note_assumption(a)
+        if not plan and not mode_changed_needed(mode):
+            rs.uncertainty.append("no plan could be constructed")
+
+        # ── EXECUTE (existing bounded closed loop) ─────────────
+        rs.phase = ReasoningPhase.EXECUTE
+        runner = TaskRunner(
+            executor=self._executor,
+            observer=self._observer,
+            planner=self._replan_adapter,
+            validator=PlanValidator(action_gate=self._action_gate),
+            limits=self._limits,
+            transcript=self._transcript or goal,
+            confirmation_callback=self._wrap_confirmation(),
+            approved_actions=self._approved_actions,
+            step_adapter=(self._adaptive_step_hook
+                          if mode is not Mode.DETERMINISTIC else None),
+        )
+        self.current_runner = runner
+        task_state = await runner.run(goal, plan, inherited=inherited)
+        self.current_runner = None
+
+        # ── Sync reasoning state from the AUTHORITATIVE record ─
+        self._sync_from_task_state(rs, task_state)
+
+        # ── Lesson reuse feedback (Task 10) ────────────────────
+        task_success = task_state.final_status == FinalStatus.SUCCESS
+        for lesson, _score in self._lessons_used:
+            try:
+                self._lesson_store.record_reuse(lesson.id, task_success)
+            except Exception:
+                pass
+
+        # ── REFLECT + learn (Tasks 11 / 9) ─────────────────────
+        rs.phase = ReasoningPhase.REFLECT
+        reflection = await self._build_reflection(goal, task_state, rs)
+        lessons: List[TaskLesson] = []
+        try:
+            lessons = self._lesson_store.record_task_outcome(task_state)
+        except Exception as e:
+            logger.debug("[ReasoningAgent] lesson extraction failed: %s", e)
+        reflection.lesson = (lessons[0].to_dict() if lessons else None)
+        reflection.confidence = rs.confidence
+        rs.phase = ReasoningPhase.DONE
+        return ReasoningRunResult(
+            task_state=task_state,
+            reasoning_state=rs,
+            reflection=reflection,
+            lessons=lessons,
+            mode=mode,
+        )
+
+    # ── Planning helpers ───────────────────────────────────────
+
+    def _compose_context(self, goal: str, rs: Optional[ReasoningState],
+                         lesson_lines: List[str],
+                         knowledge: Optional[List[str]] = None,
+                         history: Optional[List[str]] = None,
+                         ) -> Any:
+        """Task 3: layered context via the EXISTING monitor."""
+        rs = rs or self.rs or ReasoningState()
+        return self._composer.compose(
+            goal=goal,
+            constraints=rs.user_constraints,
+            state_lines=rs.state_lines(),
+            current_objective=rs.current_objective,
+            recent_observations=rs.observations,
+            verified_evidence=rs.verified_evidence,
+            conversation_history=history or [],
+            knowledge_facts=knowledge or [],
+            lesson_lines=lesson_lines or [],
+            background=rs.summarized_history,
+            completed_step_summaries=rs.completed_step_summaries,
+        )
+
+    def _validated(self, plan: Optional[List[Dict[str, Any]]]
+                   ) -> List[Dict[str, Any]]:
+        from agent.task_state import PlanValidator
+        if not plan:
+            return []
+        validator = PlanValidator(action_gate=self._action_gate)
+        return validator.validate_plan(plan, [], self._transcript or
+                                       (self.rs.goal if self.rs else ""))
+
+    async def _initial_plan(self, goal: str, rs: ReasoningState,
+                            lesson_lines: List[str], pattern: str,
+                            ) -> Tuple[Optional[List[Dict[str, Any]]],
+                                       List[str]]:
+        """PLAN phase: deterministic planner first, reasoning model second.
+        Both proposals are VALIDATED by the runtime before execution."""
+        composed = self._compose_context(goal, rs, lesson_lines)
+        planner_context = {
+            "goal": goal,
+            "observed_state": rs.observations[-1] if rs.observations else "",
+            "completed": list(rs.completed_step_summaries),
+            "failed": [f"{fa.action}: {fa.observed_result[:80]}"
+                       for fa in rs.failed_attempts],
+            "failure_context": "",
+            "lessons": lesson_lines,
+            "context_block": composed.text,
+            "replan": 0,
+        }
+        if self._planner:
+            try:
+                plan = await self._planner(goal, planner_context)
+                if plan:
+                    return plan, []
+            except Exception as e:
+                logger.warning("[ReasoningAgent] planner failed: %s", e)
+        if self._model is not None:
+            result = await self._model.plan(goal, composed.text)
+            if result.ok:
+                data = result.data or {}
+                if data.get("needs_input"):
+                    rs.phase = ReasoningPhase.ASK_USER
+                    rs.uncertainty.append(
+                        str(data.get("question", "missing information"))[:200])
+                    return None, []
+                steps = data.get("plan") or []
+                if steps:
+                    return steps, [str(a)[:200] for a in
+                                   (data.get("assumptions") or [])[:8]]
+            else:
+                # Model failure is safe: no plan, deterministic path.
+                logger.info("[ReasoningAgent] model plan unavailable (%s)",
+                            result.status.value)
+                rs.uncertainty.append(
+                    f"model unavailable: {result.status.value}")
+        return None, []
+
+    # ── Task 6: failure diagnosis feeding bounded replans ─────
+
+    async def _replan_adapter(self, request: str,
+                              context: Dict[str, Any]
+                              ) -> Optional[List[Dict[str, Any]]]:
+        """Planner adapter for TaskRunner re-plans: builds a structured
+        failure diagnosis (model with deterministic fallback), composes
+        layered context, then re-plans from the CURRENT observed state."""
+        rs = self.rs or ReasoningState()
+        failure_context = str(context.get("failure_context", ""))
+        failed_list = list(context.get("failed") or [])
+        last_failed = failed_list[-1] if failed_list else ""
+        action = last_failed.split(":", 1)[0].strip() if last_failed else ""
+        error = failure_context or last_failed
+
+        diagnosis: Optional[FailureAnalysis] = None
+        if self._model is not None:
+            try:
+                result = await self._model.diagnose(
+                    request, action,
+                    str(context.get("observed_state", "")), error,
+                    attempt=len(failed_list) + 1)
+                if result.ok:
+                    d = result.data or {}
+                    strategy = str(d.get("next_strategy", ""))
+                    diagnosis = FailureAnalysis(
+                        action=action,
+                        observed_result=error[:400],
+                        failure_kind=str(d.get("failure_kind", "unknown")),
+                        probable_cause=str(d.get("probable_cause", ""))[:200],
+                        retry_suitable=bool(d.get("retry_suitable", False)),
+                        alternative=str(d.get("alternative", ""))[:200],
+                        next_strategy=(strategy if strategy in NEXT_STRATEGIES
+                                       else "replan"),
+                    )
+            except Exception as e:
+                logger.debug("[ReasoningAgent] model diagnosis failed: %s", e)
+        if diagnosis is None:
+            diagnosis = diagnose_failure_deterministic(
+                action, error, len(failed_list) + 1)
+        self.last_diagnosis = diagnosis
+        rs.phase = ReasoningPhase.RECOVER
+        rs.note_failure(diagnosis)
+        if diagnosis.alternative:
+            rs.note_alternative(diagnosis.alternative)
+
+        lesson_lines = self._current_lesson_lines()
+        composed = self._compose_context(request, rs, lesson_lines)
+        enriched = dict(context)
+        enriched["failure_diagnosis"] = diagnosis.to_dict()
+        enriched["lessons"] = lesson_lines
+        enriched["reasoning_state"] = rs.to_dict()
+        enriched["context_block"] = composed.text
+        enriched["note"] = "prior lessons are evidence, not truth — " \
+                           "verify the current environment"
+
+        if self._planner:
+            try:
+                plan = await self._planner(request, enriched)
+                if plan:
+                    return plan
+            except Exception as e:
+                logger.warning("[ReasoningAgent] replan planner failed: %s", e)
+        if self._model is not None:
+            diag_block = (f"FAILURE DIAGNOSIS: {diagnosis.to_dict()}\n"
+                          f"CONTEXT:\n{composed.text}")
+            try:
+                result = await self._model.plan(request, diag_block)
+            except Exception as e:
+                logger.debug("[ReasoningAgent] model replan failed: %s", e)
+                result = None
+            if result is not None and result.ok:
+                data = result.data or {}
+                if data.get("needs_input"):
+                    rs.phase = ReasoningPhase.ASK_USER
+                    rs.uncertainty.append(
+                        str(data.get("question", "missing information"))[:200])
+                    return None
+                steps = data.get("plan") or []
+                if steps:
+                    return steps
+        return None
+
+    # ── Task 7: adaptive plan revision after a VERIFIED step ──
+
+    async def _adaptive_step_hook(self, state, rec,
+                                  remaining: List[Dict[str, Any]]
+                                  ) -> Optional[List[Dict[str, Any]]]:
+        """Ask the reasoning model whether the observation invalidated the
+        remaining plan. The RUNTIME still validates/bounds any revision."""
+        if self._model is None or not remaining:
+            return None
+        rs = self.rs
+        if rs is not None:
+            rs.phase = ReasoningPhase.OBSERVE
+            rs.note_observation(state.observed_state or rec.result or "")
+            rs.note_completed_step(
+                f"{rec.action} {rec.params} — verified")
+        try:
+            result = await self._model.revise_plan(
+                state.normalized_goal,
+                state.observed_state or rec.result or "",
+                [f"{s.action} {s.params}" for s in state.completed_steps],
+                remaining,
+            )
+        except Exception as e:
+            logger.debug("[ReasoningAgent] revise_plan failed: %s", e)
+            return None
+        if rs is not None:
+            rs.phase = ReasoningPhase.VERIFY
+        if not result.ok:
+            return None
+        data = result.data or {}
+        if data.get("keep_plan", True):
+            return None
+        revised = data.get("revised_plan") or []
+        if rs is not None and revised:
+            rs.adaptive_revision_count += 1
+            rs.note_alternative(str(data.get("reason", "plan revised"))[:200])
+        return revised or None
+
+    def _current_lesson_lines(self) -> List[str]:
+        try:
+            return [l.line() for l, _s in self._lessons_used]
+        except Exception:
+            return []
+
+    # ── Confirmation wrapper: user decisions enter the state ──
+
+    def _wrap_confirmation(self) -> Optional[Callable]:
+        base = self._confirmation_callback
+        if base is None:
+            return None
+
+        async def wrapped(action: str, reason: str,
+                          params: Dict[str, Any]) -> bool:
+            approved = bool(await base(action, reason, params))
+            if self.rs is not None:
+                self.rs.note_user_decision(
+                    f"{'approved' if approved else 'denied'} {action}")
+                self.rs.phase = ReasoningPhase.ASK_USER
+            return approved
+
+        return wrapped
+
+    # ── Task 5/11: authoritative sync + bounded reflection ────
+
+    def _sync_from_task_state(self, rs: ReasoningState,
+                              task_state) -> None:
+        """Sync the reasoning state from the AUTHORITATIVE task record.
+        Evidence comes only from verified steps / real observations."""
+        from agent.task_state import FinalStatus, StepStatus
+        rs.task_id = task_state.task_id
+        if task_state.observed_state:
+            rs.note_observation(task_state.observed_state)
+        for s in task_state.completed_steps or []:
+            if s.verified and s.status in (
+                    StepStatus.COMPLETED, StepStatus.ALREADY_SATISFIED):
+                rs.note_completed_step(f"{s.action} {s.params} — verified")
+                if s.result:
+                    rs.note_evidence(f"{s.action}: {s.result}")
+        for s in task_state.failed_steps or []:
+            rs.note_failure(diagnose_failure_deterministic(
+                s.action, s.error or s.result or "", s.retries))
+        rs.replan_count = max(rs.replan_count, task_state.replan_count)
+        rs.plan = list(task_state.current_plan or [])
+        rs.plan_version = task_state.plan_version
+        if task_state.final_status == FinalStatus.SUCCESS:
+            rs.confidence = 0.9
+            rs.phase = ReasoningPhase.VERIFY
+        elif task_state.final_status in (
+                FinalStatus.NEEDS_INPUT, FinalStatus.NEEDS_CONFIRMATION):
+            rs.confidence = 0.4
+            rs.phase = ReasoningPhase.ASK_USER
+        elif task_state.final_status == FinalStatus.CANCELLED:
+            rs.confidence = 0.3
+        else:
+            rs.confidence = 0.2
+            rs.phase = ReasoningPhase.RECOVER
+        if task_state.blocker:
+            rs.uncertainty.append(task_state.blocker[:200])
+
+    async def _build_reflection(self, goal: str, task_state,
+                                rs: ReasoningState) -> TaskReflection:
+        """Task 11: bounded structured reflection (never a transcript)."""
+        from agent.task_state import FinalStatus, StepStatus
+        success = task_state.final_status == FinalStatus.SUCCESS
+        completed = [s for s in task_state.completed_steps or []
+                     if s.verified and s.status in (
+                         StepStatus.COMPLETED, StepStatus.ALREADY_SATISFIED)]
+        failed = list(task_state.failed_steps or [])
+        reflection = TaskReflection(
+            goal_achieved=success,
+            successful_steps=[f"{s.action} {s.params}" for s in completed],
+            failed_steps=[f"{s.action}: {(s.error or s.result or '')[:120]}"
+                          for s in failed],
+            success_evidence=[(s.result or s.verification)[:200]
+                              for s in completed],
+            strategy_that_worked=(" → ".join(
+                s.action for s in completed) if success else ""),
+            strategy_that_failed=(" → ".join(
+                s.action for s in failed) if failed else ""),
+            replanning_required=(task_state.replan_count > 0),
+            confidence=rs.confidence,
+        )
+        if self._model is not None:
+            outcome = (
+                f"status={task_state.final_status.value if task_state.final_status else ''} "
+                f"completed={len(completed)} failed={len(failed)} "
+                f"replans={task_state.replan_count} blocker={task_state.blocker[:100]}")
+            try:
+                result = await self._model.reflect(goal, outcome)
+            except Exception as e:
+                logger.debug("[ReasoningAgent] model reflect failed: %s", e)
+                result = None
+            if result is not None and result.ok:
+                data = result.data or {}
+                # The model may only REFINE the deterministic reflection —
+                # it can never flip verified facts.
+                if not success and data.get("goal_achieved") is True:
+                    pass  # unverified claim ignored — verification rules
+                reflection.strategy_that_worked = (
+                    reflection.strategy_that_worked
+                    or str(data.get("what_worked", ""))[:200])
+                reflection.strategy_that_failed = (
+                    reflection.strategy_that_failed
+                    or str(data.get("what_failed", ""))[:200])
+                lesson = data.get("lesson") or {}
+                if (isinstance(lesson, dict)
+                        and str(lesson.get("lesson", "")).strip()):
+                    if success:
+                        reflection.lesson = {
+                            "type": str(lesson.get("type",
+                                                   "task_lesson"))[:40],
+                            "task_pattern": str(
+                                lesson.get("task_pattern",
+                                           "general"))[:60],
+                            "lesson": str(lesson.get("lesson", ""))[:300],
+                            "evidence": "verified_success",
+                        }
+        return reflection
+
+    def mode(self) -> Mode:
+        return Mode.REASONING
+
+
+def mode_changed_needed(mode: Mode) -> bool:
+    """True when the mode is allowed to construct a plan via the model
+    (deterministic mode keeps the fast path)."""
+    return mode is not Mode.DETERMINISTIC
+
+
+# Global singleton factory helper.
+def create_reasoning_agent(executor, **kwargs) -> ReasoningAgent:
+    """Build a ReasoningAgent with the configured reasoning model."""
+    from ai.reasoning_model import get_reasoning_model
+    kwargs.setdefault("reasoning_model", get_reasoning_model())
+    return ReasoningAgent(executor=executor, **kwargs)

@@ -768,6 +768,16 @@ class TaskRunner:
         transcript: str = "",
         confirmation_callback: Optional[ConfirmationCallback] = None,
         approved_actions: Optional[frozenset] = None,
+        # Phase 21A (adaptive planning): optional callback invoked after
+        # every VERIFIED step. Signature:
+        #   async (state, step_record, remaining_steps) -> Optional[List[dict]]
+        # Returning a revised step list REPLACES the remaining plan —
+        # bounded by the replan budget, plan validation and loop
+        # detection (see _apply_step_adapter). None (default) disables
+        # adaptive revision entirely (existing behavior unchanged).
+        step_adapter: Optional[Callable[
+            ["TaskExecutionState", "StepRecord", List[Dict[str, Any]]],
+            Awaitable[Optional[List[Dict[str, Any]]]]]] = None,
     ):
         self._executor = executor
         self._observer = observer
@@ -779,6 +789,7 @@ class TaskRunner:
         self._loops = LoopDetector()
         self._cancelled = False
         self._confirmation_callback = confirmation_callback
+        self._step_adapter = step_adapter
         # Action signatures the user has ALREADY approved (confirmation
         # resumption). A sensitive step whose signature is present here is
         # executed without re-asking — the user already said "yes".
@@ -1146,6 +1157,11 @@ class TaskRunner:
                     state.final_status = self._partial_or_failed(state)
                     state.note(f"[TASK] STOPPED — loop detected: {state.blocker}")
                     break
+                # Phase 21A: adaptive planning — the observation may have
+                # changed which next steps still make sense.
+                revised = await self._apply_step_adapter(state, rec, pending)
+                if revised is not None:
+                    pending = revised
                 state.current_step = None
                 continue
 
@@ -1222,6 +1238,9 @@ class TaskRunner:
                     break
 
             if retried_ok:
+                revised = await self._apply_step_adapter(state, rec, pending)
+                if revised is not None:
+                    pending = revised
                 state.current_step = None
                 continue
 
@@ -1315,6 +1334,52 @@ class TaskRunner:
         except Exception as e:
             logger.warning("[TaskRunner] Confirmation callback failed: %s", e)
             return False
+
+    async def _apply_step_adapter(
+            self, state: TaskExecutionState, rec: StepRecord,
+            pending: List[Dict[str, Any]]) -> Optional[List[Dict[str, Any]]]:
+        """Phase 21A — adaptive plan revision after a VERIFIED step.
+
+        The step adapter (reasoning layer) may revise the REMAINING plan
+        based on the fresh observation. Hard bounds so an adaptive loop
+        can never run away:
+          - counts against the SAME replan budget (max_replans),
+          - revised steps pass plan validation (no hallucinated actions,
+            no duplicates of verified steps),
+          - the loop detector rejects a revision identical to the plan
+            that produced it (pointless revisions are ignored).
+        Returns the validated revised plan, or None to keep the original
+        remaining steps (adapter absent, disabled by budget, or produced
+        nothing valid).
+        """
+        if (self._step_adapter is None or self._cancelled
+                or not self._replans_left(state)):
+            return None
+        try:
+            revised = await self._step_adapter(state, rec, list(pending))
+        except Exception as e:
+            logger.warning("[TaskRunner] step adapter failed: %s", e)
+            return None
+        if not revised:
+            return None
+        loop_hit = self._loops.record_plan(revised)
+        if loop_hit:
+            state.note("[ADAPT] revision ignored — loop detected")
+            return None
+        valid = self._validator.validate_plan(
+            revised, state.completed_steps, self._transcript)
+        if not valid:
+            state.note("[ADAPT] revision ignored — no valid new steps")
+            return None
+        state.replan_count += 1
+        state.plan_version += 1
+        state.current_plan = valid
+        state.note(f"[ADAPT] plan v{state.plan_version} revised after "
+                   f"verified step: {len(valid)} step(s) remain")
+        await self._emit_event("task.plan_adapted", state,
+                               revision=state.plan_version,
+                               remaining=len(valid))
+        return valid
 
     def _replans_left(self, state: TaskExecutionState) -> bool:
         return state.replan_count < self._limits.max_replans

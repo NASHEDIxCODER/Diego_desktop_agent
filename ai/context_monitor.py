@@ -47,7 +47,9 @@ class ContextPriority(IntEnum):
     """
     OLDER_CONTEXT = 10        # older / low-value context (dropped first)
     RELEVANT_HISTORY = 30     # relevant conversation history
+    TASK_LESSONS = 45         # reusable task lessons (Phase 21A P6)
     LOCAL_KNOWLEDGE = 50      # relevant local knowledge
+    EVIDENCE = 60             # verified evidence / results (Phase 21A P3)
     LIVE_STATE = 70           # live desktop / screen state
     TASK_STATE = 90           # current task state
     USER_REQUEST = 100        # current user request (never dropped first)
@@ -118,6 +120,12 @@ class ContextMonitor:
         self._history: List[ContextUsage] = []
         self._history_max: int = 64
         self._requests: int = 0
+        # Bounded trimming/summarization event log (Phase 21A): makes
+        # context trimming OBSERVABLE instead of silent.
+        self._trim_events: List[Dict[str, Any]] = []
+        self._trim_events_max: int = 32
+        # Guard status of the most recent pre_request_check (Phase 21A).
+        self._last_guard: Dict[str, Any] = {}
 
     # ── Configuration ───────────────────────────────────────────
 
@@ -142,6 +150,30 @@ class ContextMonitor:
     @property
     def context_limit(self) -> int:
         return self._context_limit
+
+    # ── Trimming / guard observability (Phase 21A) ─────────────
+
+    def record_trim_event(self, event_type: str, detail: str = "",
+                          tokens: int = 0) -> None:
+        """Record one trimming/summarization event (bounded log).
+
+        `event_type` is one of: "trimmed" (a context block was dropped),
+        "summarized" (older context was compressed to a summary),
+        "guard_refused" (the context guard rejected a request).
+        Content is metadata only — never prompt text.
+        """
+        self._trim_events.append({
+            "type": str(event_type)[:40],
+            "detail": str(detail or "")[:120],
+            "tokens": int(tokens),
+            "timestamp": time.time(),
+        })
+        if len(self._trim_events) > self._trim_events_max:
+            self._trim_events = self._trim_events[-self._trim_events_max:]
+
+    @property
+    def trim_events(self) -> List[Dict[str, Any]]:
+        return list(self._trim_events)
 
     # ── Token estimation ────────────────────────────────────────
 
@@ -248,18 +280,26 @@ class ContextMonitor:
         is an ESTIMATE unless the caller already has provider counts.
         """
         reserve = int(reserve_output or self._default_output_reserve)
+        self._last_guard = {
+            "ok": None, "reserve_output": reserve, "reason": "",
+        }
         prompt_tokens = self.estimate_tokens(prompt)
         budget = self._context_limit - reserve
         if budget <= 0:
-            return (False,
-                    f"output reserve {reserve} >= context limit "
-                    f"{self._context_limit}",
-                    prompt_tokens)
+            reason = (f"output reserve {reserve} >= context limit "
+                      f"{self._context_limit}")
+            self._last_guard = {"ok": False, "reserve_output": reserve,
+                                "reason": reason}
+            self.record_trim_event("guard_refused", reason, prompt_tokens)
+            return (False, reason, prompt_tokens)
         if prompt_tokens > budget:
-            return (False,
-                    f"prompt (~{prompt_tokens} tokens) + output reserve "
-                    f"{reserve} exceeds context limit {self._context_limit}",
-                    prompt_tokens)
+            reason = (f"prompt (~{prompt_tokens} tokens) + output reserve "
+                      f"{reserve} exceeds context limit {self._context_limit}")
+            self._last_guard = {"ok": False, "reserve_output": reserve,
+                                "reason": reason}
+            self.record_trim_event("guard_refused", reason, prompt_tokens)
+            return (False, reason, prompt_tokens)
+        self._last_guard = {"ok": True, "reserve_output": reserve, "reason": ""}
         return True, "", prompt_tokens
 
     def trim_to_fit(
@@ -303,6 +343,8 @@ class ContextMonitor:
                     kept.append((priority, text))
                     used += tokens
                 else:
+                    self.record_trim_event(
+                        "trimmed", f"priority={priority}", tokens)
                     logger.info(
                         "[CONTEXT] trimmed %d tokens of priority=%d context",
                         tokens, priority,
@@ -326,6 +368,9 @@ class ContextMonitor:
             "requests_recorded": self._requests,
             "last": last.to_dict() if last else None,
             "recent": [u.to_dict() for u in self._history[-5:]],
+            # Phase 21A: trimming/summarization events + guard status.
+            "trim_events": list(self._trim_events[-8:]),
+            "last_guard": dict(self._last_guard),
         }
 
 

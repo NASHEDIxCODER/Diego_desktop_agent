@@ -1,0 +1,109 @@
+{
+ "version": 1,
+ "lessons": [
+  {
+   "id": "e9d766215b",
+   "type": "successful_strategy",
+   "task_pattern": "search",
+   "lesson": "strategy that worked: find_file → file_info",
+   "evidence": "verified_success",
+   "confidence": 1.0,
+   "timestamp": 1789152942.6190035,
+   "source_task_id": "42ce9806dc08",
+   "reuse_count": 9,
+   "successes": 9,
+   "failures": 0
+  },
+  {
+   "id": "8917b8332e",
+   "type": "successful_strategy",
+   "task_pattern": "search",
+   "lesson": "strategy that worked: find_file → read_file_head",
+   "evidence": "verified_success",
+   "confidence": 1.0,
+   "timestamp": 1789152947.9344337,
+   "source_task_id": "df726bc2de68",
+   "reuse_count": 5,
+   "successes": 5,
+   "failures": 0
+  },
+  {
+   "id": "9a3a9f4863",
+   "type": "successful_strategy",
+   "task_pattern": "open_application",
+   "lesson": "strategy that worked: find_file → file_info",
+   "evidence": "verified_success",
+   "confidence": 1.0,
+   "timestamp": 1789152959.0894992,
+   "source_task_id": "5311b431e321",
+   "reuse_count": 5,
+   "successes": 5,
+   "failures": 0
+  },
+  {
+   "id": "c83a9ecb1c",
+   "type": "successful_strategy",
+   "task_pattern": "open_application",
+   "lesson": "strategy that worked: desktop_open → open_folder",
+   "evidence": "verified_success",
+   "confidence": 0.8,
+   "timestamp": 1789152937.3648155,
+   "source_task_id": "f196156e43d5",
+   "reuse_count": 1,
+   "successes": 1,
+   "failures": 0
+  },
+  {
+   "id": "fe453af215",
+   "type": "tool_preference",
+   "task_pattern": "open_application",
+   "lesson": "firefox launches reliably via desktop_open on this system",
+   "evidence": "verified_success",
+   "confidence": 1.0,
+   "timestamp": 1789153887.4381168,
+   "source_task_id": "f196156e43d5",
+   "reuse_count": 2,
+   "successes": 2,
+   "failures": 0
+  },
+  {
+   "id": "30796f2fb5",
+   "type": "successful_strategy",
+   "task_pattern": "open_application",
+   "lesson": "strategy that worked: desktop_open → shutdown",
+   "evidence": "verified_success",
+   "confidence": 0.85,
+   "timestamp": 1789153887.3698215,
+   "source_task_id": "4a9e6a260638",
+   "reuse_count": 0,
+   "successes": 0,
+   "failures": 0
+  },
+  {
+   "id": "5213acf190",
+   "type": "successful_strategy",
+   "task_pattern": "open_application",
+   "lesson": "strategy that worked: desktop_open → close_app",
+   "evidence": "verified_success",
+   "confidence": 0.75,
+   "timestamp": 1789153885.2485943,
+   "source_task_id": "3dfb48709543",
+   "reuse_count": 0,
+   "successes": 0,
+   "failures": 0
+  },
+  {
+   "id": "0db270a83e",
+   "type": "successful_strategy",
+   "task_pattern": "open_application",
+   "lesson": "strategy that worked: desktop_open → desktop_open",
+   "evidence": "verified_success",
+   "confidence": 0.95,
+   "timestamp": 1789153887.437763,
+   "source_task_id": "81be4455c9a1",
+   "reuse_count": 0,
+   "successes": 0,
+   "failures": 0
+  }
+ ]
+}

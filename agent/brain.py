@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -977,6 +978,26 @@ class AgentBrain:
             TaskRunner, PlanValidator, TaskExecutionState, FinalStatus,
             task_state_store,
         )
+        # Phase 21A: OPTIONAL model-backed adaptive planning. Off by
+        # default (DIEGO_REASONING_ADAPTER=1 enables it). The hook can
+        # only PROPOSE revised steps — the runner still validates every
+        # revision, enforces the replan budget and loop detection, and
+        # the model can never execute anything itself.
+        step_adapter = None
+        if os.environ.get("DIEGO_REASONING_ADAPTER", "0") == "1":
+            try:
+                from agent.reasoning_agent import ReasoningAgent
+                from ai.reasoning_model import get_reasoning_model
+                _hook_agent = ReasoningAgent(
+                    executor=self._dispatch_and_verify,
+                    observer=self._observe_state,
+                    planner=self._plan_with_context,
+                    reasoning_model=get_reasoning_model(),
+                    transcript=request,
+                )
+                step_adapter = _hook_agent._adaptive_step_hook
+            except Exception as e:
+                logger.debug("[Brain] reasoning adapter unavailable: %s", e)
         runner = TaskRunner(
             executor=self._dispatch_and_verify,
             observer=self._observe_state,
@@ -984,6 +1005,7 @@ class AgentBrain:
             validator=PlanValidator(action_gate=self._planner_action_allowed),
             transcript=request,
             approved_actions=approved_actions,
+            step_adapter=step_adapter,
         )
         state = await runner.run(request, plan, inherited=inherited)
         task_state_store.save(state)
@@ -1011,6 +1033,14 @@ class AgentBrain:
             )
         except Exception as e:
             logger.debug("[Brain] Task experience recording skipped: %s", e)
+        # Phase 21A: bounded task LESSONS from the verified outcome only
+        # (cancelled / needs-confirmation / unverified results produce
+        # nothing). Structured lessons — never a reasoning transcript.
+        try:
+            from agent.lessons import task_lesson_store
+            task_lesson_store.record_task_outcome(state)
+        except Exception as e:
+            logger.debug("[Brain] task lesson recording skipped: %s", e)
         return state
 
     @staticmethod
