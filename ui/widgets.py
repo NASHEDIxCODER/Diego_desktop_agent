@@ -1333,7 +1333,9 @@ class AudioDevicePanel(QFrame):
         self.input_combo.blockSignals(True)
         self.input_combo.clear()
         for d in inputs:
-            label = str(d.get("name", "")).strip() or f"Device {d.get('index')}"
+            label = (str(d.get("friendly_name", "")).strip()
+                     or str(d.get("name", "")).strip()
+                     or f"Device {d.get('index')}")
             if d.get("is_default"):
                 label += "  (default)"
             self.input_combo.addItem(label, d.get("index"))
@@ -1343,7 +1345,8 @@ class AudioDevicePanel(QFrame):
                 self.input_combo.setCurrentIndex(pos)
         self.input_combo.blockSignals(False)
         if cur_in.get("running"):
-            self.set_status("input", True, cur_in.get("name") or "Connected")
+            self.set_status("input", True, cur_in.get("friendly_name")
+                            or cur_in.get("name") or "Connected")
         elif inputs:
             self.set_status("input", None, "Waiting for audio engine…")
         else:
@@ -1352,7 +1355,9 @@ class AudioDevicePanel(QFrame):
         self.output_combo.blockSignals(True)
         self.output_combo.clear()
         for d in outputs:
-            label = str(d.get("name", "")).strip() or f"Device {d.get('index')}"
+            label = (str(d.get("friendly_name", "")).strip()
+                     or str(d.get("name", "")).strip()
+                     or f"Device {d.get('index')}")
             if d.get("is_default"):
                 label += "  (default)"
             self.output_combo.addItem(label, d.get("index"))
@@ -1362,7 +1367,8 @@ class AudioDevicePanel(QFrame):
                 self.output_combo.setCurrentIndex(pos)
         self.output_combo.blockSignals(False)
         if cur_out.get("index") is not None:
-            self.set_status("output", True, cur_out.get("name") or "Connected")
+            self.set_status("output", True, cur_out.get("friendly_name")
+                            or cur_out.get("name") or "Connected")
         elif outputs:
             self.set_status("output", None, "System default")
         else:

@@ -30,6 +30,7 @@ status / trimming + summarization events through the existing monitor.
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
@@ -67,6 +68,20 @@ class ReasoningContextComposer:
                  recent_step_keep: int = DEFAULT_RECENT_STEP_KEEP):
         self._monitor = monitor or default_monitor
         self._recent_step_keep = max(1, int(recent_step_keep))
+        # Phase 21D: warm the tokenizer on first use so the (optional) spaCy
+        # load does not block the first model plan. Fire-and-forget: a
+        # background thread performs the warm; compose() continues immediately.
+        self._tokenizer_warm = False
+
+    def _warm_tokenizer_once(self) -> None:
+        if self._tokenizer_warm:
+            return
+        self._tokenizer_warm = True
+        try:
+            from nlp.tokenizer import warm_tokenizer
+            warm_tokenizer()
+        except Exception as e:
+            logger.debug("[Composer] tokenizer warm skipped: %s", e)
 
     # ── Layer builders ─────────────────────────────────────────
 
@@ -175,6 +190,11 @@ class ReasoningContextComposer:
         blindly truncated (the monitor guarantees priority ≥ TASK_STATE
         survives).
         """
+        # Phase 21D: kick off a background tokenizer warm-up on first use so
+        # the (optional) spaCy load never blocks context composition.
+        if not getattr(self, "_tokenizer_warm", False):
+            threading.Thread(target=self._warm_tokenizer_once,
+                             daemon=True).start()
         # Task 13 compression: older steps → structured summary, kept as
         # an EARLIER reference inside the P1 task state.
         summarized = False

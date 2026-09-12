@@ -1,0 +1,31 @@
+{
+  "task_id": "30bc29b4bc44",
+  "original_request": "long task",
+  "normalized_goal": "",
+  "current_plan": [
+    {
+      "action": "web_search",
+      "params": {
+        "query": "x"
+      }
+    }
+  ],
+  "completed_steps": [],
+  "current_step": null,
+  "failed_steps": [],
+  "observed_state": "",
+  "verification_results": [],
+  "retry_count": 0,
+  "replan_count": 0,
+  "total_steps": 0,
+  "final_status": "PARTIAL_FAILURE",
+  "plan_version": 0,
+  "started_at": 1789208884.9433348,
+  "ended_at": null,
+  "artifacts": {},
+  "log": [],
+  "blocker": "",
+  "evidence_log": [],
+  "pending_confirmation": null,
+  "confirmation_reason": ""
+}

@@ -157,6 +157,21 @@ def run(coro):
     return asyncio.run(coro)
 
 
+def run_with_reflection(agent, coro):
+    """Run a reasoning-agent coroutine, then await any pending background
+    reflection WITHIN THE SAME event loop (so the deferred task completes)."""
+    async def _full():
+        result = await coro
+        pending = getattr(agent, "_pending_reflection", None)
+        if pending is not None and not pending.done():
+            try:
+                await pending
+            except (asyncio.CancelledError, Exception):
+                pass
+        return result
+    return asyncio.run(_full())
+
+
 # ═══════════════════════════════════════════════════════════════
 # 1. deterministic command does not invoke reasoning model
 # ═══════════════════════════════════════════════════════════════
@@ -184,12 +199,16 @@ def test_02_simple_task_minimum_model_calls():
     )
     executor = FakeExecutor({"desktop_open": (True, "ok")})
     agent = make_agent(model=model, executor=executor)
-    result = run(agent.run("open the calculator app", mode=Mode.AUTONOMOUS))
+    result = run_with_reflection(
+        agent, agent.run("open the calculator app", mode=Mode.AUTONOMOUS))
     assert result.success
+    # Reflection is now DEFERRED: the result is returned BEFORE the model
+    # reflect call fires, so the synchronous count is plan-only.
     assert model.calls.count("plan") == 1
-    assert model.calls.count("reflect") == 1
     assert "revise" not in model.calls
     assert "diagnose" not in model.calls
+    # The deferred reflection must have run exactly once (same event loop).
+    assert model.calls.count("reflect") == 1
     assert agent.model_calls == 2
 
 
@@ -250,10 +269,13 @@ def test_06_reflection_bounded():
     model = DelayedFakeModel(delay_s=0.005)
     executor = FakeExecutor({"desktop_open": (True, "ok")})
     agent = make_agent(model=model, executor=executor)
-    result = run(agent.run("open the calculator app", mode=Mode.AUTONOMOUS))
+    result = run_with_reflection(
+        agent, agent.run("open the calculator app", mode=Mode.AUTONOMOUS))
     assert result.success
-    assert model.calls.count("reflect") == 1
     assert result.reflection is not None
+    # Reflection model call is DEFERRED — but with the single-loop helper
+    # the background task completes before we assert, so exactly one call.
+    assert model.calls.count("reflect") == 1
 
 
 def test_07_context_composer_no_duplicate_layers():
@@ -320,13 +342,15 @@ def test_10_model_not_reinitialized():
         "open_folder": (True, "ok"),
     })
     agent = make_agent(model=model, executor=executor)
-    result = run(agent.run(
+    result = run_with_reflection(
+        agent, agent.run(
         "open firefox and then open the file manager",
         mode=Mode.AUTONOMOUS))
     assert result.success
     assert agent._model is model
     assert model.calls.count("plan") == 1
     assert model.calls.count("revise") == 1
+    # Reflection deferred — completes in the same loop, exactly once.
     assert model.calls.count("reflect") == 1
 
 
@@ -339,7 +363,8 @@ def test_11_instrumentation_does_not_alter_behavior():
         "open_folder": (True, "ok"),
     })
     agent = make_agent(model=model, executor=executor)
-    result = run(agent.run(
+    result = run_with_reflection(
+        agent, agent.run(
         "open firefox and then open the file manager",
         mode=Mode.AUTONOMOUS))
     assert result.success
@@ -347,9 +372,10 @@ def test_11_instrumentation_does_not_alter_behavior():
     assert "total" in profile and profile["total"] > 0
     assert "plan" in profile
     assert "execute" in profile
-    assert "reflect" in profile
-    assert profile["model_calls_total"] == agent.model_calls
+    assert profile["model_calls_total"] >= 2  # point-in-time snapshot at return
     assert profile["context_tokens"] > 0
     assert len(result.task_state.completed_steps) == 2
     assert [s.action for s in result.task_state.completed_steps] == [
         "desktop_open", "open_folder"]
+    # Reflection deferred — completes in the same loop, exactly once.
+    assert model.calls.count("reflect") == 1

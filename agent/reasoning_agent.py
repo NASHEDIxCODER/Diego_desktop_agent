@@ -29,6 +29,7 @@ Trivial commands are NEVER sent through expensive reasoning.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 import re
@@ -214,6 +215,12 @@ class ReasoningAgent:
         # to the result.profile. Zero-cost (perf_counter) when not read.
         self._profile: Dict[str, Any] = {}
         self._context_tokens: int = 0
+        # Phase 21D: background reflection task (deferred so SUCCESS does not
+        # wait for the expensive model-reflection call). None when idle.
+        self._pending_reflection: Optional[asyncio.Task] = None
+        # Phase 21D: tracks the last observation for the conservative
+        # revision-skip check (environment-stability detection).
+        self._last_observation: Optional[str] = None
         # Lessons consulted during THIS run (for reuse feedback, Task 10).
         self._lessons_used: List[Tuple[TaskLesson, float]] = []
         self.last_diagnosis: Optional[FailureAnalysis] = None
@@ -246,6 +253,72 @@ class ReasoningAgent:
             self._profile[name] = self._profile.get(name, 0.0) + ms
             self.model_calls += 1
 
+    # ── Phase 21D: deferred (background) reflection ───────────
+
+    async def shutdown(self) -> None:
+        """Cancel any pending background reflection (call on shutdown).
+        Reflection is optional learning — never blocks shutdown."""
+        pending = self._pending_reflection
+        self._pending_reflection = None
+        if pending is not None and not pending.done():
+            pending.cancel()
+            try:
+                await pending
+            except (asyncio.CancelledError, Exception):
+                pass
+
+    def _schedule_reflection(self, goal: str, task_state, rs: ReasoningState,
+                             reflection) -> None:
+        """Schedule the expensive model-reflection call to run in the
+        background AFTER the task result is returned. No-op for deterministic
+        tasks, when no model is configured, or when one is already pending
+        (prevents duplicate reflections)."""
+        if self._mode is Mode.DETERMINISTIC:
+            return
+        if self._model is None:
+            return
+        if self._pending_reflection is not None \
+                and not self._pending_reflection.done():
+            return  # already reflecting — do not duplicate
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return  # no loop; skip background reflection
+        self._pending_reflection = loop.create_task(
+            self._reflect_background(goal, task_state, rs, reflection))
+
+    async def _reflect_background(self, goal: str, task_state, rs,
+                                  reflection) -> None:
+        """Background model-reflection. Runs after SUCCESS is returned.
+        Any failure is swallowed — it must not affect the completed task."""
+        try:
+            outcome = (
+                f"status={task_state.final_status.value if task_state.final_status else ''} "
+                f"completed={len([s for s in (task_state.completed_steps or []) if s.verified])} "
+                f"failed={len(task_state.failed_steps or [])} "
+                f"replans={task_state.replan_count} "
+                f"blocker={task_state.blocker[:100]}")
+            result = await self._model_call(
+                "reflect_model",
+                self._model.reflect(goal, outcome))
+            if result is not None and result.ok:
+                data = result.data or {}
+                # Model may only REFINE — never flip verified facts.
+                if task_state.final_status == FinalStatus.SUCCESS \
+                        and data.get("goal_achieved") is True:
+                    pass
+                reflection.strategy_that_worked = (
+                    reflection.strategy_that_worked
+                    or str(data.get("what_worked", ""))[:200])
+                reflection.strategy_that_failed = (
+                    reflection.strategy_that_failed
+                    or str(data.get("what_failed", ""))[:200])
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.debug("[ReasoningAgent] background reflection failed "
+                         "safely: %s", e)
+
     # ── Main entry (Task 4 loop) ───────────────────────────────
 
     async def run(self, goal: str,
@@ -258,6 +331,7 @@ class ReasoningAgent:
         )
         mode = mode or choose_mode(goal)
         self._mode = mode  # Phase 21C: lets model-call sites respect mode
+        self._last_observation = None  # reset per task (Phase 21D)
 
         # ── UNDERSTAND ─────────────────────────────────────────
         rs = ReasoningState(goal=goal)
@@ -353,8 +427,10 @@ class ReasoningAgent:
 
         # ── REFLECT + learn (Tasks 11 / 9) ─────────────────────
         rs.phase = ReasoningPhase.REFLECT
+        # Deterministic (CPU-only) reflection + lesson persistence happen
+        # synchronously — they are fast and the lessons are valuable.
         with self._phase("reflect"):
-            reflection = await self._build_reflection(goal, task_state, rs)
+            reflection = self._build_reflection(goal, task_state, rs)
         reflection.confidence = rs.confidence
         with self._phase("persist"):
             lessons = []
@@ -370,7 +446,7 @@ class ReasoningAgent:
             v for v in self._profile.values() if isinstance(v, (int, float)))
         self._profile["model_calls_total"] = self.model_calls
         self._profile["context_tokens"] = self._context_tokens
-        return ReasoningRunResult(
+        result = ReasoningRunResult(
             task_state=task_state,
             reasoning_state=rs,
             reflection=reflection,
@@ -378,6 +454,10 @@ class ReasoningAgent:
             mode=mode,
             profile=dict(self._profile),
         )
+        # Phase 21D: schedule the EXPENSIVE model-reflection call to run in
+        # the background AFTER the result is returned. SUCCESS does not wait.
+        self._schedule_reflection(goal, task_state, rs, reflection)
+        return result
 
     # ── Planning helpers ───────────────────────────────────────
 
@@ -552,19 +632,96 @@ class ReasoningAgent:
                     return steps
         return None
 
+    # ── Phase 21D: deterministic revision necessity check ────
+
+    @staticmethod
+    def _step_target(rec) -> str:
+        """Extract a concrete target token from a completed step to compare
+        against the observation (e.g. an app name or path)."""
+        params = rec.params or {}
+        for key in ("app", "path", "url", "query", "pattern", "file"):
+            val = str(params.get(key, "")).strip()
+            if val:
+                return val
+        return str(rec.action or "").strip()
+
+    def _observation_confirms_step(self, rec, observed: str) -> bool:
+        """Cheap deterministic check: does the observed state mention the
+        target of the just-completed step? If yes, the plan is on track."""
+        target = self._step_target(rec)
+        if not target or not observed:
+            return False
+        obs = observed.lower()
+        # Match the full target or its last path/component token.
+        if target.lower() in obs:
+            return True
+        token = target.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+        return len(token) >= 2 and token.lower() in obs
+
+    def _revision_needed(self, state, rec, remaining) -> bool:
+        """Deterministic decision whether the remaining plan may be stale and
+        therefore warrants an expensive model revision. Revision is SKIPPED
+        only when the environment is COMPLETELY STABLE (observation identical
+        to the previous step's) and the remaining plan has no unresolved
+        dependencies — the conservative case where the plan cannot change."""
+        # A prior failure/recovery means the plan may be stale → revise.
+        if state.failed_steps:
+            return True
+        # Unverified step → state uncertain → revise.
+        if not rec.verified:
+            return True
+        observed = (state.observed_state or rec.result or "").strip()
+        # No observation: cannot assess, default to revise (conservative).
+        if not observed:
+            return True
+        # Environment completely stable (observation identical to the
+        # previous step's) AND remaining deps resolved → skip revision.
+        if observed == (self._last_observation or None) or \
+                (self._last_observation is not None and
+                 observed == self._last_observation):
+            if not self._remaining_has_unresolved_deps(remaining):
+                return False
+        # Any new/different observation → potential state change → revise.
+        return True
+
+    @staticmethod
+    def _remaining_has_unresolved_deps(remaining) -> bool:
+        """True if any remaining step has a placeholder/empty required
+        parameter, i.e. a dependency the plan cannot yet resolve."""
+        for step in remaining:
+            params = step.get("params") or {}
+            if not params:
+                continue
+            for v in params.values():
+                s = str(v).strip()
+                if not s or s.startswith("<") or s.startswith("?") or \
+                   s.lower() in ("todo", "tbd", "unknown"):
+                    return True
+        return False
+
     # ── Task 7: adaptive plan revision after a VERIFIED step ──
 
     async def _adaptive_step_hook(self, state, rec,
                                   remaining: List[Dict[str, Any]]
                                   ) -> Optional[List[Dict[str, Any]]]:
         """Ask the reasoning model whether the observation invalidated the
-        remaining plan. The RUNTIME still validates/bounds any revision."""
+        remaining plan. The RUNTIME still validates/bounds any revision.
+        Phase 21D: skips the model call when deterministic checks show the
+        remaining plan is still valid (saves a model call per stable step)."""
         if self._model is None or not remaining:
+            return None
+        observed = (state.observed_state or rec.result or "").strip()
+        # Deterministic skip: only revise if the plan may actually be stale.
+        revision_needed = self._revision_needed(state, rec, remaining)
+        # Always track the observation for the next step's stability check
+        # (must happen on EVERY step, not only when revising).
+        self._last_observation = observed
+        if not revision_needed:
             return None
         rs = self.rs
         if rs is not None:
             rs.phase = ReasoningPhase.OBSERVE
-            rs.note_observation(state.observed_state or rec.result or "")
+            rs.note_observation(observed)
             rs.note_completed_step(
                 f"{rec.action} {rec.params} — verified")
         try:
@@ -653,9 +810,9 @@ class ReasoningAgent:
         if task_state.blocker:
             rs.uncertainty.append(task_state.blocker[:200])
 
-    async def _build_reflection(self, goal: str, task_state,
-                                rs: ReasoningState) -> TaskReflection:
-        """Task 11: bounded structured reflection (never a transcript)."""
+    def _build_reflection(self, goal: str, task_state,
+                          rs: ReasoningState) -> TaskReflection:
+        """Task 11: bounded structured reflection (never a transcript). Phase 21D: now CPU-only (model call deferred to background)."""
         from agent.task_state import FinalStatus, StepStatus
         success = task_state.final_status == FinalStatus.SUCCESS
         completed = [s for s in task_state.completed_steps or []
@@ -676,43 +833,10 @@ class ReasoningAgent:
             replanning_required=(task_state.replan_count > 0),
             confidence=rs.confidence,
         )
-        if (self._model is not None
-                and self._mode is not Mode.DETERMINISTIC):
-            outcome = (
-                f"status={task_state.final_status.value if task_state.final_status else ''} "
-                f"completed={len(completed)} failed={len(failed)} "
-                f"replans={task_state.replan_count} blocker={task_state.blocker[:100]}")
-            try:
-                result = await self._model_call(
-                    "reflect_model", self._model.reflect(goal, outcome))
-            except Exception as e:
-                logger.debug("[ReasoningAgent] model reflect failed: %s", e)
-                result = None
-            if result is not None and result.ok:
-                data = result.data or {}
-                # The model may only REFINE the deterministic reflection —
-                # it can never flip verified facts.
-                if not success and data.get("goal_achieved") is True:
-                    pass  # unverified claim ignored — verification rules
-                reflection.strategy_that_worked = (
-                    reflection.strategy_that_worked
-                    or str(data.get("what_worked", ""))[:200])
-                reflection.strategy_that_failed = (
-                    reflection.strategy_that_failed
-                    or str(data.get("what_failed", ""))[:200])
-                lesson = data.get("lesson") or {}
-                if (isinstance(lesson, dict)
-                        and str(lesson.get("lesson", "")).strip()):
-                    if success:
-                        reflection.lesson = {
-                            "type": str(lesson.get("type",
-                                                   "task_lesson"))[:40],
-                            "task_pattern": str(
-                                lesson.get("task_pattern",
-                                           "general"))[:60],
-                            "lesson": str(lesson.get("lesson", ""))[:300],
-                            "evidence": "verified_success",
-                        }
+        # NOTE (Phase 21D): the expensive model-reflection call is no longer
+        # made here. It runs in the background via _schedule_reflection()
+        # after the task result is returned, so SUCCESS does not wait for it.
+        # This method now builds the deterministic (CPU-only) reflection.
         return reflection
 
     def mode(self) -> Mode:

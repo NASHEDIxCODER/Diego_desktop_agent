@@ -1,0 +1,27 @@
+{
+  "task_id": "4d2cb783d22d",
+  "original_request": "open my profile",
+  "normalized_goal": "open my profile",
+  "current_plan": [],
+  "completed_steps": [],
+  "current_step": null,
+  "failed_steps": [],
+  "observed_state": "",
+  "verification_results": [],
+  "retry_count": 0,
+  "replan_count": 0,
+  "total_steps": 0,
+  "final_status": "FAILED",
+  "plan_version": 0,
+  "started_at": 1789200478.099632,
+  "ended_at": 1789200478.0998867,
+  "artifacts": {},
+  "log": [
+    "[TASK] id=4d2cb783d22d goal=\"open my profile\"",
+    "[PLAN] v0 rejected — action 'click_text' not authorized for this request"
+  ],
+  "blocker": "The generated plan contained no executable actions: action 'click_text' not authorized for this request",
+  "evidence_log": [],
+  "pending_confirmation": null,
+  "confirmation_reason": ""
+}

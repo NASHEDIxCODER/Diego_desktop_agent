@@ -766,6 +766,33 @@ class AudioManager:
             report_no_working_microphone([])
             return False
 
+        # ── Runtime hardware identity resolution (index-independent) ──
+        # The persisted LOGICAL hardware identity is mapped onto the
+        # CURRENT enumeration: after a reboot / USB reconnect the runtime
+        # index may differ, but the same physical microphone is re-found.
+        # A stale saved index is NEVER trusted. The device is still
+        # probe-verified exactly like every other candidate.
+        try:
+            from voice import runtime_devices as _rd
+            _identity_hit = _rd.resolve_persisted_input_index(devices)
+        except Exception as _e:
+            logger.debug("[MIC-DETECT] identity resolution unavailable: %s", _e)
+            _identity_hit = None
+        if _identity_hit:
+            _ident_index, _ident_reason = _identity_hit
+            dev = next((d for d in devices if d["index"] == _ident_index), None)
+            if dev is not None and not dev["is_rejected"]:
+                logger.info("[MIC-DETECT] Hardware identity resolved → [%d] %s "
+                            "(%s) — validating", dev["index"], dev["name"],
+                            _ident_reason)
+                probe = probe_device(sd, dev)
+                self._probe_report.append(probe)
+                if probe["valid"]:
+                    self._accept_device(probe)
+                    return True
+                logger.warning("[MIC-DETECT] Identity-resolved device [%d] is "
+                               "SILENT — continuing full detection", dev["index"])
+
         # ── Configured device override (env WAKE_DEVICE_INDEX) ──
         # Honored ONLY if it probes VALID — a silent configured device is
         # rejected like any other and detection continues.
@@ -898,6 +925,17 @@ class AudioManager:
             probe["speech_channel"])
         print(f"  ✓ Microphone verified: [{probe['index']}] {probe['name']} "
               f"(RMS={probe['rms']:.1f}, speech_channel={probe['speech_channel']})")
+
+        # Mirror the LOGICAL hardware identity (canonical persistence).
+        # The runtime index is stored only as a transient hint — the next
+        # boot re-resolves the identity against the live enumeration.
+        try:
+            from voice import runtime_devices as _rd
+            _rd.record_active_input(probe["name"],
+                                    runtime_index=probe["index"],
+                                    source="auto")
+        except Exception as _e:
+            logger.debug("[MIC-DETECT] hardware-identity mirror failed: %s", _e)
 
     def _init_sounddevice(self) -> bool:
         """Initialize sounddevice and run the hardware detector."""

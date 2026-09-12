@@ -245,6 +245,24 @@ class OllamaReasoningModel(BaseReasoningModel):
                 self._base_url = "http://localhost:11434"
         self._model = model or ""
         self._checked = False
+        # Phase 21D: reusable HTTP client for connection pooling across the
+        # plan/revise/reflect calls of a task. Lazily created on first use.
+        self._client: Optional[Any] = None
+
+    async def _get_client(self):
+        """Return (and lazily create) the shared httpx client. Reuses the
+        TCP/HTTP2 connection across calls within and across tasks."""
+        if self._client is None:
+            import httpx
+            self._client = httpx.AsyncClient(
+                timeout=httpx.Timeout(DEFAULT_TIMEOUT_S))
+        return self._client
+
+    async def close(self) -> None:
+        """Close the shared HTTP client (call on shutdown)."""
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
 
     async def _ensure_model(self) -> Optional[str]:
         """Auto-detect the best available local model (once)."""
@@ -317,9 +335,12 @@ class OllamaReasoningModel(BaseReasoningModel):
             pass
 
         try:
-            async with httpx.AsyncClient(timeout=timeout_s) as client:
-                resp = await client.post(
-                    f"{self._base_url}/api/generate", json=payload)
+            # Phase 21D: reuse the shared client (connection pooling) instead
+            # of creating a fresh httpx.AsyncClient per call.
+            client = await self._get_client()
+            resp = await client.post(
+                f"{self._base_url}/api/generate", json=payload,
+                timeout=timeout_s)
             if resp.status_code != 200:
                 return ReasoningResult(
                     status=ReasoningCallStatus.MODEL_ERROR,
@@ -383,14 +404,98 @@ class DisabledReasoningModel(BaseReasoningModel):
             error="reasoning model disabled")
 
 
-def get_reasoning_model() -> BaseReasoningModel:
-    """Factory: choose the reasoning model from configuration.
-
-    DIEGO_REASONING_MODEL=off|none|disabled → DisabledReasoningModel.
-    Default: OllamaReasoningModel (local, fail-safe).
-    """
+def _config_key() -> tuple:
+    """Build a cache key from the current provider/model configuration.
+    Changes to any of these invalidate the cached model instance."""
     setting = (os.environ.get("DIEGO_REASONING_MODEL", "") or
                "").strip().lower()
-    if setting in ("off", "none", "disabled", "0"):
-        return DisabledReasoningModel()
-    return OllamaReasoningModel()
+    base_url = (os.environ.get("DIEGO_OLLAMA_BASE_URL") or "").strip()
+    try:
+        from config.settings import settings
+        base_url = base_url or settings.OLLAMA_BASE_URL.rstrip("/")
+    except Exception:
+        pass
+    explicit = (os.environ.get("DIEGO_REASONING_MODEL_NAME") or "").strip()
+    return (setting, base_url, explicit)
+
+
+class _ModelCache:
+    """Phase 21D: a single cached reasoning-model instance per distinct
+    (provider/model/base_url) configuration. Avoids rebuilding the model
+    and re-running `/api/tags` discovery on every task. Configuration
+    changes invalidate the cache automatically."""
+
+    def __init__(self):
+        self._lock = asyncio.Lock()
+        self._key: Optional[tuple] = None
+        self._instance: Optional[BaseReasoningModel] = None
+
+    async def get(self) -> BaseReasoningModel:
+        key = _config_key()
+        if self._instance is not None and self._key == key:
+            return self._instance
+        async with self._lock:
+            # Re-check after acquiring the lock.
+            if self._instance is not None and self._key == key:
+                return self._instance
+            await self._close_if_present()
+            self._instance = self._create(key)
+            self._key = key
+            return self._instance
+
+    def _create(self, key: tuple) -> BaseReasoningModel:
+        setting = key[0]
+        if setting in ("off", "none", "disabled", "0"):
+            return DisabledReasoningModel()
+        return OllamaReasoningModel()
+
+    async def close(self) -> None:
+        async with self._lock:
+            await self._close_if_present()
+            self._instance = None
+            self._key = None
+
+    async def _close_if_present(self) -> None:
+        if self._instance is not None:
+            closer = getattr(self._instance, "close", None)
+            if callable(closer):
+                try:
+                    await closer()
+                except Exception:
+                    pass
+
+
+_model_cache = _ModelCache()
+
+
+def get_reasoning_model() -> BaseReasoningModel:
+    """Factory: return the cached reasoning model for the current
+    configuration. The instance is reused across tasks (one per distinct
+    provider/model/base_url); configuration changes invalidate the cache.
+
+    NOTE: this returns the cached instance synchronously when the loop is
+    unavailable; the first call in an async context performs lazy creation.
+    """
+    key = _config_key()
+    if _model_cache._instance is not None and _model_cache._key == key:
+        return _model_cache._instance
+    # First call or config changed: build synchronously (discovery is
+    # deferred to the first model call, which caches the result).
+    if key[0] in ("off", "none", "disabled", "0"):
+        inst: BaseReasoningModel = DisabledReasoningModel()
+    else:
+        inst = OllamaReasoningModel()
+    _model_cache._instance = inst
+    _model_cache._key = key
+    return inst
+
+
+async def get_reasoning_model_async() -> BaseReasoningModel:
+    """Async factory: returns the cached model, creating/closing under a
+    lock so configuration changes never leak a stale client."""
+    return await _model_cache.get()
+
+
+async def close_reasoning_model() -> None:
+    """Close the cached model client (call on shutdown)."""
+    await _model_cache.close()

@@ -1,0 +1,41 @@
+{
+  "input": {
+    "hardware_identity": "alsa:generic 1|19feb23cc73c",
+    "friendly_name": "HD-Audio Generic ALC256 \u2014 Microphone",
+    "manufacturer": "snd_hda_intel",
+    "model": "Generic_1",
+    "family_id": "family:a9ad1b675c44",
+    "raw_name": "HD-Audio Generic: ALC256 Analog (hw:3,0)",
+    "category": "PHYSICAL",
+    "is_camera_associated_audio": false,
+    "runtime_index": 6,
+    "source": "auto",
+    "saved_at": 1789214242.65514
+  },
+  "output": {
+    "hardware_identity": "audio|7505d64a54e0",
+    "friendly_name": "default",
+    "manufacturer": "",
+    "model": "default",
+    "family_id": "family:7505d64a54e0",
+    "raw_name": "default",
+    "category": "VIRTUAL",
+    "is_camera_associated_audio": false,
+    "runtime_index": 17,
+    "source": "auto",
+    "saved_at": 1789214098.8475635
+  },
+  "camera": {
+    "hardware_identity": "/dev/v4l/by-id/usb-BC-250603-ZW_ZEB_LIVE_PRO-video-index0",
+    "friendly_name": "ZEB LIVE PRO",
+    "manufacturer": "BC-250603-ZW",
+    "model": "ZEB LIVE PRO",
+    "family_id": "family:/dev/v4l/by-id/usb-BC-250603-ZW_ZEB_LIVE_PRO-video-index0",
+    "raw_name": "ZEB LIVE PRO: ZEB LIVE PRO",
+    "category": "PHYSICAL",
+    "is_camera_associated_audio": false,
+    "runtime_index": 0,
+    "source": "auto",
+    "saved_at": 1789214098.8874032
+  }
+}

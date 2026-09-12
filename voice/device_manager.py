@@ -77,16 +77,18 @@ class DeviceManager:
 
     def list_input_devices(self) -> List[Dict[str, Any]]:
         """All capture-capable devices (input channels > 0 or capture-by-name
-        physical codecs), classified by the existing AudioManager detector."""
+        physical codecs), classified by the existing AudioManager detector
+        and enriched with runtime friendly names / hardware identities."""
         try:
             from voice.audio_manager import enumerate_input_devices
-            return enumerate_input_devices(self._sd())
+            return self._enrich(enumerate_input_devices(self._sd()), "input")
         except Exception as e:
             logger.error("[DEVICES] Input enumeration failed: %s", e)
             return []
 
     def list_output_devices(self) -> List[Dict[str, Any]]:
-        """All playback-capable devices (output channels > 0)."""
+        """All playback-capable devices (output channels > 0 or physical
+        codecs that play by name), enriched with runtime friendly names."""
         out = []
         try:
             sd = self._sd()
@@ -100,7 +102,12 @@ class DeviceManager:
                 default_out = -1
             for d in sd.query_devices():
                 out_ch = int(d.get("max_output_channels", 0))
-                if out_ch <= 0:
+                name = str(d.get("name", ""))
+                # Physical ALSA codecs enumerated as capture-only can still
+                # play when addressed by name (validated before use).
+                physical_by_name = (out_ch <= 0 and "(hw:" in name.lower()
+                                    and not self._is_display_output(name))
+                if out_ch <= 0 and not physical_by_name:
                     continue
                 idx = d.get("index")
                 hostapi_idx = d.get("hostapi", -1)
@@ -111,15 +118,56 @@ class DeviceManager:
                     hostapi = "?"
                 out.append({
                     "index": idx,
-                    "name": str(d.get("name", "")),
+                    "name": name,
                     "hostapi": hostapi,
                     "max_output_channels": out_ch,
                     "default_samplerate": float(d.get("default_samplerate", 0.0)),
                     "is_default": (idx == default_out),
+                    "playback_by_name": bool(physical_by_name),
                 })
         except Exception as e:
             logger.error("[DEVICES] Output enumeration failed: %s", e)
-        return out
+        return self._enrich(out, "output")
+
+    @staticmethod
+    def _is_display_output(name: str) -> bool:
+        lname = (name or "").lower()
+        return any(c in lname for c in ("hdmi", "displayport", "dp,"))
+
+    @staticmethod
+    def _enrich(devices: List[Dict[str, Any]],
+                direction: str) -> List[Dict[str, Any]]:
+        """Attach runtime friendly names + hardware identities (best effort).
+
+        The runtime index stays available for the existing pipeline; the
+        friendly name/identity come from voice.runtime_devices and are what
+        the user-facing surfaces and future voice commands use.
+        """
+        try:
+            from voice import runtime_devices as rd
+        except Exception:
+            return devices
+        for dev in devices:
+            try:
+                in_view, out_view = rd.build_audio_views(
+                    dev.get("index"), str(dev.get("name") or ""),
+                    str(dev.get("hostapi") or ""),
+                    int(dev.get("max_input_channels", 0) or 0),
+                    int(dev.get("max_output_channels", 0) or 0),
+                    float(dev.get("default_samplerate", 0.0) or 0.0))
+                view = in_view if direction == "input" else (out_view or in_view)
+                if view is None:
+                    continue
+                dev["friendly_name"] = view.friendly_name
+                dev["hardware_identity"] = view.hardware_identity
+                dev["family_id"] = view.family_id
+                dev["category"] = view.category
+                dev["integration"] = view.integration
+                dev["is_camera_associated_audio"] = (
+                    view.is_camera_associated_audio)
+            except Exception:
+                continue
+        return devices
 
     def find_input_device(self, index: int) -> Optional[Dict[str, Any]]:
         return next((d for d in self.list_input_devices()
@@ -152,23 +200,66 @@ class DeviceManager:
         except Exception as e:
             logger.warning("[DEVICES] Failed to persist device store: %s", e)
 
-    def save_input_device(self, index: int, name: str) -> None:
-        """Persist the microphone selection. NEVER touches output_device."""
+    def save_input_device(self, index: int, name: str,
+                          source: str = "auto") -> None:
+        """Persist the microphone selection. NEVER touches output_device.
+
+        The LOGICAL hardware identity is stored NEXT TO the runtime index
+        (index is only a transient hint; identity is canonical).
+        """
         with self._lock:
             store = self._load_store()
-            store[INPUT_KEY] = {"index": index, "name": name,
-                                "saved_at": time.time()}
+            store[INPUT_KEY] = self._entry_with_identity(
+                "input", index, name, source)
             self._save_store(store)
         logger.info("[DEVICES] input_device persisted: [%s] %s", index, name)
 
-    def save_output_device(self, index: int, name: str) -> None:
-        """Persist the speaker selection. NEVER touches input_device."""
+    def save_output_device(self, index: int, name: str,
+                           source: str = "auto") -> None:
+        """Persist the speaker selection. NEVER touches input_device.
+
+        The LOGICAL hardware identity is stored NEXT TO the runtime index
+        (index is only a transient hint; identity is canonical).
+        """
         with self._lock:
             store = self._load_store()
-            store[OUTPUT_KEY] = {"index": index, "name": name,
-                                 "saved_at": time.time()}
+            store[OUTPUT_KEY] = self._entry_with_identity(
+                "output", index, name, source)
             self._save_store(store)
         logger.info("[DEVICES] output_device persisted: [%s] %s", index, name)
+
+    def _entry_with_identity(self, slot: str, index: Optional[int],
+                             name: str, source: str) -> Dict[str, Any]:
+        """Build the persisted entry (index + name + LOGICAL identity).
+
+        The identity comes from voice.runtime_devices but is written into
+        THIS store's entry (audio_devices.json) — never into a separate
+        global file — so test-isolated stores stay isolated and the
+        identity always travels with the selection it describes.
+        """
+        entry: Dict[str, Any] = {
+            "index": index, "name": name, "saved_at": time.time(),
+        }
+        try:
+            from voice import runtime_devices as rd
+            direction = "output" if slot == "output" else "input"
+            payload = rd.identity_payload_for_audio(name, direction,
+                                                    runtime_index=index,
+                                                    source=source)
+            entry.update({
+                "hardware_identity": payload.get("hardware_identity", ""),
+                "friendly_name": payload.get("friendly_name", ""),
+                "family_id": payload.get("family_id", ""),
+                "manufacturer": payload.get("manufacturer", ""),
+                "model": payload.get("model", ""),
+                "category": payload.get("category", ""),
+                "is_camera_associated_audio": payload.get(
+                    "is_camera_associated_audio", False),
+                "source": source,
+            })
+        except Exception as e:
+            logger.debug("[DEVICES] hardware-identity payload failed: %s", e)
+        return entry
 
     def get_saved_input_device(self) -> Optional[Dict[str, Any]]:
         return self._load_store().get(INPUT_KEY)
@@ -181,23 +272,49 @@ class DeviceManager:
     def get_current_input_device(self) -> Dict[str, Any]:
         try:
             from voice.audio_manager import audio_manager
-            return {"index": audio_manager.device_index,
-                    "name": audio_manager.device_name,
+            index = audio_manager.device_index
+            name = audio_manager.device_name
+            return {"index": index,
+                    "name": name,
+                    "friendly_name": self._friendly("input", index, name),
                     "running": audio_manager.is_running,
                     "verified": audio_manager.mic_verified}
         except Exception as e:
             logger.debug("[DEVICES] current input unavailable: %s", e)
-            return {"index": None, "name": "", "running": False, "verified": False}
+            return {"index": None, "name": "", "friendly_name": "",
+                    "running": False, "verified": False}
 
     def get_current_output_device(self) -> Dict[str, Any]:
         try:
             from voice.streaming_tts import streaming_tts
-            return {"index": streaming_tts.output_device,
-                    "name": streaming_tts.output_device_name,
+            index = streaming_tts.output_device
+            name = streaming_tts.output_device_name
+            return {"index": index,
+                    "name": name,
+                    "friendly_name": self._friendly("output", index, name),
                     "ready": streaming_tts.ready}
         except Exception as e:
             logger.debug("[DEVICES] current output unavailable: %s", e)
-            return {"index": None, "name": "", "ready": False}
+            return {"index": None, "name": "", "friendly_name": "",
+                    "ready": False}
+
+    @staticmethod
+    def _friendly(direction: str, index, raw_name: str = "") -> str:
+        """Runtime friendly name for the live device (user-facing label)."""
+        try:
+            from voice import runtime_devices as rd
+            name = rd.friendly_name_for_index(direction, index)
+            if name:
+                return name
+            if raw_name:
+                in_view, out_view = rd.build_audio_views(index, raw_name)
+                view = (in_view if direction == "input"
+                        else (out_view or in_view))
+                if view is not None:
+                    return view.friendly_name
+        except Exception:
+            pass
+        return raw_name or ""
 
     # ── Startup restore ───────────────────────────────────────────
 
@@ -215,8 +332,44 @@ class DeviceManager:
         """
         result = {"input_restored": None, "output_restored": None}
 
+        # ── Runtime hardware-identity resolution (index-independent) ──
+        # The saved LOGICAL hardware identity (in THIS store's entry) is
+        # re-resolved against the CURRENT enumeration first so the same
+        # physical device keeps working after reboot/reconnect. A saved
+        # runtime index is NEVER canonical — only the identity is.
         saved_in = self.get_saved_input_device()
-        if saved_in and saved_in.get("index") is not None:
+        hit = None
+        if saved_in and (saved_in.get("hardware_identity")
+                         or saved_in.get("name")):
+            try:
+                from voice import runtime_devices as rd
+                hit = rd.resolve_saved_entry_index(
+                    rd.INPUT_SLOT, self.list_input_devices(),
+                    saved_identity=saved_in.get("hardware_identity"),
+                    saved_name=(None if saved_in.get("hardware_identity")
+                                else saved_in.get("name")),
+                    source=str(saved_in.get("source") or "auto"))
+            except Exception as e:
+                logger.debug("[DEVICES] identity-based input resolution "
+                             "unavailable: %s", e)
+        if hit:
+            index, reason = hit
+            dev = self.find_input_device(int(index))
+            from voice.settings import voice_settings
+            voice_settings.device_index = int(index)
+            result["input_restored"] = {
+                "index": int(index),
+                "name": (dev or {}).get("name", ""),
+                "friendly_name": (dev or {}).get("friendly_name", ""),
+                "hardware_identity": (dev or {}).get("hardware_identity", ""),
+                "reason": reason,
+            }
+            logger.info("[DEVICES] Input resolved by hardware identity → "
+                        "[%s] %s (%s)", index, (dev or {}).get("name"),
+                        reason)
+
+        if result["input_restored"] is None and saved_in \
+                and saved_in.get("index") is not None:
             if self.find_input_device(saved_in["index"]) is not None:
                 from voice.settings import voice_settings
                 voice_settings.device_index = int(saved_in["index"])
@@ -228,9 +381,55 @@ class DeviceManager:
                                "unavailable — auto-detection will pick one",
                                saved_in["index"], saved_in.get("name"))
 
-        saved_out = self.get_saved_output_device()
         restored = False
-        if saved_out and saved_out.get("index") is not None:
+
+        # ── Output: hardware-identity resolution first (index-independent) ──
+        saved_out = self.get_saved_output_device()
+        hit = None
+        if saved_out and (saved_out.get("hardware_identity")
+                          or saved_out.get("name")):
+            try:
+                from voice import runtime_devices as rd
+                hit = rd.resolve_saved_entry_index(
+                    rd.OUTPUT_SLOT, self.list_output_devices(),
+                    saved_identity=saved_out.get("hardware_identity"),
+                    saved_name=(None if saved_out.get("hardware_identity")
+                                else saved_out.get("name")),
+                    source=str(saved_out.get("source") or "auto"))
+            except Exception as e:
+                logger.debug("[DEVICES] identity-based output resolution "
+                             "unavailable: %s", e)
+        if hit:
+            index, reason = hit
+            dev = self.find_output_device(int(index))
+            if (dev is not None
+                    and not self._is_virtual_output(str(dev.get("name") or ""))
+                    and self.test_output_device(int(index)).get("ok")):
+                from voice.streaming_tts import streaming_tts
+                streaming_tts.set_output_device(int(index))
+                result["output_restored"] = {
+                    "index": int(index),
+                    "name": dev.get("name", ""),
+                    "friendly_name": dev.get("friendly_name", ""),
+                    "hardware_identity": dev.get("hardware_identity", ""),
+                    "reason": reason,
+                }
+                restored = True
+                logger.info("[DEVICES] Output resolved by hardware "
+                            "identity → [%s] %s (%s)", index,
+                            dev.get("name"), reason)
+            elif dev is not None and self._is_virtual_output(
+                    str(dev.get("name") or "")):
+                logger.warning("[DEVICES] Identity-resolved output [%s] "
+                               "'%s' is a virtual pseudo-device — resolving "
+                               "a concrete working output instead",
+                               index, dev.get("name"))
+            else:
+                logger.warning("[DEVICES] Identity-resolved output [%s] "
+                               "failed playback validation — falling back "
+                               "to the saved index / OS default", index)
+
+        if not restored and saved_out and saved_out.get("index") is not None:
             dev = self.find_output_device(int(saved_out["index"]))
             if dev is None:
                 logger.warning("[DEVICES] Saved output device [%s] %s is "
@@ -318,7 +517,12 @@ class DeviceManager:
                     "device_index": None, "device_name": "", "fallback": False}
 
         if result.get("ok"):
-            self.save_input_device(index, result.get("device_name") or dev["name"])
+            name = result.get("device_name") or dev["name"]
+            # Explicit user switch → identity persisted as explicit choice
+            # (survives reboot / ALSA renumbering). Writes ONLY into THIS
+            # store's input_device entry — output/camera are untouched.
+            self.save_input_device(int(result.get("device_index") or index),
+                                   name, source="explicit")
         return result
 
     def set_output_device(self, index: int) -> Dict[str, Any]:
@@ -375,8 +579,9 @@ class DeviceManager:
 
         if result.get("ok"):
             # Persist ONLY the speaker selection — the microphone entry is
-            # never touched (independent keys).
-            self.save_output_device(index, dev["name"])
+            # never touched (independent keys). The LOGICAL identity is
+            # persisted as an explicit choice (survives reboot/renumbering).
+            self.save_output_device(index, dev["name"], source="explicit")
         else:
             logger.warning("[DEVICES] Output switch to [%s] %s failed: %s "
                            "— staying on the previous output",
@@ -505,6 +710,130 @@ class DeviceManager:
                                        samplerate=sample_rate).get("ok"):
                 return dev["index"]
         return None
+
+    # ── Runtime name-based selection (friendly names / identities) ──
+
+    def runtime_registry(self):
+        """The canonical runtime device registry (discovered on demand)."""
+        from voice import runtime_devices as rd
+        registry = rd.get_registry()
+        if not registry.inputs and not registry.outputs:
+            registry.discover(include_cameras=False)
+        return registry
+
+    def list_runtime_devices(self) -> Dict[str, Any]:
+        """Structured runtime device data (friendly names + identities)."""
+        try:
+            return self.runtime_registry().describe_for_commands()
+        except Exception as e:
+            logger.debug("[DEVICES] runtime device snapshot failed: %s", e)
+            return {"inputs": [], "outputs": [], "cameras": [], "selected": {}}
+
+    def get_selected_input_device(self) -> Optional[Dict[str, Any]]:
+        try:
+            return self.runtime_registry().get_selected_input()
+        except Exception:
+            return None
+
+    def get_selected_output_device(self) -> Optional[Dict[str, Any]]:
+        try:
+            return self.runtime_registry().get_selected_output()
+        except Exception:
+            return None
+
+    def get_selected_camera_device(self) -> Optional[Dict[str, Any]]:
+        try:
+            from voice import runtime_devices as rd
+            registry = rd.get_registry()
+            if not registry.cameras:
+                registry.discover(include_cameras=True)
+            return registry.get_selected_camera()
+        except Exception:
+            return None
+
+    def select_input_device(self, identifier: str) -> Dict[str, Any]:
+        """Select the microphone BY RUNTIME FRIENDLY NAME (or identity).
+
+        Resolves through the runtime registry (never a hardcoded index),
+        then drives the EXISTING AudioManager switch (live verification).
+        Output and camera selections are untouched.
+        """
+        try:
+            registry = self.runtime_registry()
+        except Exception as e:
+            return {"ok": False, "error": str(e), "device_index": None,
+                    "device_name": "", "fallback": False}
+        chosen = registry.select_input_device(identifier)
+        if chosen is None:
+            return {"ok": False,
+                    "error": f"input device {identifier!r} not found",
+                    "device_index": None, "device_name": "", "fallback": False}
+        index = chosen.get("runtime_index")
+        if index is None:
+            return {"ok": False, "error": "resolved device has no runtime index",
+                    "device_index": None, "device_name": "", "fallback": False}
+        result = self.set_input_device(int(index))
+        result["friendly_name"] = chosen.get("friendly_name", "")
+        result["hardware_identity"] = chosen.get("hardware_identity", "")
+        return result
+
+    def select_output_device(self, identifier: str) -> Dict[str, Any]:
+        """Select speakers/headphones BY RUNTIME FRIENDLY NAME (or identity).
+
+        Playback is validated BEFORE persisting; input and camera selections
+        are untouched.
+        """
+        try:
+            registry = self.runtime_registry()
+        except Exception as e:
+            return {"ok": False, "error": str(e), "device_index": None,
+                    "device_name": "", "fallback": False}
+
+        def _probe(dev) -> bool:
+            if dev.runtime_index is None:
+                return False
+            return bool(self.test_output_device(int(dev.runtime_index)).get("ok"))
+
+        chosen = registry.select_output_device(identifier, probe=_probe)
+        if chosen is None:
+            return {"ok": False,
+                    "error": (f"output device {identifier!r} not found or "
+                              "failed playback validation"),
+                    "device_index": None, "device_name": "", "fallback": False}
+        index = chosen.get("runtime_index")
+        if index is None:
+            return {"ok": False, "error": "resolved device has no runtime index",
+                    "device_index": None, "device_name": "", "fallback": False}
+        result = self.set_output_device(int(index))
+        result["friendly_name"] = chosen.get("friendly_name", "")
+        result["hardware_identity"] = chosen.get("hardware_identity", "")
+        return result
+
+    def select_camera(self, identifier: str) -> Dict[str, Any]:
+        """Select a camera BY RUNTIME FRIENDLY NAME (or stable identity).
+
+        Validated (open + frame capture) by the existing CameraSelector.
+        Audio selections are untouched.
+        """
+        try:
+            from voice import runtime_devices as rd
+            registry = rd.get_registry()
+            if not registry.cameras:
+                registry.discover(include_cameras=True)
+            chosen = registry.select_camera(identifier)
+        except Exception as e:
+            logger.warning("[CAMERA-SELECT] selection failed: %s", e)
+            return {"ok": False, "error": str(e)}
+        if chosen is None:
+            return {"ok": False,
+                    "error": (f"camera {identifier!r} not found or failed "
+                              "frame validation")}
+        logger.info("[CAMERA-SELECT] camera=%r reason=explicit user selection "
+                    "(%s)", chosen.get("friendly_name"), identifier)
+        return {"ok": True, "camera": chosen,
+                "friendly_name": chosen.get("friendly_name", ""),
+                "hardware_identity": chosen.get("hardware_identity", ""),
+                "index": chosen.get("runtime_index")}
 
 
 # Global singleton
