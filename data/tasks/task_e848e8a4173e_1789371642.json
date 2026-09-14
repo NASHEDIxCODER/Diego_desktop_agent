@@ -1,0 +1,69 @@
+{
+  "task_id": "e848e8a4173e",
+  "original_request": "open my profile",
+  "normalized_goal": "open my profile",
+  "current_plan": [
+    {
+      "action": "desktop_open",
+      "params": {
+        "app": "browser"
+      },
+      "description": "Open the web browser"
+    }
+  ],
+  "completed_steps": [
+    {
+      "index": 1,
+      "action": "desktop_open",
+      "params": {
+        "app": "browser"
+      },
+      "description": "Open the web browser",
+      "status": "completed",
+      "result": "Opened browser",
+      "verification": "success",
+      "verified": true,
+      "retries": 0,
+      "error": "",
+      "latency_ms": 29.19626235961914,
+      "evidence_source": "unknown",
+      "sensitive_reason": ""
+    }
+  ],
+  "current_step": null,
+  "failed_steps": [],
+  "observed_state": "Window: [chrome] GitHub - Google Chrome\nPage: terminal\nA11y: 0 clickable, 1 nodes (x11_window)\nWindow: GitHub - Google Chrome\nApplication: Chrome (chrome)\nAccessibility: 1 nodes, 0 clickable\n♿ window \"GitHub - Google Chrome\" @(0,0,1920x1068) [FOCUSED] [x11_window]\nSummary: Screen type: terminal\nFocused: window 'GitHub - Google Chrome'\nClipboard: The lint warnings are all minor (type hints for FakeEmbedder which is expected i\nBrowser: GitHub",
+  "verification_results": [
+    {
+      "step": 1,
+      "action": "desktop_open",
+      "verified": true,
+      "evidence": "Opened browser",
+      "reason": ""
+    }
+  ],
+  "retry_count": 0,
+  "replan_count": 0,
+  "total_steps": 1,
+  "final_status": "SUCCESS",
+  "plan_version": 1,
+  "started_at": 1789371642.443935,
+  "ended_at": 1789371642.6727612,
+  "artifacts": {
+    "last_app": "browser"
+  },
+  "log": [
+    "[TASK] id=e848e8a4173e goal=\"open my profile\"",
+    "[PLAN] v1 steps=1",
+    "[STEP 1/1] desktop_open",
+    "[VERIFY] success",
+    "[TASK] COMPLETE",
+    "[TASK] SUCCESS (steps=1 ok, 0 failed, replans=0, latency=229ms)"
+  ],
+  "blocker": "",
+  "evidence_log": [],
+  "pending_confirmation": null,
+  "confirmation_reason": "",
+  "referenced_entity": "",
+  "active_goal": ""
+}

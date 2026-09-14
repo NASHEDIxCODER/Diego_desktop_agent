@@ -1,0 +1,29 @@
+{
+  "task_id": "9c5c356bed4f",
+  "original_request": "open lid",
+  "normalized_goal": "open lid",
+  "current_plan": [],
+  "completed_steps": [],
+  "current_step": null,
+  "failed_steps": [],
+  "observed_state": "",
+  "verification_results": [],
+  "retry_count": 0,
+  "replan_count": 0,
+  "total_steps": 0,
+  "final_status": "FAILED",
+  "plan_version": 0,
+  "started_at": 1789371551.0093203,
+  "ended_at": 1789371551.0094764,
+  "artifacts": {},
+  "log": [
+    "[TASK] id=9c5c356bed4f goal=\"open lid\"",
+    "[PLAN] v0 rejected — action 'close_app' not authorized for this request; action 'volume_down' not authorized for this request"
+  ],
+  "blocker": "The generated plan contained no executable actions: action 'close_app' not authorized for this request; action 'volume_down' not authorized for this request",
+  "evidence_log": [],
+  "pending_confirmation": null,
+  "confirmation_reason": "",
+  "referenced_entity": "",
+  "active_goal": ""
+}
