@@ -481,5 +481,4 @@ def wire_all(bridge: EventBridge) -> None:
     wire_conversation_engine(bridge)
     wire_event_bus(bridge)
     wire_stt_events(bridge)
-    # Note: Brain wiring is done carefully to avoid double-response
-    # wire_brain_events(bridge)
+    wire_brain_events(bridge)

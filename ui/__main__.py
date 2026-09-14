@@ -273,12 +273,8 @@ class AudioLevelPoller:
 
         # Try to get the audio manager and TTS from the pipeline
         try:
-            from voice.audio_manager import AudioManager
-            # The conversation engine creates the audio manager;
-            # we access it via the global instance if available
-            from core.conversation_engine import conversation_engine
-            if hasattr(conversation_engine, '_audio_manager'):
-                self._audio_manager = conversation_engine._audio_manager
+            from voice.audio_manager import audio_manager as _am
+            self._audio_manager = _am
         except Exception as e:
             logger.debug("[UI-AUDIO] Could not access AudioManager: %s", e)
 
