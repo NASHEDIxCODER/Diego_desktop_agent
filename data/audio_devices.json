@@ -1,12 +1,28 @@
 {
   "output_device": {
-    "index": 5,
-    "name": "HD-Audio Generic: ALC256 Analog (hw:2,0)",
-    "saved_at": 1788859081.288957
+    "index": 12,
+    "name": "pipewire",
+    "saved_at": 1789214358.0975437,
+    "hardware_identity": "audio|aa0ce6f26889",
+    "friendly_name": "pipewire",
+    "family_id": "family:aa0ce6f26889",
+    "manufacturer": "",
+    "model": "pipewire",
+    "category": "VIRTUAL",
+    "is_camera_associated_audio": false,
+    "source": "explicit"
   },
   "input_device": {
-    "index": 5,
-    "name": "HD-Audio Generic: ALC256 Analog (hw:2,0)",
-    "saved_at": 1788508379.331983
+    "index": 6,
+    "name": "HD-Audio Generic: ALC256 Analog (hw:3,0)",
+    "saved_at": 1789214340.862128,
+    "hardware_identity": "alsa:generic 1|19feb23cc73c",
+    "friendly_name": "HD-Audio Generic ALC256 \u2014 Microphone",
+    "family_id": "family:a9ad1b675c44",
+    "manufacturer": "snd_hda_intel",
+    "model": "Generic_1",
+    "category": "PHYSICAL",
+    "is_camera_associated_audio": false,
+    "source": "explicit"
   }
 }

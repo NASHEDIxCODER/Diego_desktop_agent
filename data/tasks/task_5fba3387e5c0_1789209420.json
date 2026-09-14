@@ -1,0 +1,44 @@
+{
+  "task_id": "5fba3387e5c0",
+  "original_request": "open firefox",
+  "normalized_goal": "",
+  "current_plan": [],
+  "completed_steps": [
+    {
+      "index": 1,
+      "action": "desktop_open",
+      "params": {
+        "app": "firefox"
+      },
+      "description": "",
+      "status": "completed",
+      "result": "",
+      "verification": "",
+      "verified": true,
+      "retries": 0,
+      "error": "",
+      "latency_ms": 0.0,
+      "evidence_source": "unknown",
+      "sensitive_reason": ""
+    }
+  ],
+  "current_step": null,
+  "failed_steps": [],
+  "observed_state": "",
+  "verification_results": [],
+  "retry_count": 0,
+  "replan_count": 0,
+  "total_steps": 0,
+  "final_status": "SUCCESS",
+  "plan_version": 0,
+  "started_at": 1789209420.6375139,
+  "ended_at": null,
+  "artifacts": {
+    "last_app": "firefox"
+  },
+  "log": [],
+  "blocker": "",
+  "evidence_log": [],
+  "pending_confirmation": null,
+  "confirmation_reason": ""
+}

@@ -8,6 +8,7 @@ Diego Desktop Assistant — Production Entry Point
   python main.py --benchmark   # Run NLP benchmarks and exit
   python main.py --select-mic  # Interactively select the microphone
   python main.py --audio-debug # Real-time audio level visualizer
+  python main.py --device-report # Inspect runtime hardware device discovery
   python main.py --train-wake  # Record wake phrases + train custom verifier
 
 THE VOICE PIPELINE (exactly ONE implementation — core/conversation_engine.py):
@@ -223,6 +224,67 @@ def cmd_audio_debug() -> None:
         audio_manager.stop()
 
 
+def cmd_device_report() -> None:
+    """Runtime hardware device discovery inspection (`--device-report`).
+
+    Prints every discovered input / output / camera device with its
+    runtime-generated friendly name, hardware identity, classification and
+    the selection (with reason) Diego would use. Everything comes from the
+    hardware connected RIGHT NOW — no hardcoded names or indices.
+    """
+    import logging as _logging
+    from voice import runtime_devices as rd
+
+    _logging.basicConfig(level=_logging.INFO, format="  %(message)s")
+
+    def _probe_output(dev) -> bool:
+        """Validate a playback endpoint with the EXISTING safe test."""
+        try:
+            from voice.device_manager import device_manager
+            if dev.runtime_index is None:
+                return False
+            return bool(device_manager.test_output_device(
+                int(dev.runtime_index)).get("ok"))
+        except Exception:
+            return True
+
+    print("\n  ══════════════════════════════════════════════════════════════")
+    print("  RUNTIME DEVICE DISCOVERY")
+    print("  ══════════════════════════════════════════════════════════════\n")
+    rd.startup_device_discovery(probe_output=_probe_output)
+    snapshot = rd.describe_devices()
+
+    def _section(title: str, rows: list) -> None:
+        print(f"  {title}")
+        if not rows:
+            print("    (none discovered)")
+        for r in rows:
+            print(f"    [{r['runtime_index']}] {r['friendly_name']}")
+            print(f"        raw_name         : {r['raw_name']}")
+            print(f"        hardware_identity: {r['hardware_identity']}")
+            print(f"        family_id        : {r['family_id']}")
+            print(f"        manufacturer     : {r['manufacturer'] or '-'}")
+            print(f"        model            : {r['model'] or '-'}")
+            print(f"        classification   : {r.get('category')} "
+                  f"integration={r.get('integration')} usb={r.get('is_usb')} "
+                  f"camera_mic={r.get('is_camera_associated_audio')}")
+        print()
+
+    _section("INPUT DEVICES (microphones)", snapshot["inputs"])
+    _section("OUTPUT DEVICES (speakers / headphones)", snapshot["outputs"])
+    _section("CAMERAS", snapshot["cameras"])
+
+    sel = snapshot["selected"]
+    print("  SELECTION")
+    print(f"    input : {sel['input']}")
+    print(f"            reason: {sel['input_reason']}")
+    print(f"    output: {sel['output']}")
+    print(f"            reason: {sel['output_reason']}")
+    print(f"    camera: {sel['camera']}")
+    print(f"            reason: {sel['camera_reason']}")
+    print("  ══════════════════════════════════════════════════════════════\n")
+
+
 # ═══════════════════════════════════════════════════════════════
 # Entry point
 # ═══════════════════════════════════════════════════════════════
@@ -241,6 +303,10 @@ def main() -> None:
                         help="Interactively select the best microphone")
     parser.add_argument("--audio-debug", action="store_true",
                         help="Real-time audio level visualizer")
+    parser.add_argument("--device-report", action="store_true",
+                        help="Inspect runtime hardware device discovery "
+                             "(inputs / outputs / cameras + selection "
+                             "reasons) and exit")
     parser.add_argument("--train-wake", action="store_true",
                         help="Record 100 wake phrases + train custom verifier")
     parser.add_argument("--no-auth", action="store_true",
@@ -270,9 +336,25 @@ def main() -> None:
     if args.audio_debug:
         cmd_audio_debug()
         sys.exit(0)
+    if args.device_report:
+        cmd_device_report()
+        sys.exit(0)
     if args.train_wake:
         cmd_train_wake()
         sys.exit(0)
+
+    # ── Runtime hardware device discovery (name-based selection) ──
+    # Enumerates the hardware connected RIGHT NOW, derives friendly names
+    # from real metadata, classifies physical/virtual devices, detects
+    # camera-bundled microphones and resolves INPUT / OUTPUT / CAMERA
+    # independently by LOGICAL hardware identity (never by runtime index).
+    # Structured logs ([DEVICE-DISCOVERY] / [DEVICE-SELECT] /
+    # [CAMERA-SELECT]) explain every selection. Failure is non-fatal.
+    try:
+        from voice import runtime_devices as _rd
+        _rd.startup_device_discovery()
+    except Exception:
+        pass
 
     # Attempt automatic microphone selection at startup so the runtime
     # doesn't require manual `--select-mic`. This starts the

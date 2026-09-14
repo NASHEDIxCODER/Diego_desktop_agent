@@ -283,6 +283,11 @@ class TaskExecutionState:
     # Sensitive action awaiting confirmation:
     pending_confirmation: Optional[StepRecord] = None
     confirmation_reason: str = ""
+    # RELIABILITY LAYER (2026-09-13): the entity ("it", "that", "there")
+    # resolved against this task — evidence-backed, never LLM-invented.
+    referenced_entity: str = ""
+    # Explicit goal reference (what the user asked for, verbatim).
+    active_goal: str = ""
 
     @property
     def total_latency_ms(self) -> float:
@@ -768,6 +773,16 @@ class TaskRunner:
         transcript: str = "",
         confirmation_callback: Optional[ConfirmationCallback] = None,
         approved_actions: Optional[frozenset] = None,
+        # Phase 21A (adaptive planning): optional callback invoked after
+        # every VERIFIED step. Signature:
+        #   async (state, step_record, remaining_steps) -> Optional[List[dict]]
+        # Returning a revised step list REPLACES the remaining plan —
+        # bounded by the replan budget, plan validation and loop
+        # detection (see _apply_step_adapter). None (default) disables
+        # adaptive revision entirely (existing behavior unchanged).
+        step_adapter: Optional[Callable[
+            ["TaskExecutionState", "StepRecord", List[Dict[str, Any]]],
+            Awaitable[Optional[List[Dict[str, Any]]]]]] = None,
     ):
         self._executor = executor
         self._observer = observer
@@ -779,6 +794,7 @@ class TaskRunner:
         self._loops = LoopDetector()
         self._cancelled = False
         self._confirmation_callback = confirmation_callback
+        self._step_adapter = step_adapter
         # Action signatures the user has ALREADY approved (confirmation
         # resumption). A sensitive step whose signature is present here is
         # executed without re-asking — the user already said "yes".
@@ -1146,6 +1162,11 @@ class TaskRunner:
                     state.final_status = self._partial_or_failed(state)
                     state.note(f"[TASK] STOPPED — loop detected: {state.blocker}")
                     break
+                # Phase 21A: adaptive planning — the observation may have
+                # changed which next steps still make sense.
+                revised = await self._apply_step_adapter(state, rec, pending)
+                if revised is not None:
+                    pending = revised
                 state.current_step = None
                 continue
 
@@ -1222,6 +1243,9 @@ class TaskRunner:
                     break
 
             if retried_ok:
+                revised = await self._apply_step_adapter(state, rec, pending)
+                if revised is not None:
+                    pending = revised
                 state.current_step = None
                 continue
 
@@ -1315,6 +1339,52 @@ class TaskRunner:
         except Exception as e:
             logger.warning("[TaskRunner] Confirmation callback failed: %s", e)
             return False
+
+    async def _apply_step_adapter(
+            self, state: TaskExecutionState, rec: StepRecord,
+            pending: List[Dict[str, Any]]) -> Optional[List[Dict[str, Any]]]:
+        """Phase 21A — adaptive plan revision after a VERIFIED step.
+
+        The step adapter (reasoning layer) may revise the REMAINING plan
+        based on the fresh observation. Hard bounds so an adaptive loop
+        can never run away:
+          - counts against the SAME replan budget (max_replans),
+          - revised steps pass plan validation (no hallucinated actions,
+            no duplicates of verified steps),
+          - the loop detector rejects a revision identical to the plan
+            that produced it (pointless revisions are ignored).
+        Returns the validated revised plan, or None to keep the original
+        remaining steps (adapter absent, disabled by budget, or produced
+        nothing valid).
+        """
+        if (self._step_adapter is None or self._cancelled
+                or not self._replans_left(state)):
+            return None
+        try:
+            revised = await self._step_adapter(state, rec, list(pending))
+        except Exception as e:
+            logger.warning("[TaskRunner] step adapter failed: %s", e)
+            return None
+        if not revised:
+            return None
+        loop_hit = self._loops.record_plan(revised)
+        if loop_hit:
+            state.note("[ADAPT] revision ignored — loop detected")
+            return None
+        valid = self._validator.validate_plan(
+            revised, state.completed_steps, self._transcript)
+        if not valid:
+            state.note("[ADAPT] revision ignored — no valid new steps")
+            return None
+        state.replan_count += 1
+        state.plan_version += 1
+        state.current_plan = valid
+        state.note(f"[ADAPT] plan v{state.plan_version} revised after "
+                   f"verified step: {len(valid)} step(s) remain")
+        await self._emit_event("task.plan_adapted", state,
+                               revision=state.plan_version,
+                               remaining=len(valid))
+        return valid
 
     def _replans_left(self, state: TaskExecutionState) -> bool:
         return state.replan_count < self._limits.max_replans
@@ -1432,16 +1502,44 @@ class FollowUpResolver:
     _PATTERNS: List[Tuple[str, str]] = [
         (r"^(continue|go on|keep going|carry on|proceed|finish (the )?task|"
          r"resume (the )?task)\b", "continue"),
+        # RELIABILITY FIX (2026-09-13): "do it" / "do that" / "then do
+        # that" / "now do that" are continuations of the ACTIVE task —
+        # never standalone conversational commands.
+        (r"^(do it|do that|now do it|now do that|then do it|then do that|"
+         r"go ahead and do it)\b", "continue"),
         (r"open (the )?(first|top) (result|link|hit|one)", "open_result"),
         (r"open (the )?(second) (result|link|hit|one)", "open_result"),
         (r"open (the )?(third) (result|link|hit|one)", "open_result"),
-        (r"^(try another|try the next|next result|try again|retry)\b", "retry_last"),
-        (r"(do the same for|same for|also for|now for)\s+([a-z0-9 \-]+)", "repeat_for"),
-        (r"^(close that|close it|close the (app|window|program))\b", "close_last"),
-        (r"^(cancel( the task)?|stop the task|abort( the task)?)\b", "cancel"),
+        # "open it" / "open that" → open the LAST referenced app/URL
+        (r"^(open it|open that|launch it|launch that|open them)\b",
+         "open_last"),
+        (r"^(try another|try the next|next result|try again|retry)\b",
+         "retry_last"),
+        # "repeat that" → run the last completed action again
+        (r"^(repeat that|do that again|again|say that again)\b",
+         "repeat_last"),
+        (r"(do the same for|same for|also for|now for)\s+([a-z0-9 \-]+)",
+         "repeat_for"),
+        (r"^(close that|close it|close the (app|window|program))\b",
+         "close_last"),
+        (r"^(cancel( the task)?|stop the task|abort( the task)?)\b",
+         "cancel"),
     ]
 
+    # Deferred imperatives: "(now|then) navigate to my profile",
+    # "then open settings" — resolved against the ACTIVE task's
+    # remaining steps instead of starting from zero.
+    _DEFERRED_RE = re.compile(
+        r"^(?:now|then|next)\s+(?P<rest>[a-z].+)$", re.IGNORECASE)
+
     _ORDINALS = {"first": 0, "top": 0, "second": 1, "third": 2}
+
+    # Stop-words excluded when matching a deferred imperative against
+    # remaining plan-step descriptions.
+    _MATCH_STOPWORDS = frozenset({
+        "now", "then", "next", "the", "a", "an", "to", "my", "me", "it",
+        "that", "there", "please", "and", "for",
+    })
 
     @classmethod
     def match(cls, text: str) -> Optional[Tuple[str, Any]]:
@@ -1461,6 +1559,39 @@ class FollowUpResolver:
                 return (kind, target) if target else None
             return (kind, None)
         return None
+
+    @classmethod
+    def match_deferred(
+        cls, text: str, remaining_steps: List[Dict[str, Any]],
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Resolve a deferred imperative ("now navigate to my profile",
+        "then open settings") against the ACTIVE task's remaining plan
+        steps by keyword overlap. Returns the matched steps, or None.
+
+        This prevents mid-task continuations from being treated as
+        brand-new conversational queries while a compatible active task
+        exists. Pure keyword overlap — no LLM.
+        """
+        if not remaining_steps:
+            return None
+        m = cls._DEFERRED_RE.match((text or "").strip())
+        if not m:
+            return None
+        rest_words = {
+            w for w in re.findall(r"[a-z0-9]+", m.group("rest").lower())
+            if w not in cls._MATCH_STOPWORDS
+        }
+        if not rest_words:
+            return None
+        matched: List[Dict[str, Any]] = []
+        for step in remaining_steps:
+            desc_words = set(re.findall(
+                r"[a-z0-9]+",
+                f"{step.get('description', '')} {step.get('action', '')} "
+                f"{step.get('params', '')}".lower()))
+            if rest_words & desc_words:
+                matched.append(step)
+        return matched or None
 
 
 class TaskStateStore:
@@ -1577,6 +1708,20 @@ class TaskStateStore:
             return None
         match = FollowUpResolver.match(text)
         if match is None:
+            # RELIABILITY FIX: no static pattern matched — try a deferred
+            # imperative ("now navigate to my profile", "then open
+            # settings") against the ACTIVE task's remaining steps
+            # before giving up (which would start a fresh conversation).
+            if self.active is not None:
+                remaining = self._remaining_steps(self.active)
+                matched = FollowUpResolver.match_deferred(text, remaining)
+                if matched:
+                    logger.info(
+                        "[FOLLOWUP] Deferred imperative '%s' matched %d "
+                        "remaining step(s) of task %s",
+                        text[:50], len(matched), self.active.task_id)
+                    return (f"continue: {self.active.normalized_goal} — {text}",
+                            matched, self.active)
             return None
         kind, arg = match
         prev = self.last
@@ -1593,6 +1738,48 @@ class TaskStateStore:
                 return None
             return (f"continue: {self.active.normalized_goal}",
                     remaining, self.active)
+
+        # RELIABILITY FIX: "open it" / "open that" — reopen the last
+        # successfully referenced app or URL instead of asking the LLM.
+        if kind == "open_last":
+            last_url = prev.artifacts.get("last_url")
+            last_app = prev.artifacts.get("last_app")
+            if last_url:
+                return (f"open {last_url}",
+                        [{"action": "browser_navigate",
+                          "params": {"url": last_url},
+                          "description": f"Open {last_url}"}],
+                        prev)
+            if last_app:
+                return (f"open {last_app}",
+                        [{"action": "desktop_open",
+                          "params": {"app": last_app},
+                          "description": f"Open {last_app}"}],
+                        prev)
+            return None
+
+        # "repeat that" — run the last completed action again.
+        if kind == "repeat_last":
+            if not prev.completed_steps:
+                return None
+            last = prev.completed_steps[-1]
+            return (f"repeat: {last.action}",
+                    [{"action": last.action, "params": dict(last.params),
+                      "description": f"Repeat {last.action}"}],
+                    prev)
+
+        # Deferred imperative ("now navigate to my profile") — resolve
+        # against the ACTIVE task's remaining plan steps.
+        if self.active is not None:
+            remaining = self._remaining_steps(self.active)
+            matched = FollowUpResolver.match_deferred(text, remaining)
+            if matched:
+                logger.info(
+                    "[FOLLOWUP] Deferred imperative '%s' matched %d "
+                    "remaining step(s) of task %s",
+                    text[:50], len(matched), self.active.task_id)
+                return (f"continue: {self.active.normalized_goal} — {text}",
+                        matched, self.active)
 
         if kind == "open_result":
             results = prev.artifacts.get("search_results") or prev.artifacts.get("urls") or []
@@ -1743,6 +1930,8 @@ def _task_state_to_dict(state: TaskExecutionState) -> Dict[str, Any]:
         "pending_confirmation": (_step_record_to_dict(state.pending_confirmation)
                                  if getattr(state, "pending_confirmation", None) is not None else None),
         "confirmation_reason": getattr(state, "confirmation_reason", ""),
+        "referenced_entity": getattr(state, "referenced_entity", ""),
+        "active_goal": getattr(state, "active_goal", ""),
     }
 
 
@@ -1774,6 +1963,8 @@ def _task_state_from_dict(data: Dict[str, Any]) -> TaskExecutionState:
         pending_confirmation=(_step_record_from_dict(data["pending_confirmation"])
                               if data.get("pending_confirmation") else None),
         confirmation_reason=str(data.get("confirmation_reason", "")),
+        referenced_entity=str(data.get("referenced_entity", "")),
+        active_goal=str(data.get("active_goal", "")),
     )
     return state
 

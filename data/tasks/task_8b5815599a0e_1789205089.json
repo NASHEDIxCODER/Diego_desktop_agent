@@ -1,0 +1,91 @@
+{
+  "task_id": "8b5815599a0e",
+  "original_request": "Open Firefox",
+  "normalized_goal": "Open Firefox",
+  "current_plan": [
+    {
+      "action": "desktop_open",
+      "params": {
+        "app": "firefox"
+      }
+    }
+  ],
+  "completed_steps": [
+    {
+      "index": 1,
+      "action": "desktop_open",
+      "params": {
+        "app": "firefox"
+      },
+      "description": "",
+      "status": "completed",
+      "result": "Opened firefox",
+      "verification": "success",
+      "verified": true,
+      "retries": 0,
+      "error": "",
+      "latency_ms": 0.020742416381835938,
+      "evidence_source": "unknown",
+      "sensitive_reason": ""
+    }
+  ],
+  "current_step": null,
+  "failed_steps": [],
+  "observed_state": "firefox window focused",
+  "verification_results": [
+    {
+      "step": 1,
+      "action": "desktop_open",
+      "verified": true,
+      "evidence": "Opened firefox",
+      "reason": ""
+    }
+  ],
+  "retry_count": 0,
+  "replan_count": 0,
+  "total_steps": 1,
+  "final_status": "SUCCESS",
+  "plan_version": 1,
+  "started_at": 1789205089.796674,
+  "ended_at": 1789205089.8001933,
+  "artifacts": {
+    "last_app": "firefox"
+  },
+  "log": [
+    "[TASK] id=8b5815599a0e goal=\"Open Firefox\"",
+    "[PLAN] v1 steps=1",
+    "[STEP 1/1] desktop_open",
+    "[VERIFY] success",
+    "[TASK] COMPLETE",
+    "[TASK] SUCCESS (steps=1 ok, 0 failed, replans=0, latency=4ms)"
+  ],
+  "blocker": "",
+  "evidence_log": [
+    {
+      "fact": "Window: [jetbrains] Diego_Desktop_agent – runtime_devices.py\nPage: editor\nWindow: Diego_Desktop_agent – runtime_devices.py\nApplication: PyCharm (jetbrains)\nProcess: pycharm (PID 3139)\nSummary: Screen type: editor\nClipboard: IMPLEMENTATION TASK — RUNTIME HARDWARE DEVICE DISCOVERY AND NAME-BASED AUDIO/CAM",
+      "source": "live_observation",
+      "timestamp": 1789205089.8002832,
+      "confidence": 1.0
+    },
+    {
+      "fact": "",
+      "source": "local_knowledge",
+      "timestamp": 1789205089.800286,
+      "confidence": 1.0696
+    },
+    {
+      "fact": "",
+      "source": "local_knowledge",
+      "timestamp": 1789205089.8002868,
+      "confidence": 1.0696
+    },
+    {
+      "fact": "",
+      "source": "local_knowledge",
+      "timestamp": 1789205089.800288,
+      "confidence": 1.0696
+    }
+  ],
+  "pending_confirmation": null,
+  "confirmation_reason": ""
+}

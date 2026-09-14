@@ -1,0 +1,101 @@
+{
+  "task_id": "e04d2fc5fa10",
+  "original_request": "Open VS Code and inspect the result.",
+  "normalized_goal": "Open VS Code and inspect the result.",
+  "current_plan": [
+    {
+      "action": "desktop_open",
+      "params": {
+        "app": "code"
+      }
+    },
+    {
+      "action": "read_screen",
+      "params": {}
+    },
+    {
+      "action": "open_folder",
+      "params": {
+        "path": "~/projects/Diego"
+      }
+    }
+  ],
+  "completed_steps": [
+    {
+      "index": 1,
+      "action": "desktop_open",
+      "params": {
+        "app": "code"
+      },
+      "description": "",
+      "status": "completed",
+      "result": "Opened code",
+      "verification": "success",
+      "verified": true,
+      "retries": 0,
+      "error": "",
+      "latency_ms": 0.00286102294921875,
+      "evidence_source": "unknown",
+      "sensitive_reason": ""
+    },
+    {
+      "index": 2,
+      "action": "read_screen",
+      "params": {},
+      "description": "",
+      "status": "completed",
+      "result": "On screen: VS Code welcome tab, no folder open",
+      "verification": "success",
+      "verified": true,
+      "retries": 0,
+      "error": "",
+      "latency_ms": 0.0011920928955078125,
+      "evidence_source": "unknown",
+      "sensitive_reason": ""
+    }
+  ],
+  "current_step": null,
+  "failed_steps": [],
+  "observed_state": "welcome tab visible",
+  "verification_results": [
+    {
+      "step": 1,
+      "action": "desktop_open",
+      "verified": true,
+      "evidence": "Opened code",
+      "reason": ""
+    },
+    {
+      "step": 2,
+      "action": "read_screen",
+      "verified": true,
+      "evidence": "On screen: VS Code welcome tab, no folder open",
+      "reason": ""
+    }
+  ],
+  "retry_count": 0,
+  "replan_count": 0,
+  "total_steps": 2,
+  "final_status": "PARTIAL_FAILURE",
+  "plan_version": 1,
+  "started_at": 1789204637.1696694,
+  "ended_at": 1789204637.1704936,
+  "artifacts": {
+    "last_app": "code",
+    "answer": "On screen: VS Code welcome tab, no folder open"
+  },
+  "log": [
+    "[TASK] id=e04d2fc5fa10 goal=\"Open VS Code and inspect the result.\"",
+    "[PLAN] v1 steps=2",
+    "[STEP 1/2] desktop_open",
+    "[VERIFY] success",
+    "[STEP 2/2] read_screen",
+    "[VERIFY] success",
+    "[TASK] COMPLETE",
+    "[TASK] SUCCESS (steps=2 ok, 0 failed, replans=0, latency=1ms)"
+  ],
+  "blocker": "",
+  "evidence_log": [],
+  "pending_confirmation": null,
+  "confirmation_reason": ""
+}

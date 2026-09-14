@@ -1,0 +1,119 @@
+{
+  "task_id": "b37c9d6118cd",
+  "original_request": "open firefox then shutdown",
+  "normalized_goal": "open firefox then shutdown",
+  "current_plan": [
+    {
+      "action": "desktop_open",
+      "params": {
+        "app": "firefox"
+      }
+    },
+    {
+      "action": "shutdown",
+      "params": {}
+    }
+  ],
+  "completed_steps": [
+    {
+      "index": 1,
+      "action": "desktop_open",
+      "params": {
+        "app": "firefox"
+      },
+      "description": "",
+      "status": "completed",
+      "result": "Opened firefox",
+      "verification": "success",
+      "verified": true,
+      "retries": 0,
+      "error": "",
+      "latency_ms": 0.0050067901611328125,
+      "evidence_source": "unknown",
+      "sensitive_reason": ""
+    },
+    {
+      "index": 2,
+      "action": "shutdown",
+      "params": {},
+      "description": "",
+      "status": "completed",
+      "result": "System shutting down",
+      "verification": "success",
+      "verified": true,
+      "retries": 0,
+      "error": "",
+      "latency_ms": 0.001430511474609375,
+      "evidence_source": "unknown",
+      "sensitive_reason": "'shutdown' is a sensitive action"
+    }
+  ],
+  "current_step": null,
+  "failed_steps": [],
+  "observed_state": "shutdown",
+  "verification_results": [
+    {
+      "step": 1,
+      "action": "desktop_open",
+      "verified": true,
+      "evidence": "Opened firefox",
+      "reason": ""
+    },
+    {
+      "step": 2,
+      "action": "shutdown",
+      "verified": true,
+      "evidence": "System shutting down",
+      "reason": ""
+    }
+  ],
+  "retry_count": 0,
+  "replan_count": 0,
+  "total_steps": 2,
+  "final_status": "SUCCESS",
+  "plan_version": 1,
+  "started_at": 1789204652.9601805,
+  "ended_at": 1789204652.961357,
+  "artifacts": {
+    "last_app": "firefox"
+  },
+  "log": [
+    "[TASK] id=b37c9d6118cd goal=\"open firefox then shutdown\"",
+    "[PLAN] v1 steps=2",
+    "[STEP 1/2] desktop_open",
+    "[VERIFY] success",
+    "[STEP 2/2] shutdown",
+    "[VERIFY] success",
+    "[TASK] COMPLETE",
+    "[TASK] SUCCESS (steps=2 ok, 0 failed, replans=0, latency=1ms)"
+  ],
+  "blocker": "",
+  "evidence_log": [
+    {
+      "fact": "Window: [jetbrains] Diego_Desktop_agent – runtime_devices.py\nPage: editor\nWindow: Diego_Desktop_agent – runtime_devices.py\nApplication: PyCharm (jetbrains)\nProcess: pycharm (PID 3139)\nSummary: Screen type: editor\nClipboard: IMPLEMENTATION TASK — RUNTIME HARDWARE DEVICE DISCOVERY AND NAME-BASED AUDIO/CAM",
+      "source": "live_observation",
+      "timestamp": 1789204652.9614093,
+      "confidence": 1.0
+    },
+    {
+      "fact": "",
+      "source": "local_knowledge",
+      "timestamp": 1789204652.961411,
+      "confidence": 1.0696
+    },
+    {
+      "fact": "",
+      "source": "local_knowledge",
+      "timestamp": 1789204652.961412,
+      "confidence": 1.0696
+    },
+    {
+      "fact": "",
+      "source": "local_knowledge",
+      "timestamp": 1789204652.9614127,
+      "confidence": 1.0696
+    }
+  ],
+  "pending_confirmation": null,
+  "confirmation_reason": ""
+}

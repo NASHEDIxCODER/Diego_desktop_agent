@@ -142,20 +142,43 @@ def make_runner(executor, observer=None, planner=None,
 # 1. Successful multi-step task
 # ═══════════════════════════════════════════════════════════════
 
-def test_successful_multi_step_task():
-    """A multi-step task completes with SUCCESS only after all steps verified."""
+def test_successful_multi_step_task(monkeypatch):
+    """A multi-step task completes with SUCCESS only after all steps verified.
+
+    HERMETIC: the desktop observation boundary (agent.task_state.app_running,
+    the real pgrep check used by IdempotencyChecker) is replaced by a
+    deterministic STATEFUL fake — Firefox is ABSENT before the action and
+    PRESENT after the executor succeeds. The test never depends on the
+    real desktop session / DISPLAY / installed apps.
+    """
+    desktop = {"firefox": False}  # controlled fake desktop state
+
+    def fake_app_running(app: str) -> bool:
+        return desktop.get(str(app).lower(), False)
+
+    monkeypatch.setattr(task_state_module, "app_running", fake_app_running)
+
     ex = FakeExecutor([
         (True, "Opened firefox"),
         (True, "Here's what I found: https://github.com/example/repo"),
         (True, "Opened https://github.com/example/repo"),
     ])
+
+    async def observing_executor(action):
+        ok, msg = await ex(action)
+        # A successful open CHANGES the fake desktop state (app appears).
+        if ok and action.get("action") == "desktop_open":
+            app = str(action.get("params", {}).get("app", "")).lower()
+            desktop[app] = True
+        return ok, msg
+
     obs = FakeObserver([
         "empty desktop",
         "firefox window focused",
         "search results shown",
         "repo page open",
     ])
-    controller = make_controller(ex, obs)
+    controller = make_controller(observing_executor, obs)
     plan = [
         {"action": "desktop_open", "params": {"app": "firefox"}},
         {"action": "web_search", "params": {"query": "python websocket"}},
@@ -170,6 +193,60 @@ def test_successful_multi_step_task():
     assert len(ex.calls) == 3
     # Evidence is recorded
     assert len(state.evidence_log) > 0
+
+
+def test_idempotent_already_satisfied_skips_execution(monkeypatch):
+    """HERMETIC REGRESSION A: the target state is ALREADY present → the
+    step is marked ALREADY_SATISFIED with verified deterministic evidence
+    and is NOT re-executed (no duplicate side effect). The observation is
+    faked, so the real session is irrelevant."""
+    monkeypatch.setattr(task_state_module, "app_running", lambda app: True)
+    ex = FakeExecutor([])  # nothing may be executed
+    obs = FakeObserver(["firefox already open"])
+    controller = make_controller(ex, obs)
+    state = asyncio.run(controller.run(
+        "Open Firefox",
+        [{"action": "desktop_open", "params": {"app": "firefox"}}]))
+
+    assert state.final_status == FinalStatus.SUCCESS
+    assert ex.calls == []  # already satisfied → no execution
+    rec = state.completed_steps[0]
+    assert rec.status == StepStatus.ALREADY_SATISFIED
+    assert rec.verified is True
+    assert rec.evidence_source == EvidenceSource.DETERMINISTIC_SYSTEM
+    assert "already open" in rec.verification
+
+
+def test_idempotent_absent_target_executes_and_verifies(monkeypatch):
+    """HERMETIC REGRESSION B: the target is ABSENT → the action executes
+    exactly once and verification marks it COMPLETED. The fake desktop
+    state flips to "present" only after the successful action."""
+    desktop = {"firefox": False}  # absent before the action
+
+    def fake_app_running(app: str) -> bool:
+        return desktop.get(str(app).lower(), False)
+
+    monkeypatch.setattr(task_state_module, "app_running", fake_app_running)
+    ex = FakeExecutor([(True, "Opened firefox")])
+
+    async def observing_executor(action):
+        ok, msg = await ex(action)
+        if ok and action.get("action") == "desktop_open":
+            app = str(action.get("params", {}).get("app", "")).lower()
+            desktop[app] = True  # present AFTER a successful action
+        return ok, msg
+
+    obs = FakeObserver(["firefox window focused"])
+    controller = make_controller(observing_executor, obs)
+    state = asyncio.run(controller.run(
+        "Open Firefox",
+        [{"action": "desktop_open", "params": {"app": "firefox"}}]))
+
+    assert state.final_status == FinalStatus.SUCCESS
+    assert [c["action"] for c in ex.calls] == ["desktop_open"]  # executed once
+    rec = state.completed_steps[0]
+    assert rec.status == StepStatus.COMPLETED
+    assert rec.verified is True
 
 
 def test_successful_multi_step_with_artifacts():

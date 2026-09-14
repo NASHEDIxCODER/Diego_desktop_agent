@@ -352,7 +352,7 @@ def _keyboard_control(params: Dict[str, Any]) -> ToolResult:
 
 
 def _filesystem(params: Dict[str, Any]) -> ToolResult:
-    """Filesystem operations: list, read, write, create."""
+    """Filesystem operations: list, read, write, create, search, count, stat."""
     action = params.get("action", "list")
     path = params.get("path", ".")
     try:
@@ -379,6 +379,21 @@ def _filesystem(params: Dict[str, Any]) -> ToolResult:
         if action == "create_dir":
             p.mkdir(parents=True, exist_ok=True)
             return ToolResult(success=True, output=f"Created directory {p}")
+        if action in ("search", "count", "stat"):
+            # Capability additions (reliability layer, 2026-09-13): reuse
+            # the deterministic local-computer resolver — no new engine.
+            from core.local_computer_intent import (
+                LocalIntent, LocalIntentKind, LocalSort, resolve_local_intent,
+            )
+            intent = LocalIntent(
+                kind=(LocalIntentKind.FILE_COUNT if action == "count"
+                      else LocalIntentKind.FILE_SEARCH),
+                extensions=tuple(params.get("extensions") or ()),
+                folder=str(p) if str(p) not in (".", "") else "",
+                limit=int(params.get("limit") or 0),
+                sort=LocalSort(params.get("sort") or "none"),
+            )
+            return ToolResult(success=True, output=resolve_local_intent(intent))
         return ToolResult(success=False, error=f"Unknown filesystem action: {action}")
     except Exception as e:
         return ToolResult(success=False, error=str(e))
@@ -612,7 +627,9 @@ class ToolRegistry:
             "filesystem", "Filesystem operations. params: {action, path, text}",
             _filesystem, aliases=["fs", "file"],
             parameters={"action": {"type": "string",
-                                   "enum": ["list", "read", "write", "create_dir"]},
+                                   "enum": ["list", "read", "write",
+                                            "create_dir", "search", "count",
+                                            "stat"]},
                         "path": {"type": "string"},
                         "text": {"type": "string"}})
         self.register_builtin(
@@ -675,3 +692,171 @@ class ToolRegistry:
 
 # Global singleton
 tool_registry = ToolRegistry()
+
+
+# ═════════════════════════════════════════════════════════════
+# Capability Registry (reliability layer, 2026-09-13)
+# ═════════════════════════════════════════════════════════════
+# Audited capability definitions. Each capability maps Diego's abstract
+# vocabulary onto an EXISTING tool/implementation — nothing is
+# duplicated. Fields:
+#   name          — canonical capability name
+#   tool          — the registry tool (or module) implementing it
+#   purpose       — what the capability is for (intent routing)
+#   input_schema  — accepted parameters
+#   output_schema — what the caller gets back
+#   side_effects  — READ_ONLY | MUTATES_SYSTEM | EXTERNAL_EFFECT
+#   verification  — how success is proven (evidence, not return codes)
+
+CAPABILITIES: Dict[str, Dict[str, Any]] = {
+    # ── filesystem ──
+    "filesystem.search": {
+        "tool": "filesystem(action=search)",
+        "purpose": "Find files by type/size/recency in a folder or the PC",
+        "input_schema": {"path": "str", "extensions": "list[str]",
+                         "limit": "int", "sort": "largest|smallest|newest"},
+        "output_schema": "str (ranked file list with sizes)",
+        "side_effects": "READ_ONLY",
+        "verification": "resolved from real os.walk observations",
+    },
+    "filesystem.list": {
+        "tool": "filesystem(action=list)",
+        "purpose": "List folder contents",
+        "input_schema": {"path": "str"},
+        "output_schema": "str (dir/file entries)",
+        "side_effects": "READ_ONLY",
+        "verification": "entries read from Path.iterdir",
+    },
+    "filesystem.stat": {
+        "tool": "filesystem(action=stat|read)",
+        "purpose": "File size / metadata / content",
+        "input_schema": {"path": "str"},
+        "output_schema": "str (size or content excerpt)",
+        "side_effects": "READ_ONLY",
+        "verification": "values from os.stat",
+    },
+    "filesystem.count": {
+        "tool": "filesystem(action=count)",
+        "purpose": "Count files by type in a folder or on the PC",
+        "input_schema": {"path": "str", "extensions": "list[str]"},
+        "output_schema": "str (count + scope)",
+        "side_effects": "READ_ONLY",
+        "verification": "counted from real filesystem walk",
+    },
+    # ── browser ──
+    "browser.navigate": {
+        "tool": "browser(action=navigate) / open_url alias browser_navigate",
+        "purpose": "Open a URL in the browser",
+        "input_schema": {"url": "str"},
+        "output_schema": "str (dispatch result)",
+        "side_effects": "EXTERNAL_EFFECT",
+        "verification": ("GOAL: observed browser URL matches target "
+                         "(core.goal_verification) — process alive is "
+                         "NOT sufficient"),
+    },
+    "browser.click": {
+        "tool": "browser_click (ActionDispatcher)",
+        "purpose": "Click a page element",
+        "input_schema": {"label": "str"},
+        "output_schema": "str (dispatch result)",
+        "side_effects": "EXTERNAL_EFFECT",
+        "verification": ("GOAL: expected element/state present in "
+                         "observed page text"),
+    },
+    "browser.type": {
+        "tool": "browser_type / type_text (ActionDispatcher)",
+        "purpose": "Type text into a page field",
+        "input_schema": {"text": "str"},
+        "output_schema": "str (dispatch result)",
+        "side_effects": "EXTERNAL_EFFECT",
+        "verification": "typed text visible in observed page state",
+    },
+    "browser.extract": {
+        "tool": "browser_get_url / browser_get_text (ActionDispatcher)",
+        "purpose": "Read page URL / text as evidence",
+        "input_schema": {},
+        "output_schema": "str (URL or page text)",
+        "side_effects": "READ_ONLY",
+        "verification": "n/a — this IS the evidence source",
+    },
+    # ── system ──
+    "system.processes": {
+        "tool": "terminal (pgrep/ps) + DecisionPath.SYSTEM_INFO",
+        "purpose": "Inspect running processes",
+        "input_schema": {"command": "str"},
+        "output_schema": "str (process list)",
+        "side_effects": "READ_ONLY",
+        "verification": "values from process table",
+    },
+    "system.memory": {
+        "tool": "DecisionPath.SYSTEM_INFO (PC snapshot)",
+        "purpose": "Memory/RAM facts",
+        "input_schema": {},
+        "output_schema": "str",
+        "side_effects": "READ_ONLY",
+        "verification": "values from OS snapshot collector",
+    },
+    "system.disk": {
+        "tool": "terminal (df) + DecisionPath.SYSTEM_INFO",
+        "purpose": "Disk usage / free space",
+        "input_schema": {"command": "str"},
+        "output_schema": "str",
+        "side_effects": "READ_ONLY",
+        "verification": "values from df / OS snapshot",
+    },
+    # ── camera / vision ──
+    "camera.capture": {
+        "tool": "vision subsystem (perception pipeline)",
+        "purpose": "Capture screen/camera frame",
+        "input_schema": {},
+        "output_schema": "frame descriptor",
+        "side_effects": "READ_ONLY",
+        "verification": "frame hash present",
+    },
+    "vision.inspect": {
+        "tool": "read_screen (ActionDispatcher) + vision model",
+        "purpose": "Describe/inspect what is on screen",
+        "input_schema": {"question": "str"},
+        "output_schema": "str (vision answer)",
+        "side_effects": "READ_ONLY",
+        "verification": "answer grounded in captured frame",
+    },
+    # ── audio / device selection ──
+    "audio.list_devices": {
+        "tool": "audio device manager (streaming_tts / audio_manager)",
+        "purpose": "Enumerate audio input/output devices",
+        "input_schema": {},
+        "output_schema": "str (device list)",
+        "side_effects": "READ_ONLY",
+        "verification": "devices reported by sounddevice",
+    },
+    "audio.select_input": {
+        "tool": "audio device manager",
+        "purpose": "Select microphone input device",
+        "input_schema": {"device": "str|int"},
+        "output_schema": "str (selection result)",
+        "side_effects": "MUTATES_SYSTEM",
+        "verification": "subsequent captures use selected device",
+    },
+    "audio.select_output": {
+        "tool": "audio device manager / streaming_tts.output_device",
+        "purpose": "Select speaker output device",
+        "input_schema": {"device": "str|int"},
+        "output_schema": "str (selection result)",
+        "side_effects": "MUTATES_SYSTEM",
+        "verification": "TTS playback uses selected device",
+    },
+    "camera.select": {
+        "tool": "vision subsystem device selection",
+        "purpose": "Select camera source",
+        "input_schema": {"device": "str|int"},
+        "output_schema": "str (selection result)",
+        "side_effects": "MUTATES_SYSTEM",
+        "verification": "captures come from selected camera",
+    },
+}
+
+
+def capabilities() -> Dict[str, Dict[str, Any]]:
+    """Return the capability registry (for routing/planning/authorization)."""
+    return CAPABILITIES

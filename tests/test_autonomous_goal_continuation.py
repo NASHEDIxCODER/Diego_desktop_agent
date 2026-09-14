@@ -205,6 +205,9 @@ def harness(monkeypatch, tmp_path):
     monkeypatch.setattr(_tsm, "task_state_store", store)
     monkeypatch.setattr(_tsm, "app_running", lambda app: False)
     monkeypatch.setenv("DIEGO_TASK_PERSIST", "0")
+    # Phase 21B: these tests verify the continuation MECHANICS, so the
+    # reasoning-route tasks must use the disabled model (no Ollama / network).
+    monkeypatch.setenv("DIEGO_REASONING_MODEL", "off")
 
     monkeypatch.setattr(_cm, "conv_memory", MemConv())
     monkeypatch.setattr(_pers, "personality", StubPersonality())

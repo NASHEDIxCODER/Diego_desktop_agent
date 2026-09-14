@@ -49,7 +49,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import AsyncIterator, List, Optional, Tuple
+from typing import AsyncIterator, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -237,6 +237,22 @@ WHISPER_PARTIAL_TIMEOUT_S = 5.0
 # this to a small value.
 GATE_MAX_HOLD_S = 150.0
 
+# ── Phase 20B: hybrid ASR tuning ───────────────────────────────────
+# English-primary with evidence-gated single Hindi fallback. Same model /
+# audio / decoding config — only `language` differs. Max 2 ASR passes, no
+# auto language detection (auto ~2x latency + bn/ur mis-detections per
+# debug/asr_multilingual_experiment_results.json).
+MULTILINGUAL_FALLBACK_ENABLED = True  # master switch (also per-listener)
+FALLBACK_PRIMARY_LANG = "en"          # first (and usually only) pass
+FALLBACK_SECONDARY_LANG = "hi"        # single gated second pass
+FALLBACK_MAX_PASSES = 2               # hard cap: never more than 2 decodes
+# Suspicion gate (combined evidence — never a single arbitrary threshold).
+SUSPICIOUS_HEALTHY_CONFIDENCE = -0.9  # >= this + valid + coherent -> confident
+SUSPICIOUS_WEAK_CONFIDENCE = -1.0     # below this counts as a weak signal
+SUSPICIOUS_MIN_DURATION_MS = 800.0    # shorter audio counts as weak signal
+# Candidate comparison: logprob gap that decides without further tie-breaks.
+LOGPROB_DECISIVE_MARGIN = 0.15
+
 # ── Garbage transcript rejection ──────────────────────────────
 # Whisper sometimes hallucinates short, low-confidence fragments.
 # These patterns are unlikely to be real user commands.
@@ -396,6 +412,19 @@ class UtteranceEvent:
     endpoint_reason: str = ""
     # TASK 6: explicit failure classification
     failure_reason: str = ""     # MISUNDERSTOOD | LOW_CONFIDENCE | TRANSCRIPTION_FAILED | TIMEOUT | GARBAGE
+    # ── Phase 20B: hybrid ASR diagnostics (final events only) ──
+    # primary_used / fallback_used: which ASR passes ran (max 2 total).
+    # selected_language: "en" (primary) or "hi" (fallback winner).
+    # primary_latency_ms / fallback_latency_ms: per-pass decode latency.
+    # total_latency_ms: primary + fallback (mirrors whisper_latency_ms).
+    # reason_for_fallback: "" when no fallback ran; else suspicion+selection.
+    primary_used: bool = True
+    fallback_used: bool = False
+    selected_language: str = "en"
+    primary_latency_ms: float = 0.0
+    fallback_latency_ms: float = 0.0
+    total_latency_ms: float = 0.0
+    reason_for_fallback: str = ""
 
 
 # ── TASK 6: explicit failure reasons ──────────────────────────
@@ -608,6 +637,32 @@ def _validate_transcript(
     return True, ""
 
 
+_HINGLISH_COMMAND_VOCAB = frozenset({
+    "chalao", "chala", "bajao", "baja", "kholo", "khol",
+    "band", "karo", "kro", "roko", "dhoondo", "dhoond",
+    "khojo", "khoj", "chalu", "dobara",
+    "thoda", "thodi", "kam", "badhao", "badha",
+    "pe", "par", "mein", "ma", "mera", "meri", "mere",
+    "kitna", "kitni", "kya", "ka", "ki", "ke", "hai",
+    "ho", "raha", "rahi", "der", "gana", "gaana",
+})
+
+_DEVANAGARI_RE = re.compile(r"[\u0900-\u097F]")
+
+
+def _contains_devanagari(text: str) -> bool:
+    if not text:
+        return False
+    return bool(_DEVANAGARI_RE.search(text))
+
+
+def _contains_hinglish_vocab(text: str) -> bool:
+    if not text:
+        return False
+    words = set(re.findall(r"[A-Za-z\u0900-\u097F]+", text.lower()))
+    return bool(words & _HINGLISH_COMMAND_VOCAB)
+
+
 def _whisper_language() -> Optional[str]:
     """Resolve the Whisper language from the configured voice settings.
 
@@ -622,6 +677,166 @@ def _whisper_language() -> Optional[str]:
         return None
     base = raw.strip().split("-")[0].lower()
     return base if len(base) >= 2 else None
+
+
+def is_primary_suspicious(
+    text: str,
+    confidence: float,
+    speech_dur_ms: float,
+) -> Tuple[bool, str]:
+    """Evidence-gated suspicion check over the English-primary result.
+
+    Combined evidence (never a single arbitrary threshold): validation
+    outcome + hallucination flags + avg_logprob + duration + word count.
+    Returns (suspicious, reason). A non-suspicious primary skips the Hindi
+    pass entirely (zero latency overhead for confident English).
+    """
+    t = (text or "").strip()
+    try:
+        conf = float(confidence)
+    except (TypeError, ValueError):
+        conf = -99.0
+    try:
+        dur = float(speech_dur_ms or 0.0)
+    except (TypeError, ValueError):
+        dur = 0.0
+    words = len(t.split()) if t else 0
+    if not t:
+        return True, "empty_primary_transcript"
+    accepted, fail_reason = _validate_transcript(
+        t, confidence=conf, speech_dur_ms=dur)
+    garbage = is_garbage(t)
+    repeated = _is_repeated_hallucination(t)
+    low_quality = is_low_quality_transcript(t)
+    if (accepted and not garbage and not repeated and not low_quality
+            and conf >= SUSPICIOUS_HEALTHY_CONFIDENCE
+            and words >= 2 and dur >= SUSPICIOUS_MIN_DURATION_MS):
+        return False, "primary_confident"
+    weak: List[str] = []
+    if not accepted:
+        weak.append("validation:%s" % fail_reason)
+    if garbage:
+        weak.append("garbage")
+    if repeated:
+        weak.append("repeated_hallucination")
+    if low_quality:
+        weak.append("low_quality")
+    if conf < SUSPICIOUS_WEAK_CONFIDENCE:
+        weak.append("low_logprob:%.2f" % conf)
+    elif (conf < SUSPICIOUS_HEALTHY_CONFIDENCE
+          and (dur < SUSPICIOUS_MIN_DURATION_MS or words <= 2)):
+        weak.append("soft_logprob:%.2f" % conf)
+    if dur < SUSPICIOUS_MIN_DURATION_MS:
+        weak.append("short_audio:%.0fms" % dur)
+    if words <= 1:
+        weak.append("word_count:%d" % words)
+    if _contains_devanagari(t) or _contains_hinglish_vocab(t):
+        weak.append("non_english_vocab")
+    if not weak:
+        return False, "primary_confident"
+    return True, "+".join(weak)
+
+
+def _candidate_flags(text: str) -> Dict[str, bool]:
+    t = (text or "").strip()
+    return {
+        "empty": not bool(t),
+        "garbage": is_garbage(t) if t else True,
+        "repeated": _is_repeated_hallucination(t) if t else False,
+        "low_quality": is_low_quality_transcript(t) if t else True,
+    }
+
+
+def _intent_actionable(
+    text: str, confidence: float, speech_dur_ms: float,
+) -> Optional[bool]:
+    """Intent compatibility probe (comparison only — never executes)."""
+    try:
+        from nlp.command_normalizer import command_normalizer as _normalizer
+        from nlp.intent_authorizer import authorize_intent as _authorize
+        normed = _normalizer.normalize(text)
+        auth = _authorize(normed, stt_confidence=float(confidence),
+                          audio_duration_ms=float(speech_dur_ms))
+        return bool(auth.actionable)
+    except Exception:
+        return None
+
+
+def select_best_transcript(
+    primary_text: str,
+    primary_conf: float,
+    fallback_text: str,
+    fallback_conf: float,
+    speech_dur_ms: float,
+) -> Tuple[str, float, str, str]:
+    """Pick ONE final transcript from the en-primary + hi-fallback pair.
+
+    Order: valid > invalid, hallucination-free, coherent, stronger logprob,
+    language evidence, intent compatibility (comparison only — the fallback
+    NEVER executes anything and cannot bypass downstream safety gates).
+    Pure function (no I/O, no execution). Returns
+    (selected_text, selected_conf, selected_language, reason) where
+    selected_language is "en" or "hi".
+    """
+    p_text = (primary_text or "").strip()
+    f_text = (fallback_text or "").strip()
+    try:
+        p_conf = float(primary_conf)
+    except (TypeError, ValueError):
+        p_conf = -99.0
+    try:
+        f_conf = float(fallback_conf)
+    except (TypeError, ValueError):
+        f_conf = -99.0
+    try:
+        dur = float(speech_dur_ms or 0.0)
+    except (TypeError, ValueError):
+        dur = 0.0
+    p_ok = _validate_transcript(
+        p_text, confidence=p_conf, speech_dur_ms=dur)[0] if p_text else False
+    f_ok = _validate_transcript(
+        f_text, confidence=f_conf, speech_dur_ms=dur)[0] if f_text else False
+    if p_ok and not f_ok:
+        return p_text, p_conf, "en", "primary_valid_fallback_invalid"
+    if f_ok and not p_ok:
+        return f_text, f_conf, "hi", "fallback_valid_primary_invalid"
+    if not p_ok and not f_ok:
+        if f_conf > p_conf:
+            return f_text, f_conf, "hi", "both_invalid_stronger_logprob"
+        return p_text, p_conf, "en", "both_invalid_stronger_logprob"
+    p_flags = _candidate_flags(p_text)
+    f_flags = _candidate_flags(f_text)
+    p_hall = p_flags["garbage"] or p_flags["repeated"] or p_flags["low_quality"]
+    f_hall = f_flags["garbage"] or f_flags["repeated"] or f_flags["low_quality"]
+    if (not p_hall) and f_hall:
+        return p_text, p_conf, "en", "hallucination_free_wins"
+    if (not f_hall) and p_hall:
+        return f_text, f_conf, "hi", "hallucination_free_wins"
+    p_words = len(p_text.split())
+    f_words = len(f_text.split())
+    if p_words >= 2 and f_words <= 1:
+        return p_text, p_conf, "en", "coherent_wins"
+    if f_words >= 2 and p_words <= 1:
+        return f_text, f_conf, "hi", "coherent_wins"
+    if p_conf - f_conf >= LOGPROB_DECISIVE_MARGIN:
+        return p_text, p_conf, "en", "stronger_logprob"
+    if f_conf - p_conf >= LOGPROB_DECISIVE_MARGIN:
+        return f_text, f_conf, "hi", "stronger_logprob"
+    f_hit = _contains_devanagari(f_text) or _contains_hinglish_vocab(f_text)
+    p_hit = _contains_devanagari(p_text) or _contains_hinglish_vocab(p_text)
+    if f_hit and not p_hit:
+        return f_text, f_conf, "hi", "language_evidence"
+    if p_hit and not f_hit:
+        return p_text, p_conf, "en", "language_evidence"
+    p_act = _intent_actionable(p_text, p_conf, dur)
+    f_act = _intent_actionable(f_text, f_conf, dur)
+    if p_act is True and f_act is not True:
+        return p_text, p_conf, "en", "intent_compatibility"
+    if f_act is True and p_act is not True:
+        return f_text, f_conf, "hi", "intent_compatibility"
+    if f_conf > p_conf:
+        return f_text, f_conf, "hi", "tie_stronger_logprob"
+    return p_text, p_conf, "en", "tie_primary_default"
 
 
 class _WhisperTranscriber:
@@ -698,16 +913,33 @@ class _WhisperTranscriber:
         accuracy loss. The old beam_size=5/best_of=5 was designed for long
         audio transcription, not 1-3 second command utterances.
         """
+        return self.transcribe_with_language(pcm_int16, sample_rate, None)
+
+    def transcribe_with_language(
+        self,
+        pcm_int16: bytes,
+        sample_rate: int = SAMPLE_RATE,
+        language: Optional[str] = None,
+    ) -> Tuple[str, float]:
+        """Transcribe PCM16 bytes with an explicit Whisper language override.
+
+        Phase 20B: the hybrid fallback reuses the SAME model/audio/decoding
+        config — only `language` differs ("en" primary, single "hi" second
+        pass). `language=None` resolves via _whisper_language() (legacy
+        behaviour: settings lang_code or auto-detect). No other decoding
+        parameter changes between passes.
+        """
         if not self._ready or not pcm_int16:
             return "", 0.0
         try:
             audio = np.frombuffer(pcm_int16, dtype=np.int16).astype(np.float32) / 32768.0
             if len(audio) < sample_rate * 0.15:
                 return "", 0.0
+            lang = language if language is not None else _whisper_language()
             segments, _ = self._model.transcribe(
                 audio,
                 beam_size=1,          # OPTIMIZATION: greedy decoding (was 5)
-                language=_whisper_language(),
+                language=lang,
                 temperature=0.0,
                 best_of=1,            # OPTIMIZATION: no best-of-N (was 5)
                 condition_on_previous_text=False,
@@ -825,6 +1057,9 @@ class CommandListener:
         self._listen_enabled.set()
         self._cancel = asyncio.Event()
         self._drain_requested = False
+        # Phase 20B: per-listener master switch for the gated Hindi fallback.
+        # Tests and operators can disable it without touching the global flag.
+        self.multilingual_fallback_enabled = True
 
         # BLOCKER 2 FIX (2026-08-30): track WHEN the listen gate was
         # closed so the streaming loop can (a) consume-and-discard audio
@@ -1708,7 +1943,11 @@ class CommandListener:
                 started_at=start, ended_at=time.time(),
                 audio_duration_ms=dur_ms,
                 endpoint_reason=endpoint_reason,
-                failure_reason=FAILURE_TRANSCRIPTION_FAILED)
+                failure_reason=FAILURE_TRANSCRIPTION_FAILED,
+                primary_used=False, fallback_used=False,
+                selected_language=FALLBACK_PRIMARY_LANG,
+                primary_latency_ms=0.0, fallback_latency_ms=0.0,
+                total_latency_ms=0.0, reason_for_fallback="")
 
         if dur_ms < cfg.min_utterance_ms or len(pcm) < 512:
             logger.info("[CMD-LISTEN] Utterance DISCARDED (too_short: %.0fms)", dur_ms)
@@ -1717,21 +1956,70 @@ class CommandListener:
                 started_at=start, ended_at=time.time(),
                 audio_duration_ms=dur_ms,
                 endpoint_reason=endpoint_reason,
-                failure_reason=FAILURE_TRANSCRIPTION_FAILED)
+                failure_reason=FAILURE_TRANSCRIPTION_FAILED,
+                primary_used=False, fallback_used=False,
+                selected_language=FALLBACK_PRIMARY_LANG,
+                primary_latency_ms=0.0, fallback_latency_ms=0.0,
+                total_latency_ms=0.0, reason_for_fallback="")
 
         loop = asyncio.get_event_loop()
         logger.info("[CMD] whisper_start duration=%.2fs samples=%d", dur_ms / 1000.0, num_samples)
         logger.info("[CMD-DEBUG] whisper_started samples=%d", num_samples)
         t_whisper = time.time()
         raw_text, confidence = await self._transcribe_with_timeout(
-            loop, self._whisper.transcribe, pcm, SAMPLE_RATE,
+            loop, self._transcribe_primary, pcm, SAMPLE_RATE,
             WHISPER_FINAL_TIMEOUT_S)
-        whisper_latency = (time.time() - t_whisper) * 1000
+        primary_latency = (time.time() - t_whisper) * 1000
+        whisper_latency = primary_latency
         logger.info("[CMD] whisper_result text=%r confidence=%.3f latency=%.0fms",
-                    raw_text or "", confidence, whisper_latency)
+                    raw_text or "", confidence, primary_latency)
         logger.info("[CMD-DEBUG] whisper_finished text=%r latency=%.0fms",
-                    raw_text or "", whisper_latency)
+                    raw_text or "", primary_latency)
         logger.info("[CMD-DEBUG] transcript=%r", raw_text or "")
+
+        # ── Phase 20B: evidence-gated single Hindi fallback ──
+        # Same model/audio/decoding config — only language="hi" differs.
+        # Max 2 ASR passes; no auto language detection. The suspicion gate
+        # uses combined evidence (validation/hallucination/logprob/duration/
+        # word-count); a confident English primary skips pass 2 entirely.
+        # Selection returns ONE final transcript downstream; raw text is
+        # preserved and the fallback NEVER executes anything or bypasses
+        # downstream safety gates.
+        fallback_used = False
+        fallback_latency = 0.0
+        fb_raw = ""
+        fb_conf = 0.0
+        selected_lang = FALLBACK_PRIMARY_LANG
+        reason_for_fallback = ""
+        if (MULTILINGUAL_FALLBACK_ENABLED
+                and getattr(self, "multilingual_fallback_enabled", True)):
+            suspicious, susp_reason = is_primary_suspicious(
+                _postprocess(raw_text) if raw_text else "", confidence, dur_ms)
+            if suspicious:
+                t_fb = time.time()
+                fb_raw, fb_conf = await self._transcribe_with_timeout(
+                    loop, self._transcribe_fallback, pcm, SAMPLE_RATE,
+                    WHISPER_FINAL_TIMEOUT_S)
+                fallback_latency = (time.time() - t_fb) * 1000
+                fallback_used = True
+                sel_text, sel_conf, sel_lang, sel_reason = select_best_transcript(
+                    _postprocess(raw_text) if raw_text else "", confidence,
+                    _postprocess(fb_raw) if fb_raw else "", fb_conf, dur_ms)
+                _sel_raw = sel_text  # already postprocessed above
+                selected_lang = sel_lang
+                reason_for_fallback = "suspicion:%s|selection:%s" % (
+                    susp_reason, sel_reason)
+                logger.info(
+                    "[CMD] hybrid_asr primary=%r(conf=%.3f) "
+                    "fallback=%r(conf=%.3f) selected=%s(%r) reason=%s "
+                    "lat_ms=%.0f+%.0f",
+                    (_postprocess(raw_text) if raw_text else ""), confidence,
+                    (_postprocess(fb_raw) if fb_raw else ""), fb_conf,
+                    sel_lang, _sel_raw, sel_reason,
+                    primary_latency, fallback_latency)
+                if sel_lang == FALLBACK_SECONDARY_LANG and fb_raw:
+                    raw_text, confidence = fb_raw, fb_conf
+                whisper_latency = primary_latency + fallback_latency
 
         # ── TASK 6: Whisper failed (empty transcript) ──
         if not raw_text:
@@ -1743,7 +2031,13 @@ class CommandListener:
                 audio_duration_ms=dur_ms,
                 whisper_latency_ms=whisper_latency,
                 endpoint_reason=endpoint_reason,
-                failure_reason=FAILURE_TRANSCRIPTION_FAILED)
+                failure_reason=FAILURE_TRANSCRIPTION_FAILED,
+                primary_used=True, fallback_used=fallback_used,
+                selected_language=selected_lang,
+                primary_latency_ms=primary_latency,
+                fallback_latency_ms=fallback_latency,
+                total_latency_ms=whisper_latency,
+                reason_for_fallback=reason_for_fallback)
 
         text = _postprocess(raw_text)
 
@@ -1767,7 +2061,13 @@ class CommandListener:
                 audio_duration_ms=dur_ms,
                 whisper_latency_ms=whisper_latency,
                 endpoint_reason=endpoint_reason,
-                failure_reason=failure_reason)
+                failure_reason=failure_reason,
+                primary_used=True, fallback_used=fallback_used,
+                selected_language=selected_lang,
+                primary_latency_ms=primary_latency,
+                fallback_latency_ms=fallback_latency,
+                total_latency_ms=whisper_latency,
+                reason_for_fallback=reason_for_fallback)
 
         logger.info("[CMD] transcript_accepted text=%r confidence=%.3f duration=%.0fms",
                     text, confidence, dur_ms)
@@ -1781,7 +2081,36 @@ class CommandListener:
             confidence=confidence,
             audio_duration_ms=dur_ms,
             whisper_latency_ms=whisper_latency,
-            endpoint_reason=endpoint_reason)
+            endpoint_reason=endpoint_reason,
+            primary_used=True, fallback_used=fallback_used,
+            selected_language=selected_lang,
+            primary_latency_ms=primary_latency,
+            fallback_latency_ms=fallback_latency,
+            total_latency_ms=whisper_latency,
+            reason_for_fallback=reason_for_fallback)
+
+    def _transcribe_primary(
+        self, pcm: bytes, sample_rate: int,
+    ) -> Tuple[str, float]:
+        """Phase 20B: English-primary pass (forced language="en")."""
+        fn = getattr(self._whisper, "transcribe_with_language", None)
+        if callable(fn):
+            return fn(pcm, sample_rate, FALLBACK_PRIMARY_LANG)
+        # Back-compat for fakes/older transcribers exposing transcribe().
+        return self._whisper.transcribe(pcm, sample_rate)
+
+    def _transcribe_fallback(
+        self, pcm: bytes, sample_rate: int,
+    ) -> Tuple[str, float]:
+        """Phase 20B: single Hindi fallback pass (forced language="hi").
+
+        Same model/audio/decoding config as the primary — only `language`
+        differs. Shares the executor timeout path with the primary.
+        """
+        fn = getattr(self._whisper, "transcribe_with_language", None)
+        if callable(fn):
+            return fn(pcm, sample_rate, FALLBACK_SECONDARY_LANG)
+        return self._whisper.transcribe(pcm, sample_rate)
 
     @staticmethod
     def _frames_to_bytes(frames: List[np.ndarray]) -> bytes:

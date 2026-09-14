@@ -1,0 +1,29 @@
+{
+  "task_id": "bba1eccc9c70",
+  "original_request": "Open it up",
+  "normalized_goal": "Open it up",
+  "current_plan": [],
+  "completed_steps": [],
+  "current_step": null,
+  "failed_steps": [],
+  "observed_state": "",
+  "verification_results": [],
+  "retry_count": 0,
+  "replan_count": 0,
+  "total_steps": 0,
+  "final_status": "FAILED",
+  "plan_version": 0,
+  "started_at": 1789371584.7538033,
+  "ended_at": 1789371584.753867,
+  "artifacts": {},
+  "log": [
+    "[TASK] id=bba1eccc9c70 goal=\"Open it up\"",
+    "[PLAN] v0 rejected — missing/invalid argument 'app' for desktop_open"
+  ],
+  "blocker": "The generated plan contained no executable actions: missing/invalid argument 'app' for desktop_open",
+  "evidence_log": [],
+  "pending_confirmation": null,
+  "confirmation_reason": "",
+  "referenced_entity": "",
+  "active_goal": ""
+}

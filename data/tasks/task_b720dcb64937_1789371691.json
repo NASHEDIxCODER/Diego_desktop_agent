@@ -1,0 +1,29 @@
+{
+  "task_id": "b720dcb64937",
+  "original_request": "close fire for some nice clean",
+  "normalized_goal": "close fire for some nice clean",
+  "current_plan": [],
+  "completed_steps": [],
+  "current_step": null,
+  "failed_steps": [],
+  "observed_state": "",
+  "verification_results": [],
+  "retry_count": 0,
+  "replan_count": 0,
+  "total_steps": 0,
+  "final_status": "FAILED",
+  "plan_version": 0,
+  "started_at": 1789371691.1731699,
+  "ended_at": 1789371691.1734254,
+  "artifacts": {},
+  "log": [
+    "[TASK] id=b720dcb64937 goal=\"close fire for some nice clean\"",
+    "[PLAN] v0 rejected — action 'keyboard' not authorized for this request"
+  ],
+  "blocker": "The generated plan contained no executable actions: action 'keyboard' not authorized for this request",
+  "evidence_log": [],
+  "pending_confirmation": null,
+  "confirmation_reason": "",
+  "referenced_entity": "",
+  "active_goal": ""
+}

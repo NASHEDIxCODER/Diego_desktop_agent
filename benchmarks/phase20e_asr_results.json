@@ -1,0 +1,2967 @@
+{
+  "phase": "20E",
+  "captured_at": "2026-09-10T21:33:05.041917+00:00",
+  "dataset_note": "controlled synthetic espeak-ng audio (NOT real mic — 20D stored no raw audio); model-vs-model comparison only",
+  "decode_config": {
+    "beam_size": 1,
+    "temperature": 0.0,
+    "no_speech_threshold": 0.9,
+    "vad_filter": false,
+    "device": "cpu",
+    "compute": "int8"
+  },
+  "models": {
+    "baseline": {
+      "repo": "Systran/faster-whisper-base",
+      "meta": {
+        "repo": "Systran/faster-whisper-base",
+        "size": "base (74M params, ~145MB)",
+        "langs": "multilingual (99+)",
+        "license": "MIT (Systran CTranslate2 conversion of OpenAI Whisper)"
+      },
+      "load_ms": 2108.5,
+      "ram_delta_mb": 199.5,
+      "gpu_delta_mb": 0.0,
+      "utterances": [
+        {
+          "id": "en-01",
+          "group": "en",
+          "prompt": "Open Firefox",
+          "mode": "en",
+          "detected_language": "en",
+          "transcript": "Open Firefox.",
+          "avg_logprob": -0.298,
+          "first_latency_ms": 559.5,
+          "latencies_ms": [
+            559.5
+          ],
+          "median_latency_ms": 559.5,
+          "postprocessed": "Open Firefox",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "Open firefox",
+          "intent_category": "IntentCategory.DETERMINISTIC_COMMAND",
+          "actionable": true,
+          "keyword_hits": {
+            "firefox": true
+          },
+          "keyword_recall": 1.0,
+          "entity_hits": {
+            "firefox": true
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "en-01",
+          "group": "en",
+          "prompt": "Open Firefox",
+          "mode": "hi",
+          "detected_language": "hi",
+          "transcript": "Open Firefox",
+          "avg_logprob": -0.505,
+          "first_latency_ms": 569.1,
+          "latencies_ms": [
+            569.1
+          ],
+          "median_latency_ms": 569.1,
+          "postprocessed": "Open Firefox",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "Open firefox",
+          "intent_category": "IntentCategory.DETERMINISTIC_COMMAND",
+          "actionable": true,
+          "keyword_hits": {
+            "firefox": true
+          },
+          "keyword_recall": 1.0,
+          "entity_hits": {
+            "firefox": true
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "en-02",
+          "group": "en",
+          "prompt": "Open the terminal",
+          "mode": "en",
+          "detected_language": "en",
+          "transcript": "open the terminal.",
+          "avg_logprob": -0.258,
+          "first_latency_ms": 576.6,
+          "latencies_ms": [
+            576.6
+          ],
+          "median_latency_ms": 576.6,
+          "postprocessed": "open the terminal",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "open terminal",
+          "intent_category": "IntentCategory.DETERMINISTIC_COMMAND",
+          "actionable": true,
+          "keyword_hits": {
+            "terminal": true
+          },
+          "keyword_recall": 1.0,
+          "entity_hits": {
+            "terminal": true
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "en-02",
+          "group": "en",
+          "prompt": "Open the terminal",
+          "mode": "hi",
+          "detected_language": "hi",
+          "transcript": "open the terminal",
+          "avg_logprob": -0.612,
+          "first_latency_ms": 586.2,
+          "latencies_ms": [
+            586.2
+          ],
+          "median_latency_ms": 586.2,
+          "postprocessed": "open the terminal",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "open terminal",
+          "intent_category": "IntentCategory.DETERMINISTIC_COMMAND",
+          "actionable": true,
+          "keyword_hits": {
+            "terminal": true
+          },
+          "keyword_recall": 1.0,
+          "entity_hits": {
+            "terminal": true
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "en-03",
+          "group": "en",
+          "prompt": "Play Believer on YouTube",
+          "mode": "en",
+          "detected_language": "en",
+          "transcript": "Play Believe or On YouTube.",
+          "avg_logprob": -0.775,
+          "first_latency_ms": 578.2,
+          "latencies_ms": [
+            578.2
+          ],
+          "median_latency_ms": 578.2,
+          "postprocessed": "Play Believe or On YouTube",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "play believe or on youtube",
+          "intent_category": "IntentCategory.DETERMINISTIC_COMMAND",
+          "actionable": true,
+          "keyword_hits": {
+            "believer": false,
+            "youtube": true
+          },
+          "keyword_recall": 0.5,
+          "entity_hits": {
+            "youtube": true,
+            "believer": false
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "en-03",
+          "group": "en",
+          "prompt": "Play Believer on YouTube",
+          "mode": "hi",
+          "detected_language": "hi",
+          "transcript": "Playbilly varon YouTube",
+          "avg_logprob": -0.914,
+          "first_latency_ms": 575.0,
+          "latencies_ms": [
+            575.0
+          ],
+          "median_latency_ms": 575.0,
+          "postprocessed": "Playbilly varon YouTube",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "playbilly varon youtube",
+          "intent_category": "IntentCategory.CONVERSATIONAL",
+          "actionable": false,
+          "keyword_hits": {
+            "believer": false,
+            "youtube": true
+          },
+          "keyword_recall": 0.5,
+          "entity_hits": {
+            "youtube": true,
+            "believer": false
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "en-04",
+          "group": "en",
+          "prompt": "What's my RAM?",
+          "mode": "en",
+          "detected_language": "en",
+          "transcript": "What's my RADM?",
+          "avg_logprob": -0.566,
+          "first_latency_ms": 576.6,
+          "latencies_ms": [
+            576.6
+          ],
+          "median_latency_ms": 576.6,
+          "postprocessed": "What's my RADM",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "search my radm",
+          "intent_category": "IntentCategory.SEARCH_REQUEST",
+          "actionable": true,
+          "keyword_hits": {
+            "ram": false
+          },
+          "keyword_recall": 0.0,
+          "entity_hits": {
+            "ram": false
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "en-04",
+          "group": "en",
+          "prompt": "What's my RAM?",
+          "mode": "hi",
+          "detected_language": "hi",
+          "transcript": "wath my RAM",
+          "avg_logprob": -1.403,
+          "first_latency_ms": 565.2,
+          "latencies_ms": [
+            565.2
+          ],
+          "median_latency_ms": 565.2,
+          "postprocessed": "wath my RAM",
+          "valid": false,
+          "fail_reason": "LOW_CONFIDENCE",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": false,
+          "normalized_command": "wath my RAM",
+          "intent_category": "IntentCategory.UNCERTAIN",
+          "actionable": false,
+          "keyword_hits": {
+            "ram": true
+          },
+          "keyword_recall": 1.0,
+          "entity_hits": {
+            "ram": true
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "hx-01",
+          "group": "hinglish",
+          "prompt": "Firefox kholo",
+          "mode": "en",
+          "detected_language": "en",
+          "transcript": "Iofox co-lo.",
+          "avg_logprob": -0.978,
+          "first_latency_ms": 570.6,
+          "latencies_ms": [
+            570.6
+          ],
+          "median_latency_ms": 570.6,
+          "postprocessed": "Iofox co-lo",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "Iofox co-lo",
+          "intent_category": "IntentCategory.CONVERSATIONAL",
+          "actionable": false,
+          "keyword_hits": {
+            "firefox": false,
+            "khol": false
+          },
+          "keyword_recall": 0.0,
+          "entity_hits": {
+            "firefox": false
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "hx-01",
+          "group": "hinglish",
+          "prompt": "Firefox kholo",
+          "mode": "hi",
+          "detected_language": "hi",
+          "transcript": "iafox co-lo",
+          "avg_logprob": -1.143,
+          "first_latency_ms": 566.5,
+          "latencies_ms": [
+            566.5
+          ],
+          "median_latency_ms": 566.5,
+          "postprocessed": "iafox co-lo",
+          "valid": false,
+          "fail_reason": "LOW_CONFIDENCE",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": false,
+          "normalized_command": "iafox co-lo",
+          "intent_category": "IntentCategory.UNCERTAIN",
+          "actionable": false,
+          "keyword_hits": {
+            "firefox": false,
+            "khol": false
+          },
+          "keyword_recall": 0.0,
+          "entity_hits": {
+            "firefox": false
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "hx-02",
+          "group": "hinglish",
+          "prompt": "YouTube pe Believer chalao",
+          "mode": "en",
+          "detected_language": "en",
+          "transcript": "YouTube be believe a channel.",
+          "avg_logprob": -0.802,
+          "first_latency_ms": 569.5,
+          "latencies_ms": [
+            569.5
+          ],
+          "median_latency_ms": 569.5,
+          "postprocessed": "YouTube be believe a channel",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "youtube be believe a channel",
+          "intent_category": "IntentCategory.CONVERSATIONAL",
+          "actionable": false,
+          "keyword_hits": {
+            "youtube": true,
+            "believer": false,
+            "chalao": false
+          },
+          "keyword_recall": 0.3333333333333333,
+          "entity_hits": {
+            "youtube": true,
+            "believer": false
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "hx-02",
+          "group": "hinglish",
+          "prompt": "YouTube pe Believer chalao",
+          "mode": "hi",
+          "detected_language": "hi",
+          "transcript": "YouTube 비밀ி வچาลา",
+          "avg_logprob": -1.54,
+          "first_latency_ms": 591.8,
+          "latencies_ms": [
+            591.8
+          ],
+          "median_latency_ms": 591.8,
+          "postprocessed": "YouTube 비밀ி வچาลา",
+          "valid": false,
+          "fail_reason": "LOW_CONFIDENCE",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": false,
+          "normalized_command": "youtube 비밀ி வچาลา",
+          "intent_category": "IntentCategory.UNCERTAIN",
+          "actionable": false,
+          "keyword_hits": {
+            "youtube": true,
+            "believer": false,
+            "chalao": false
+          },
+          "keyword_recall": 0.3333333333333333,
+          "entity_hits": {
+            "youtube": true,
+            "believer": false
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "hx-03",
+          "group": "hinglish",
+          "prompt": "Volume thoda kam karo",
+          "mode": "en",
+          "detected_language": "en",
+          "transcript": "Volumthoda Camcaro",
+          "avg_logprob": -0.825,
+          "first_latency_ms": 574.0,
+          "latencies_ms": [
+            574.0
+          ],
+          "median_latency_ms": 574.0,
+          "postprocessed": "Volumthoda Camcaro",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "Volumthoda Camcaro",
+          "intent_category": "IntentCategory.CONVERSATIONAL",
+          "actionable": false,
+          "keyword_hits": {
+            "volume": false,
+            "kam": false
+          },
+          "keyword_recall": 0.0,
+          "entity_hits": {
+            "volume": false
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "hx-03",
+          "group": "hinglish",
+          "prompt": "Volume thoda kam karo",
+          "mode": "hi",
+          "detected_language": "hi",
+          "transcript": "volumthoda kamkaru",
+          "avg_logprob": -0.902,
+          "first_latency_ms": 642.1,
+          "latencies_ms": [
+            642.1
+          ],
+          "median_latency_ms": 642.1,
+          "postprocessed": "volumthoda kamkaru",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "volumthoda kamkaru",
+          "intent_category": "IntentCategory.CONVERSATIONAL",
+          "actionable": false,
+          "keyword_hits": {
+            "volume": false,
+            "kam": true
+          },
+          "keyword_recall": 0.5,
+          "entity_hits": {
+            "volume": false
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "hx-04",
+          "group": "hinglish",
+          "prompt": "Mera CPU kitna use ho raha hai",
+          "mode": "en",
+          "detected_language": "en",
+          "transcript": "MiracPU kit, Ustoroffer High",
+          "avg_logprob": -1.184,
+          "first_latency_ms": 601.1,
+          "latencies_ms": [
+            601.1
+          ],
+          "median_latency_ms": 601.1,
+          "postprocessed": "MiracPU kit, Ustoroffer High",
+          "valid": false,
+          "fail_reason": "LOW_CONFIDENCE",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": false,
+          "normalized_command": "MiracPU kit, Ustoroffer High",
+          "intent_category": "IntentCategory.UNCERTAIN",
+          "actionable": false,
+          "keyword_hits": {
+            "cpu": true,
+            "kitna": false
+          },
+          "keyword_recall": 0.5,
+          "entity_hits": {
+            "cpu": true
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "hx-04",
+          "group": "hinglish",
+          "prompt": "Mera CPU kitna use ho raha hai",
+          "mode": "hi",
+          "detected_language": "hi",
+          "transcript": "Miracpu Kit Ustoroffer High",
+          "avg_logprob": -1.24,
+          "first_latency_ms": 587.5,
+          "latencies_ms": [
+            587.5
+          ],
+          "median_latency_ms": 587.5,
+          "postprocessed": "Miracpu Kit Ustoroffer High",
+          "valid": false,
+          "fail_reason": "LOW_CONFIDENCE",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": false,
+          "normalized_command": "Miracpu Kit Ustoroffer High",
+          "intent_category": "IntentCategory.UNCERTAIN",
+          "actionable": false,
+          "keyword_hits": {
+            "cpu": true,
+            "kitna": false
+          },
+          "keyword_recall": 0.5,
+          "entity_hits": {
+            "cpu": true
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "hi-01",
+          "group": "hindi",
+          "prompt": "फायरफॉक्स खोलो",
+          "mode": "en",
+          "detected_language": "en",
+          "transcript": "I'll talk school",
+          "avg_logprob": -1.71,
+          "first_latency_ms": 559.8,
+          "latencies_ms": [
+            559.8
+          ],
+          "median_latency_ms": 559.8,
+          "postprocessed": "I'll talk school",
+          "valid": false,
+          "fail_reason": "LOW_CONFIDENCE",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": false,
+          "normalized_command": "I'll talk school",
+          "intent_category": "IntentCategory.UNCERTAIN",
+          "actionable": false,
+          "keyword_hits": {
+            "फायरफॉक्स": false,
+            "खोल": false
+          },
+          "keyword_recall": 0.0,
+          "entity_hits": {},
+          "confirmation_word": null
+        },
+        {
+          "id": "hi-01",
+          "group": "hindi",
+          "prompt": "फायरफॉक्स खोलो",
+          "mode": "hi",
+          "detected_language": "hi",
+          "transcript": "a ya tops ko lor",
+          "avg_logprob": -1.833,
+          "first_latency_ms": 570.4,
+          "latencies_ms": [
+            570.4
+          ],
+          "median_latency_ms": 570.4,
+          "postprocessed": "a ya tops ko lor",
+          "valid": false,
+          "fail_reason": "LOW_CONFIDENCE",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": false,
+          "normalized_command": "a ya tops ko lor",
+          "intent_category": "IntentCategory.UNCERTAIN",
+          "actionable": false,
+          "keyword_hits": {
+            "फायरफॉक्स": false,
+            "खोल": false
+          },
+          "keyword_recall": 0.0,
+          "entity_hits": {},
+          "confirmation_word": null
+        },
+        {
+          "id": "hi-02",
+          "group": "hindi",
+          "prompt": "यूट्यूब पर गाना चलाओ",
+          "mode": "en",
+          "detected_language": "en",
+          "transcript": "You do per-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-",
+          "avg_logprob": -0.126,
+          "first_latency_ms": 1634.7,
+          "latencies_ms": [
+            1634.7
+          ],
+          "median_latency_ms": 1634.7,
+          "postprocessed": "You do per-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-",
+          "valid": false,
+          "fail_reason": "GARBAGE",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": true,
+          "hallucinated": true,
+          "usable": false,
+          "normalized_command": "You do per-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-",
+          "intent_category": "IntentCategory.CONVERSATIONAL",
+          "actionable": false,
+          "keyword_hits": {
+            "यूट्यूब": false,
+            "गाना": false,
+            "चलाओ": false
+          },
+          "keyword_recall": 0.0,
+          "entity_hits": {},
+          "confirmation_word": null
+        },
+        {
+          "id": "hi-02",
+          "group": "hindi",
+          "prompt": "यूट्यूब पर गाना चलाओ",
+          "mode": "hi",
+          "detected_language": "hi",
+          "transcript": "یو توب پر تا چلاو",
+          "avg_logprob": -1.407,
+          "first_latency_ms": 665.7,
+          "latencies_ms": [
+            665.7
+          ],
+          "median_latency_ms": 665.7,
+          "postprocessed": "یو توب پر تا چلاو",
+          "valid": false,
+          "fail_reason": "LOW_CONFIDENCE",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": false,
+          "normalized_command": "یو توب پر تا چلاو",
+          "intent_category": "IntentCategory.UNCERTAIN",
+          "actionable": false,
+          "keyword_hits": {
+            "यूट्यूब": false,
+            "गाना": false,
+            "चलाओ": false
+          },
+          "keyword_recall": 0.0,
+          "entity_hits": {},
+          "confirmation_word": null
+        },
+        {
+          "id": "hi-03",
+          "group": "hindi",
+          "prompt": "आवाज़ थोड़ी कम करो",
+          "mode": "en",
+          "detected_language": "en",
+          "transcript": "Amato di Kamikato",
+          "avg_logprob": -1.704,
+          "first_latency_ms": 579.3,
+          "latencies_ms": [
+            579.3
+          ],
+          "median_latency_ms": 579.3,
+          "postprocessed": "Amato di Kamikato",
+          "valid": false,
+          "fail_reason": "LOW_CONFIDENCE",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": false,
+          "normalized_command": "Amato di Kamikato",
+          "intent_category": "IntentCategory.UNCERTAIN",
+          "actionable": false,
+          "keyword_hits": {
+            "कम": false,
+            "करो": false
+          },
+          "keyword_recall": 0.0,
+          "entity_hits": {},
+          "confirmation_word": null
+        },
+        {
+          "id": "hi-03",
+          "group": "hindi",
+          "prompt": "आवाज़ थोड़ी कम करो",
+          "mode": "hi",
+          "detected_language": "hi",
+          "transcript": "a ma'al tori kum kato",
+          "avg_logprob": -1.473,
+          "first_latency_ms": 588.3,
+          "latencies_ms": [
+            588.3
+          ],
+          "median_latency_ms": 588.3,
+          "postprocessed": "a ma'al tori kum kato",
+          "valid": false,
+          "fail_reason": "LOW_CONFIDENCE",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": false,
+          "normalized_command": "a on'al tori kum kato",
+          "intent_category": "IntentCategory.UNCERTAIN",
+          "actionable": false,
+          "keyword_hits": {
+            "कम": false,
+            "करो": false
+          },
+          "keyword_recall": 0.0,
+          "entity_hits": {},
+          "confirmation_word": null
+        },
+        {
+          "id": "mx-01",
+          "group": "mixed",
+          "prompt": "YouTube pe Arijit Singh ka song chalao",
+          "mode": "en",
+          "detected_language": "en",
+          "transcript": "YouTube be our Reddit singer Son Chalau",
+          "avg_logprob": -1.269,
+          "first_latency_ms": 577.2,
+          "latencies_ms": [
+            577.2
+          ],
+          "median_latency_ms": 577.2,
+          "postprocessed": "YouTube be our Reddit singer Son Chalau",
+          "valid": false,
+          "fail_reason": "LOW_CONFIDENCE",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": false,
+          "normalized_command": "youtube be our Reddit singer Son Chalau",
+          "intent_category": "IntentCategory.UNCERTAIN",
+          "actionable": false,
+          "keyword_hits": {
+            "youtube": true,
+            "arijit": false,
+            "singh": false,
+            "chalao": false
+          },
+          "keyword_recall": 0.25,
+          "entity_hits": {
+            "youtube": true,
+            "arijit": false
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "mx-01",
+          "group": "mixed",
+          "prompt": "YouTube pe Arijit Singh ka song chalao",
+          "mode": "hi",
+          "detected_language": "hi",
+          "transcript": "YouTube PR-Rigit Singh Kha Son Chalau",
+          "avg_logprob": -1.181,
+          "first_latency_ms": 597.3,
+          "latencies_ms": [
+            597.3
+          ],
+          "median_latency_ms": 597.3,
+          "postprocessed": "YouTube PR-Rigit Singh Kha Son Chalau",
+          "valid": false,
+          "fail_reason": "LOW_CONFIDENCE",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": false,
+          "normalized_command": "youtube PR-Rigit Singh Kha Son Chalau",
+          "intent_category": "IntentCategory.UNCERTAIN",
+          "actionable": false,
+          "keyword_hits": {
+            "youtube": true,
+            "arijit": false,
+            "singh": true,
+            "chalao": false
+          },
+          "keyword_recall": 0.5,
+          "entity_hits": {
+            "youtube": true,
+            "arijit": false
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "mx-02",
+          "group": "mixed",
+          "prompt": "Firefox mein GitHub kholo",
+          "mode": "en",
+          "detected_language": "en",
+          "transcript": "Firefox main bit, herb co-lo.",
+          "avg_logprob": -1.012,
+          "first_latency_ms": 587.2,
+          "latencies_ms": [
+            587.2
+          ],
+          "median_latency_ms": 587.2,
+          "postprocessed": "Firefox main bit, herb co-lo",
+          "valid": false,
+          "fail_reason": "LOW_CONFIDENCE",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": false,
+          "normalized_command": "firefox main bit, herb co-lo",
+          "intent_category": "IntentCategory.UNCERTAIN",
+          "actionable": false,
+          "keyword_hits": {
+            "firefox": true,
+            "github": false,
+            "khol": false
+          },
+          "keyword_recall": 0.3333333333333333,
+          "entity_hits": {
+            "firefox": true,
+            "github": false
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "mx-02",
+          "group": "mixed",
+          "prompt": "Firefox mein GitHub kholo",
+          "mode": "hi",
+          "detected_language": "hi",
+          "transcript": "FIFFOX MANGIT HERM COLO",
+          "avg_logprob": -1.09,
+          "first_latency_ms": 598.2,
+          "latencies_ms": [
+            598.2
+          ],
+          "median_latency_ms": 598.2,
+          "postprocessed": "FIFFOX MANGIT HERM COLO",
+          "valid": false,
+          "fail_reason": "LOW_CONFIDENCE",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": false,
+          "normalized_command": "FIFFOX MANGIT HERM COLO",
+          "intent_category": "IntentCategory.UNCERTAIN",
+          "actionable": false,
+          "keyword_hits": {
+            "firefox": false,
+            "github": false,
+            "khol": false
+          },
+          "keyword_recall": 0.0,
+          "entity_hits": {
+            "firefox": false,
+            "github": false
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "amb-01",
+          "group": "ambiguous",
+          "prompt": "play thodi der on youtube",
+          "mode": "en",
+          "detected_language": "en",
+          "transcript": "Play so did that on YouTube.",
+          "avg_logprob": -0.713,
+          "first_latency_ms": 570.1,
+          "latencies_ms": [
+            570.1
+          ],
+          "median_latency_ms": 570.1,
+          "postprocessed": "Play so did that on YouTube",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "play so did that on youtube",
+          "intent_category": "IntentCategory.DETERMINISTIC_COMMAND",
+          "actionable": true,
+          "keyword_hits": {
+            "play": true,
+            "youtube": true
+          },
+          "keyword_recall": 1.0,
+          "entity_hits": {
+            "youtube": true
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "amb-01",
+          "group": "ambiguous",
+          "prompt": "play thodi der on youtube",
+          "mode": "hi",
+          "detected_language": "hi",
+          "transcript": "Play so did they're on YouTube",
+          "avg_logprob": -0.986,
+          "first_latency_ms": 569.6,
+          "latencies_ms": [
+            569.6
+          ],
+          "median_latency_ms": 569.6,
+          "postprocessed": "Play so did they're on YouTube",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "play so did they are on youtube",
+          "intent_category": "IntentCategory.DETERMINISTIC_COMMAND",
+          "actionable": true,
+          "keyword_hits": {
+            "play": true,
+            "youtube": true
+          },
+          "keyword_recall": 1.0,
+          "entity_hits": {
+            "youtube": true
+          },
+          "confirmation_word": null
+        }
+      ],
+      "stats_en": {
+        "n": 14,
+        "usable_rate": 0.5714,
+        "keyword_recall_mean": 0.3512,
+        "median_ms": 576.6,
+        "p95_ms": 1634.7,
+        "max_ms": 1634.7
+      },
+      "stats_hi": {
+        "n": 14,
+        "usable_rate": 0.3571,
+        "keyword_recall_mean": 0.4524,
+        "median_ms": 586.9,
+        "p95_ms": 665.7,
+        "max_ms": 665.7
+      }
+    },
+    "small": {
+      "repo": "Systran/faster-whisper-small",
+      "meta": {
+        "repo": "Systran/faster-whisper-small",
+        "size": "small (244M params, ~460MB)",
+        "langs": "multilingual (99+)",
+        "license": "MIT (Systran CTranslate2 conversion of OpenAI Whisper)"
+      },
+      "load_ms": 57380.6,
+      "ram_delta_mb": 685.6,
+      "gpu_delta_mb": 0.0,
+      "utterances": [
+        {
+          "id": "en-01",
+          "group": "en",
+          "prompt": "Open Firefox",
+          "mode": "en",
+          "detected_language": "en",
+          "transcript": "Open Firefox.",
+          "avg_logprob": -0.436,
+          "first_latency_ms": 1719.4,
+          "latencies_ms": [
+            1719.4
+          ],
+          "median_latency_ms": 1719.4,
+          "postprocessed": "Open Firefox",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "Open firefox",
+          "intent_category": "IntentCategory.DETERMINISTIC_COMMAND",
+          "actionable": true,
+          "keyword_hits": {
+            "firefox": true
+          },
+          "keyword_recall": 1.0,
+          "entity_hits": {
+            "firefox": true
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "en-01",
+          "group": "en",
+          "prompt": "Open Firefox",
+          "mode": "hi",
+          "detected_language": "hi",
+          "transcript": "अपन ठाया फोखस",
+          "avg_logprob": -1.02,
+          "first_latency_ms": 1875.1,
+          "latencies_ms": [
+            1875.1
+          ],
+          "median_latency_ms": 1875.1,
+          "postprocessed": "अपन ठाया फोखस",
+          "valid": false,
+          "fail_reason": "LOW_CONFIDENCE",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": false,
+          "normalized_command": "अपन ठाया फोखस",
+          "intent_category": "IntentCategory.UNCERTAIN",
+          "actionable": false,
+          "keyword_hits": {
+            "firefox": false
+          },
+          "keyword_recall": 0.0,
+          "entity_hits": {
+            "firefox": false
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "en-02",
+          "group": "en",
+          "prompt": "Open the terminal",
+          "mode": "en",
+          "detected_language": "en",
+          "transcript": "Open the terminal.",
+          "avg_logprob": -0.273,
+          "first_latency_ms": 1736.5,
+          "latencies_ms": [
+            1736.5
+          ],
+          "median_latency_ms": 1736.5,
+          "postprocessed": "Open the terminal",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "open terminal",
+          "intent_category": "IntentCategory.DETERMINISTIC_COMMAND",
+          "actionable": true,
+          "keyword_hits": {
+            "terminal": true
+          },
+          "keyword_recall": 1.0,
+          "entity_hits": {
+            "terminal": true
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "en-02",
+          "group": "en",
+          "prompt": "Open the terminal",
+          "mode": "hi",
+          "detected_language": "hi",
+          "transcript": "अपन दर्मिनों",
+          "avg_logprob": -0.883,
+          "first_latency_ms": 1972.6,
+          "latencies_ms": [
+            1972.6
+          ],
+          "median_latency_ms": 1972.6,
+          "postprocessed": "अपन दर्मिनों",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "अपन दर्मिनों",
+          "intent_category": "IntentCategory.CONVERSATIONAL",
+          "actionable": false,
+          "keyword_hits": {
+            "terminal": false
+          },
+          "keyword_recall": 0.0,
+          "entity_hits": {
+            "terminal": false
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "en-03",
+          "group": "en",
+          "prompt": "Play Believer on YouTube",
+          "mode": "en",
+          "detected_language": "en",
+          "transcript": "Play believer on YouTube!",
+          "avg_logprob": -0.485,
+          "first_latency_ms": 1899.3,
+          "latencies_ms": [
+            1899.3
+          ],
+          "median_latency_ms": 1899.3,
+          "postprocessed": "Play believer on YouTube",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "play believer on youtube",
+          "intent_category": "IntentCategory.DETERMINISTIC_COMMAND",
+          "actionable": true,
+          "keyword_hits": {
+            "believer": true,
+            "youtube": true
+          },
+          "keyword_recall": 1.0,
+          "entity_hits": {
+            "youtube": true,
+            "believer": true
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "en-03",
+          "group": "en",
+          "prompt": "Play Believer on YouTube",
+          "mode": "hi",
+          "detected_language": "hi",
+          "transcript": "प्ले बिलीवर अन उटूब",
+          "avg_logprob": -0.745,
+          "first_latency_ms": 2058.2,
+          "latencies_ms": [
+            2058.2
+          ],
+          "median_latency_ms": 2058.2,
+          "postprocessed": "प्ले बिलीवर अन उटूब",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "प्ले बिलीवर अन उटूब",
+          "intent_category": "IntentCategory.CONVERSATIONAL",
+          "actionable": false,
+          "keyword_hits": {
+            "believer": false,
+            "youtube": false
+          },
+          "keyword_recall": 0.0,
+          "entity_hits": {
+            "youtube": false,
+            "believer": false
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "en-04",
+          "group": "en",
+          "prompt": "What's my RAM?",
+          "mode": "en",
+          "detected_language": "en",
+          "transcript": "What's my R.A.M?",
+          "avg_logprob": -0.293,
+          "first_latency_ms": 1786.3,
+          "latencies_ms": [
+            1786.3
+          ],
+          "median_latency_ms": 1786.3,
+          "postprocessed": "What's my R.A.M",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "search my r.a.m",
+          "intent_category": "IntentCategory.SEARCH_REQUEST",
+          "actionable": true,
+          "keyword_hits": {
+            "ram": false
+          },
+          "keyword_recall": 0.0,
+          "entity_hits": {
+            "ram": false
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "en-04",
+          "group": "en",
+          "prompt": "What's my RAM?",
+          "mode": "hi",
+          "detected_language": "hi",
+          "transcript": "वो ज़ा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा",
+          "avg_logprob": -0.191,
+          "first_latency_ms": 4648.2,
+          "latencies_ms": [
+            4648.2
+          ],
+          "median_latency_ms": 4648.2,
+          "postprocessed": "वो ज़ा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "वो ज़ा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा वाजा",
+          "intent_category": "IntentCategory.CONVERSATIONAL",
+          "actionable": false,
+          "keyword_hits": {
+            "ram": false
+          },
+          "keyword_recall": 0.0,
+          "entity_hits": {
+            "ram": false
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "hx-01",
+          "group": "hinglish",
+          "prompt": "Firefox kholo",
+          "mode": "en",
+          "detected_language": "en",
+          "transcript": "Firefox Collo",
+          "avg_logprob": -0.787,
+          "first_latency_ms": 1723.5,
+          "latencies_ms": [
+            1723.5
+          ],
+          "median_latency_ms": 1723.5,
+          "postprocessed": "Firefox Collo",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "firefox Collo",
+          "intent_category": "IntentCategory.CONVERSATIONAL",
+          "actionable": false,
+          "keyword_hits": {
+            "firefox": true,
+            "khol": false
+          },
+          "keyword_recall": 0.5,
+          "entity_hits": {
+            "firefox": true
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "hx-01",
+          "group": "hinglish",
+          "prompt": "Firefox kholo",
+          "mode": "hi",
+          "detected_language": "hi",
+          "transcript": "अप आप आप वोग्स को लोग",
+          "avg_logprob": -0.956,
+          "first_latency_ms": 2017.9,
+          "latencies_ms": [
+            2017.9
+          ],
+          "median_latency_ms": 2017.9,
+          "postprocessed": "अप आप वोग्स को लोग",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "अप आप वोग्स को लोग",
+          "intent_category": "IntentCategory.CONVERSATIONAL",
+          "actionable": false,
+          "keyword_hits": {
+            "firefox": false,
+            "khol": false
+          },
+          "keyword_recall": 0.0,
+          "entity_hits": {
+            "firefox": false
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "hx-02",
+          "group": "hinglish",
+          "prompt": "YouTube pe Believer chalao",
+          "mode": "en",
+          "detected_language": "en",
+          "transcript": "YouTube be believe a chow",
+          "avg_logprob": -0.985,
+          "first_latency_ms": 1764.1,
+          "latencies_ms": [
+            1764.1
+          ],
+          "median_latency_ms": 1764.1,
+          "postprocessed": "YouTube be believe a chow",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "youtube be believe a chow",
+          "intent_category": "IntentCategory.CONVERSATIONAL",
+          "actionable": false,
+          "keyword_hits": {
+            "youtube": true,
+            "believer": false,
+            "chalao": false
+          },
+          "keyword_recall": 0.3333333333333333,
+          "entity_hits": {
+            "youtube": true,
+            "believer": false
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "hx-02",
+          "group": "hinglish",
+          "prompt": "YouTube pe Believer chalao",
+          "mode": "hi",
+          "detected_language": "hi",
+          "transcript": "अगर बच्चादावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावा�",
+          "avg_logprob": -0.169,
+          "first_latency_ms": 4661.8,
+          "latencies_ms": [
+            4661.8
+          ],
+          "median_latency_ms": 4661.8,
+          "postprocessed": "अगर बच्चादावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावा�",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "अगर बच्चादावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावावा�",
+          "intent_category": "IntentCategory.CONVERSATIONAL",
+          "actionable": false,
+          "keyword_hits": {
+            "youtube": false,
+            "believer": false,
+            "chalao": false
+          },
+          "keyword_recall": 0.0,
+          "entity_hits": {
+            "youtube": false,
+            "believer": false
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "hx-03",
+          "group": "hinglish",
+          "prompt": "Volume thoda kam karo",
+          "mode": "en",
+          "detected_language": "en",
+          "transcript": "volume soda can carrow",
+          "avg_logprob": -0.958,
+          "first_latency_ms": 1760.1,
+          "latencies_ms": [
+            1760.1
+          ],
+          "median_latency_ms": 1760.1,
+          "postprocessed": "volume soda can carrow",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "volume soda can carrow",
+          "intent_category": "IntentCategory.DETERMINISTIC_COMMAND",
+          "actionable": true,
+          "keyword_hits": {
+            "volume": true,
+            "kam": false
+          },
+          "keyword_recall": 0.5,
+          "entity_hits": {
+            "volume": true
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "hx-03",
+          "group": "hinglish",
+          "prompt": "Volume thoda kam karo",
+          "mode": "hi",
+          "detected_language": "hi",
+          "transcript": "वल्युम तोड़ खाम्कारो",
+          "avg_logprob": -0.68,
+          "first_latency_ms": 1993.8,
+          "latencies_ms": [
+            1993.8
+          ],
+          "median_latency_ms": 1993.8,
+          "postprocessed": "वल्युम तोड़ खाम्कारो",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "वल्युम तोड़ खाम्कारो",
+          "intent_category": "IntentCategory.CONVERSATIONAL",
+          "actionable": false,
+          "keyword_hits": {
+            "volume": false,
+            "kam": false
+          },
+          "keyword_recall": 0.0,
+          "entity_hits": {
+            "volume": false
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "hx-04",
+          "group": "hinglish",
+          "prompt": "Mera CPU kitna use ho raha hai",
+          "mode": "en",
+          "detected_language": "en",
+          "transcript": "Mirror CPU Kit Mirror CPU Kit Mirror CPU Kit, do you still have a high",
+          "avg_logprob": -2.663,
+          "first_latency_ms": 2221.0,
+          "latencies_ms": [
+            2221.0
+          ],
+          "median_latency_ms": 2221.0,
+          "postprocessed": "Mirror CPU Kit Mirror CPU Kit Mirror CPU Kit, do you still have a high",
+          "valid": false,
+          "fail_reason": "GARBAGE",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": true,
+          "hallucinated": true,
+          "usable": false,
+          "normalized_command": "Mirror CPU Kit Mirror CPU Kit Mirror CPU Kit, do you still have a high",
+          "intent_category": "IntentCategory.UNCERTAIN",
+          "actionable": false,
+          "keyword_hits": {
+            "cpu": true,
+            "kitna": false
+          },
+          "keyword_recall": 0.5,
+          "entity_hits": {
+            "cpu": true
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "hx-04",
+          "group": "hinglish",
+          "prompt": "Mera CPU kitna use ho raha hai",
+          "mode": "hi",
+          "detected_language": "hi",
+          "transcript": "मिर अची पी उगित ना उच्छा राखा ठाई",
+          "avg_logprob": -0.896,
+          "first_latency_ms": 2187.6,
+          "latencies_ms": [
+            2187.6
+          ],
+          "median_latency_ms": 2187.6,
+          "postprocessed": "मिर अची पी उगित ना उच्छा राखा ठाई",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "मिर अची पी उगित ना उच्छा राखा ठाई",
+          "intent_category": "IntentCategory.CONVERSATIONAL",
+          "actionable": false,
+          "keyword_hits": {
+            "cpu": false,
+            "kitna": false
+          },
+          "keyword_recall": 0.0,
+          "entity_hits": {
+            "cpu": false
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "hi-01",
+          "group": "hindi",
+          "prompt": "फायरफॉक्स खोलो",
+          "mode": "en",
+          "detected_language": "en",
+          "transcript": "I am a fox hollow",
+          "avg_logprob": -1.404,
+          "first_latency_ms": 1872.2,
+          "latencies_ms": [
+            1872.2
+          ],
+          "median_latency_ms": 1872.2,
+          "postprocessed": "I am a fox hollow",
+          "valid": false,
+          "fail_reason": "GARBAGE",
+          "garbage": true,
+          "low_quality": true,
+          "repeated_hallucination": false,
+          "hallucinated": true,
+          "usable": false,
+          "normalized_command": "I am a fox hollow",
+          "intent_category": "IntentCategory.UNCERTAIN",
+          "actionable": false,
+          "keyword_hits": {
+            "फायरफॉक्स": false,
+            "खोल": false
+          },
+          "keyword_recall": 0.0,
+          "entity_hits": {},
+          "confirmation_word": null
+        },
+        {
+          "id": "hi-01",
+          "group": "hindi",
+          "prompt": "फायरफॉक्स खोलो",
+          "mode": "hi",
+          "detected_language": "hi",
+          "transcript": "पाये पाच्खोलो",
+          "avg_logprob": -0.756,
+          "first_latency_ms": 1900.1,
+          "latencies_ms": [
+            1900.1
+          ],
+          "median_latency_ms": 1900.1,
+          "postprocessed": "पाये पाच्खोलो",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "पाये पाच्open",
+          "intent_category": "IntentCategory.CONVERSATIONAL",
+          "actionable": false,
+          "keyword_hits": {
+            "फायरफॉक्स": false,
+            "खोल": true
+          },
+          "keyword_recall": 0.5,
+          "entity_hits": {},
+          "confirmation_word": null
+        },
+        {
+          "id": "hi-02",
+          "group": "hindi",
+          "prompt": "यूट्यूब पर गाना चलाओ",
+          "mode": "en",
+          "detected_language": "en",
+          "transcript": "YouTube for the actual AO",
+          "avg_logprob": -1.622,
+          "first_latency_ms": 1944.9,
+          "latencies_ms": [
+            1944.9
+          ],
+          "median_latency_ms": 1944.9,
+          "postprocessed": "YouTube for the actual AO",
+          "valid": false,
+          "fail_reason": "LOW_CONFIDENCE",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": false,
+          "normalized_command": "youtube for the actual AO",
+          "intent_category": "IntentCategory.UNCERTAIN",
+          "actionable": false,
+          "keyword_hits": {
+            "यूट्यूब": false,
+            "गाना": false,
+            "चलाओ": false
+          },
+          "keyword_recall": 0.0,
+          "entity_hits": {},
+          "confirmation_word": null
+        },
+        {
+          "id": "hi-02",
+          "group": "hindi",
+          "prompt": "यूट्यूब पर गाना चलाओ",
+          "mode": "hi",
+          "detected_language": "hi",
+          "transcript": "यूड़ुपरगा आचो लाओ",
+          "avg_logprob": -0.664,
+          "first_latency_ms": 1990.9,
+          "latencies_ms": [
+            1990.9
+          ],
+          "median_latency_ms": 1990.9,
+          "postprocessed": "यूड़ुपरगा आचो लाओ",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "यूड़ुparगा आचो लाओ",
+          "intent_category": "IntentCategory.CONVERSATIONAL",
+          "actionable": false,
+          "keyword_hits": {
+            "यूट्यूब": false,
+            "गाना": false,
+            "चलाओ": false
+          },
+          "keyword_recall": 0.0,
+          "entity_hits": {},
+          "confirmation_word": null
+        },
+        {
+          "id": "hi-03",
+          "group": "hindi",
+          "prompt": "आवाज़ थोड़ी कम करो",
+          "mode": "en",
+          "detected_language": "en",
+          "transcript": "I'm a story come cut oh",
+          "avg_logprob": -0.722,
+          "first_latency_ms": 1869.4,
+          "latencies_ms": [
+            1869.4
+          ],
+          "median_latency_ms": 1869.4,
+          "postprocessed": "I'm a story come cut oh",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "i am a story come cut oh",
+          "intent_category": "IntentCategory.CONVERSATIONAL",
+          "actionable": false,
+          "keyword_hits": {
+            "कम": false,
+            "करो": false
+          },
+          "keyword_recall": 0.0,
+          "entity_hits": {},
+          "confirmation_word": null
+        },
+        {
+          "id": "hi-03",
+          "group": "hindi",
+          "prompt": "आवाज़ थोड़ी कम करो",
+          "mode": "hi",
+          "detected_language": "hi",
+          "transcript": "आमा वाज़ोगी कम कगो",
+          "avg_logprob": -0.952,
+          "first_latency_ms": 2032.4,
+          "latencies_ms": [
+            2032.4
+          ],
+          "median_latency_ms": 2032.4,
+          "postprocessed": "आमा वाज़ोगी कम कगो",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "आमा वाज़ोगी kam कगो",
+          "intent_category": "IntentCategory.CONVERSATIONAL",
+          "actionable": false,
+          "keyword_hits": {
+            "कम": true,
+            "करो": false
+          },
+          "keyword_recall": 0.5,
+          "entity_hits": {},
+          "confirmation_word": null
+        },
+        {
+          "id": "mx-01",
+          "group": "mixed",
+          "prompt": "YouTube pe Arijit Singh ka song chalao",
+          "mode": "en",
+          "detected_language": "en",
+          "transcript": "YouTube PRidgetSyncArsonChannel",
+          "avg_logprob": -1.05,
+          "first_latency_ms": 1905.0,
+          "latencies_ms": [
+            1905.0
+          ],
+          "median_latency_ms": 1905.0,
+          "postprocessed": "YouTube PRidgetSyncArsonChannel",
+          "valid": false,
+          "fail_reason": "LOW_CONFIDENCE",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": false,
+          "normalized_command": "youtube PRidgetSyncArsonChannel",
+          "intent_category": "IntentCategory.UNCERTAIN",
+          "actionable": false,
+          "keyword_hits": {
+            "youtube": true,
+            "arijit": false,
+            "singh": false,
+            "chalao": false
+          },
+          "keyword_recall": 0.25,
+          "entity_hits": {
+            "youtube": true,
+            "arijit": false
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "mx-01",
+          "group": "mixed",
+          "prompt": "YouTube pe Arijit Singh ka song chalao",
+          "mode": "hi",
+          "detected_language": "hi",
+          "transcript": "यूट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्�",
+          "avg_logprob": -0.145,
+          "first_latency_ms": 4644.1,
+          "latencies_ms": [
+            4644.1
+          ],
+          "median_latency_ms": 4644.1,
+          "postprocessed": "यूट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्�",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": true,
+          "repeated_hallucination": false,
+          "hallucinated": true,
+          "usable": false,
+          "normalized_command": "यूट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्ट्�",
+          "intent_category": "IntentCategory.UNCERTAIN",
+          "actionable": false,
+          "keyword_hits": {
+            "youtube": false,
+            "arijit": false,
+            "singh": false,
+            "chalao": false
+          },
+          "keyword_recall": 0.0,
+          "entity_hits": {
+            "youtube": false,
+            "arijit": false
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "mx-02",
+          "group": "mixed",
+          "prompt": "Firefox mein GitHub kholo",
+          "mode": "en",
+          "detected_language": "en",
+          "transcript": "Firefox main GitHub colo",
+          "avg_logprob": -0.607,
+          "first_latency_ms": 1718.6,
+          "latencies_ms": [
+            1718.6
+          ],
+          "median_latency_ms": 1718.6,
+          "postprocessed": "Firefox main GitHub colo",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "firefox main github colo",
+          "intent_category": "IntentCategory.CONVERSATIONAL",
+          "actionable": false,
+          "keyword_hits": {
+            "firefox": true,
+            "github": true,
+            "khol": false
+          },
+          "keyword_recall": 0.6666666666666666,
+          "entity_hits": {
+            "firefox": true,
+            "github": true
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "mx-02",
+          "group": "mixed",
+          "prompt": "Firefox mein GitHub kholo",
+          "mode": "hi",
+          "detected_language": "hi",
+          "transcript": "अप आप आप वाख़ में गिट ख़ब कोलों",
+          "avg_logprob": -0.953,
+          "first_latency_ms": 2116.6,
+          "latencies_ms": [
+            2116.6
+          ],
+          "median_latency_ms": 2116.6,
+          "postprocessed": "अप आप वाख़ में गिट ख़ब कोलों",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "अप आप वाख़ on गिट ख़ब कोलों",
+          "intent_category": "IntentCategory.CONVERSATIONAL",
+          "actionable": false,
+          "keyword_hits": {
+            "firefox": false,
+            "github": false,
+            "khol": false
+          },
+          "keyword_recall": 0.0,
+          "entity_hits": {
+            "firefox": false,
+            "github": false
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "amb-01",
+          "group": "ambiguous",
+          "prompt": "play thodi der on youtube",
+          "mode": "en",
+          "detected_language": "en",
+          "transcript": "Play so did they're on YouTube.",
+          "avg_logprob": -0.535,
+          "first_latency_ms": 1749.3,
+          "latencies_ms": [
+            1749.3
+          ],
+          "median_latency_ms": 1749.3,
+          "postprocessed": "Play so did they're on YouTube",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "play so did they are on youtube",
+          "intent_category": "IntentCategory.DETERMINISTIC_COMMAND",
+          "actionable": true,
+          "keyword_hits": {
+            "play": true,
+            "youtube": true
+          },
+          "keyword_recall": 1.0,
+          "entity_hits": {
+            "youtube": true
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "amb-01",
+          "group": "ambiguous",
+          "prompt": "play thodi der on youtube",
+          "mode": "hi",
+          "detected_language": "hi",
+          "transcript": "प्लेशो दिभेर अन उटुब",
+          "avg_logprob": -0.681,
+          "first_latency_ms": 1964.9,
+          "latencies_ms": [
+            1964.9
+          ],
+          "median_latency_ms": 1964.9,
+          "postprocessed": "प्लेशो दिभेर अन उटुब",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "प्लेशो दिभेर अन उटुब",
+          "intent_category": "IntentCategory.CONVERSATIONAL",
+          "actionable": false,
+          "keyword_hits": {
+            "play": false,
+            "youtube": false
+          },
+          "keyword_recall": 0.0,
+          "entity_hits": {
+            "youtube": false
+          },
+          "confirmation_word": null
+        }
+      ],
+      "stats_en": {
+        "n": 14,
+        "usable_rate": 0.7143,
+        "keyword_recall_mean": 0.4821,
+        "median_ms": 1775.2,
+        "p95_ms": 2221.0,
+        "max_ms": 2221.0
+      },
+      "stats_hi": {
+        "n": 14,
+        "usable_rate": 0.8571,
+        "keyword_recall_mean": 0.0714,
+        "median_ms": 2025.2,
+        "p95_ms": 4661.8,
+        "max_ms": 4661.8
+      }
+    },
+    "turbo": {
+      "repo": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
+      "meta": {
+        "repo": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
+        "size": "large-v3-turbo (810M params, ~1.6GB)",
+        "langs": "multilingual (99+)",
+        "license": "conversion of OpenAI whisper-large-v3-turbo (MIT+Apache-2.0 parts)"
+      },
+      "load_ms": 165602.8,
+      "ram_delta_mb": 1386.4,
+      "gpu_delta_mb": 0.0,
+      "utterances": [
+        {
+          "id": "en-01",
+          "group": "en",
+          "prompt": "Open Firefox",
+          "mode": "en",
+          "detected_language": "en",
+          "transcript": "Open Firefox.",
+          "avg_logprob": -0.299,
+          "first_latency_ms": 8179.4,
+          "latencies_ms": [
+            8179.4
+          ],
+          "median_latency_ms": 8179.4,
+          "postprocessed": "Open Firefox",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "Open firefox",
+          "intent_category": "IntentCategory.DETERMINISTIC_COMMAND",
+          "actionable": true,
+          "keyword_hits": {
+            "firefox": true
+          },
+          "keyword_recall": 1.0,
+          "entity_hits": {
+            "firefox": true
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "en-01",
+          "group": "en",
+          "prompt": "Open Firefox",
+          "mode": "hi",
+          "detected_language": "hi",
+          "transcript": "अपन फिरफॉक्स",
+          "avg_logprob": -0.603,
+          "first_latency_ms": 8124.1,
+          "latencies_ms": [
+            8124.1
+          ],
+          "median_latency_ms": 8124.1,
+          "postprocessed": "अपन फिरफॉक्स",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "अपन फिरफॉक्स",
+          "intent_category": "IntentCategory.CONVERSATIONAL",
+          "actionable": false,
+          "keyword_hits": {
+            "firefox": false
+          },
+          "keyword_recall": 0.0,
+          "entity_hits": {
+            "firefox": false
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "en-02",
+          "group": "en",
+          "prompt": "Open the terminal",
+          "mode": "en",
+          "detected_language": "en",
+          "transcript": "Open the terminal.",
+          "avg_logprob": -0.193,
+          "first_latency_ms": 8008.3,
+          "latencies_ms": [
+            8008.3
+          ],
+          "median_latency_ms": 8008.3,
+          "postprocessed": "Open the terminal",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "open terminal",
+          "intent_category": "IntentCategory.DETERMINISTIC_COMMAND",
+          "actionable": true,
+          "keyword_hits": {
+            "terminal": true
+          },
+          "keyword_recall": 1.0,
+          "entity_hits": {
+            "terminal": true
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "en-02",
+          "group": "en",
+          "prompt": "Open the terminal",
+          "mode": "hi",
+          "detected_language": "hi",
+          "transcript": "अब अब अब अब अब अब अब अब अब अब अब अब अब अब",
+          "avg_logprob": -0.564,
+          "first_latency_ms": 8586.5,
+          "latencies_ms": [
+            8586.5
+          ],
+          "median_latency_ms": 8586.5,
+          "postprocessed": "अब अब अब अब अब अब अब",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "अब अब अब अब",
+          "intent_category": "IntentCategory.UNCERTAIN",
+          "actionable": false,
+          "keyword_hits": {
+            "terminal": false
+          },
+          "keyword_recall": 0.0,
+          "entity_hits": {
+            "terminal": false
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "en-03",
+          "group": "en",
+          "prompt": "Play Believer on YouTube",
+          "mode": "en",
+          "detected_language": "en",
+          "transcript": "Play Believer on YouTube.",
+          "avg_logprob": -0.183,
+          "first_latency_ms": 8011.9,
+          "latencies_ms": [
+            8011.9
+          ],
+          "median_latency_ms": 8011.9,
+          "postprocessed": "Play Believer on YouTube",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "play believer on youtube",
+          "intent_category": "IntentCategory.DETERMINISTIC_COMMAND",
+          "actionable": true,
+          "keyword_hits": {
+            "believer": true,
+            "youtube": true
+          },
+          "keyword_recall": 1.0,
+          "entity_hits": {
+            "youtube": true,
+            "believer": true
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "en-03",
+          "group": "en",
+          "prompt": "Play Believer on YouTube",
+          "mode": "hi",
+          "detected_language": "hi",
+          "transcript": "Playbeliever on YouTube",
+          "avg_logprob": -0.356,
+          "first_latency_ms": 8466.2,
+          "latencies_ms": [
+            8466.2
+          ],
+          "median_latency_ms": 8466.2,
+          "postprocessed": "Playbeliever on YouTube",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "playbeliever on youtube",
+          "intent_category": "IntentCategory.CONVERSATIONAL",
+          "actionable": false,
+          "keyword_hits": {
+            "believer": true,
+            "youtube": true
+          },
+          "keyword_recall": 1.0,
+          "entity_hits": {
+            "youtube": true,
+            "believer": true
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "en-04",
+          "group": "en",
+          "prompt": "What's my RAM?",
+          "mode": "en",
+          "detected_language": "en",
+          "transcript": "What's my R.A.M?",
+          "avg_logprob": -0.175,
+          "first_latency_ms": 8882.0,
+          "latencies_ms": [
+            8882.0
+          ],
+          "median_latency_ms": 8882.0,
+          "postprocessed": "What's my R.A.M",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "search my r.a.m",
+          "intent_category": "IntentCategory.SEARCH_REQUEST",
+          "actionable": true,
+          "keyword_hits": {
+            "ram": false
+          },
+          "keyword_recall": 0.0,
+          "entity_hits": {
+            "ram": false
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "en-04",
+          "group": "en",
+          "prompt": "What's my RAM?",
+          "mode": "hi",
+          "detected_language": "hi",
+          "transcript": "वाट्समयरेम",
+          "avg_logprob": -0.689,
+          "first_latency_ms": 8880.8,
+          "latencies_ms": [
+            8880.8
+          ],
+          "median_latency_ms": 8880.8,
+          "postprocessed": "वाट्समयरेम",
+          "valid": false,
+          "fail_reason": "LOW_CONFIDENCE",
+          "garbage": false,
+          "low_quality": true,
+          "repeated_hallucination": false,
+          "hallucinated": true,
+          "usable": false,
+          "normalized_command": "वाट्समयरेम",
+          "intent_category": "IntentCategory.UNCERTAIN",
+          "actionable": false,
+          "keyword_hits": {
+            "ram": false
+          },
+          "keyword_recall": 0.0,
+          "entity_hits": {
+            "ram": false
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "hx-01",
+          "group": "hinglish",
+          "prompt": "Firefox kholo",
+          "mode": "en",
+          "detected_language": "en",
+          "transcript": "Firefox go low",
+          "avg_logprob": -0.694,
+          "first_latency_ms": 9034.7,
+          "latencies_ms": [
+            9034.7
+          ],
+          "median_latency_ms": 9034.7,
+          "postprocessed": "Firefox go low",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "firefox go low",
+          "intent_category": "IntentCategory.CONVERSATIONAL",
+          "actionable": false,
+          "keyword_hits": {
+            "firefox": true,
+            "khol": false
+          },
+          "keyword_recall": 0.5,
+          "entity_hits": {
+            "firefox": true
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "hx-01",
+          "group": "hinglish",
+          "prompt": "Firefox kholo",
+          "mode": "hi",
+          "detected_language": "hi",
+          "transcript": "फईफखक्स कोलो",
+          "avg_logprob": -0.569,
+          "first_latency_ms": 8826.1,
+          "latencies_ms": [
+            8826.1
+          ],
+          "median_latency_ms": 8826.1,
+          "postprocessed": "फईफखक्स कोलो",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "फईफखक्स कोलो",
+          "intent_category": "IntentCategory.CONVERSATIONAL",
+          "actionable": false,
+          "keyword_hits": {
+            "firefox": false,
+            "khol": false
+          },
+          "keyword_recall": 0.0,
+          "entity_hits": {
+            "firefox": false
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "hx-02",
+          "group": "hinglish",
+          "prompt": "YouTube pe Believer chalao",
+          "mode": "en",
+          "detected_language": "en",
+          "transcript": "YouTube Bebeliever shoutout",
+          "avg_logprob": -0.718,
+          "first_latency_ms": 8239.0,
+          "latencies_ms": [
+            8239.0
+          ],
+          "median_latency_ms": 8239.0,
+          "postprocessed": "YouTube Bebeliever shoutout",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "youtube Bebeliever shoutout",
+          "intent_category": "IntentCategory.CONVERSATIONAL",
+          "actionable": false,
+          "keyword_hits": {
+            "youtube": true,
+            "believer": true,
+            "chalao": false
+          },
+          "keyword_recall": 0.6666666666666666,
+          "entity_hits": {
+            "youtube": true,
+            "believer": true
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "hx-02",
+          "group": "hinglish",
+          "prompt": "YouTube pe Believer chalao",
+          "mode": "hi",
+          "detected_language": "hi",
+          "transcript": "YouTube पीबलीवर चालाओ",
+          "avg_logprob": -0.531,
+          "first_latency_ms": 8396.9,
+          "latencies_ms": [
+            8396.9
+          ],
+          "median_latency_ms": 8396.9,
+          "postprocessed": "YouTube पीबलीवर चालाओ",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "youtube पीबलीवर चालाओ",
+          "intent_category": "IntentCategory.CONVERSATIONAL",
+          "actionable": false,
+          "keyword_hits": {
+            "youtube": true,
+            "believer": false,
+            "chalao": false
+          },
+          "keyword_recall": 0.3333333333333333,
+          "entity_hits": {
+            "youtube": true,
+            "believer": false
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "hx-03",
+          "group": "hinglish",
+          "prompt": "Volume thoda kam karo",
+          "mode": "en",
+          "detected_language": "en",
+          "transcript": "Volume Fodacam Karo",
+          "avg_logprob": -0.605,
+          "first_latency_ms": 8400.1,
+          "latencies_ms": [
+            8400.1
+          ],
+          "median_latency_ms": 8400.1,
+          "postprocessed": "Volume Fodacam Karo",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "Volume Fodacam Karo",
+          "intent_category": "IntentCategory.DETERMINISTIC_COMMAND",
+          "actionable": true,
+          "keyword_hits": {
+            "volume": true,
+            "kam": false
+          },
+          "keyword_recall": 0.5,
+          "entity_hits": {
+            "volume": true
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "hx-03",
+          "group": "hinglish",
+          "prompt": "Volume thoda kam karo",
+          "mode": "hi",
+          "detected_language": "hi",
+          "transcript": "वोल्यूम्टोड़काम्टरो",
+          "avg_logprob": -0.653,
+          "first_latency_ms": 8540.9,
+          "latencies_ms": [
+            8540.9
+          ],
+          "median_latency_ms": 8540.9,
+          "postprocessed": "वोल्यूम्टोड़काम्टरो",
+          "valid": false,
+          "fail_reason": "LOW_CONFIDENCE",
+          "garbage": false,
+          "low_quality": true,
+          "repeated_hallucination": false,
+          "hallucinated": true,
+          "usable": false,
+          "normalized_command": "वोल्यूम्टोड़काम्टरो",
+          "intent_category": "IntentCategory.UNCERTAIN",
+          "actionable": false,
+          "keyword_hits": {
+            "volume": false,
+            "kam": false
+          },
+          "keyword_recall": 0.0,
+          "entity_hits": {
+            "volume": false
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "hx-04",
+          "group": "hinglish",
+          "prompt": "Mera CPU kitna use ho raha hai",
+          "mode": "en",
+          "detected_language": "en",
+          "transcript": "Mirror CPU kit the use for offer high",
+          "avg_logprob": -0.855,
+          "first_latency_ms": 8324.5,
+          "latencies_ms": [
+            8324.5
+          ],
+          "median_latency_ms": 8324.5,
+          "postprocessed": "Mirror CPU kit the use for offer high",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "Mirror CPU kit the use for offer high",
+          "intent_category": "IntentCategory.CONVERSATIONAL",
+          "actionable": false,
+          "keyword_hits": {
+            "cpu": true,
+            "kitna": false
+          },
+          "keyword_recall": 0.5,
+          "entity_hits": {
+            "cpu": true
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "hx-04",
+          "group": "hinglish",
+          "prompt": "Mera CPU kitna use ho raha hai",
+          "mode": "hi",
+          "detected_language": "hi",
+          "transcript": "मेरा CPU कित अउस फो रफ़ा है",
+          "avg_logprob": -0.625,
+          "first_latency_ms": 8848.3,
+          "latencies_ms": [
+            8848.3
+          ],
+          "median_latency_ms": 8848.3,
+          "postprocessed": "मेरा CPU कित अउस फो रफ़ा है",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "mera CPU कित अउस फो रफ़ा hai",
+          "intent_category": "IntentCategory.CONVERSATIONAL",
+          "actionable": false,
+          "keyword_hits": {
+            "cpu": true,
+            "kitna": false
+          },
+          "keyword_recall": 0.5,
+          "entity_hits": {
+            "cpu": true
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "hi-01",
+          "group": "hindi",
+          "prompt": "फायरफॉक्स खोलो",
+          "mode": "en",
+          "detected_language": "en",
+          "transcript": "Firepots call-o.",
+          "avg_logprob": -1.123,
+          "first_latency_ms": 8329.8,
+          "latencies_ms": [
+            8329.8
+          ],
+          "median_latency_ms": 8329.8,
+          "postprocessed": "Firepots call-o",
+          "valid": false,
+          "fail_reason": "LOW_CONFIDENCE",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": false,
+          "normalized_command": "Firepots call-o",
+          "intent_category": "IntentCategory.UNCERTAIN",
+          "actionable": false,
+          "keyword_hits": {
+            "फायरफॉक्स": false,
+            "खोल": false
+          },
+          "keyword_recall": 0.0,
+          "entity_hits": {},
+          "confirmation_word": null
+        },
+        {
+          "id": "hi-01",
+          "group": "hindi",
+          "prompt": "फायरफॉक्स खोलो",
+          "mode": "hi",
+          "detected_language": "hi",
+          "transcript": "पाय पोड़ को लो",
+          "avg_logprob": -0.531,
+          "first_latency_ms": 8457.2,
+          "latencies_ms": [
+            8457.2
+          ],
+          "median_latency_ms": 8457.2,
+          "postprocessed": "पाय पोड़ को लो",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "पाय पोड़ को लो",
+          "intent_category": "IntentCategory.CONVERSATIONAL",
+          "actionable": false,
+          "keyword_hits": {
+            "फायरफॉक्स": false,
+            "खोल": false
+          },
+          "keyword_recall": 0.0,
+          "entity_hits": {},
+          "confirmation_word": null
+        },
+        {
+          "id": "hi-02",
+          "group": "hindi",
+          "prompt": "यूट्यूब पर गाना चलाओ",
+          "mode": "en",
+          "detected_language": "en",
+          "transcript": "YouTube Parada Cholao",
+          "avg_logprob": -1.322,
+          "first_latency_ms": 8708.7,
+          "latencies_ms": [
+            8708.7
+          ],
+          "median_latency_ms": 8708.7,
+          "postprocessed": "YouTube Parada Cholao",
+          "valid": false,
+          "fail_reason": "LOW_CONFIDENCE",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": false,
+          "normalized_command": "youtube Parada Cholao",
+          "intent_category": "IntentCategory.UNCERTAIN",
+          "actionable": false,
+          "keyword_hits": {
+            "यूट्यूब": false,
+            "गाना": false,
+            "चलाओ": false
+          },
+          "keyword_recall": 0.0,
+          "entity_hits": {},
+          "confirmation_word": null
+        },
+        {
+          "id": "hi-02",
+          "group": "hindi",
+          "prompt": "यूट्यूब पर गाना चलाओ",
+          "mode": "hi",
+          "detected_language": "hi",
+          "transcript": "YouTube पर्दादा चलाओ",
+          "avg_logprob": -0.449,
+          "first_latency_ms": 8706.2,
+          "latencies_ms": [
+            8706.2
+          ],
+          "median_latency_ms": 8706.2,
+          "postprocessed": "YouTube पर्दादा चलाओ",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "play on youtube्दादा",
+          "intent_category": "IntentCategory.DETERMINISTIC_COMMAND",
+          "actionable": true,
+          "keyword_hits": {
+            "यूट्यूब": false,
+            "गाना": false,
+            "चलाओ": true
+          },
+          "keyword_recall": 0.3333333333333333,
+          "entity_hits": {},
+          "confirmation_word": null
+        },
+        {
+          "id": "hi-03",
+          "group": "hindi",
+          "prompt": "आवाज़ थोड़ी कम करो",
+          "mode": "en",
+          "detected_language": "en",
+          "transcript": "I'm a story come cut.",
+          "avg_logprob": -0.974,
+          "first_latency_ms": 8471.0,
+          "latencies_ms": [
+            8471.0
+          ],
+          "median_latency_ms": 8471.0,
+          "postprocessed": "I'm a story come cut",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "i am a story come cut",
+          "intent_category": "IntentCategory.CONVERSATIONAL",
+          "actionable": false,
+          "keyword_hits": {
+            "कम": false,
+            "करो": false
+          },
+          "keyword_recall": 0.0,
+          "entity_hits": {},
+          "confirmation_word": null
+        },
+        {
+          "id": "hi-03",
+          "group": "hindi",
+          "prompt": "आवाज़ थोड़ी कम करो",
+          "mode": "hi",
+          "detected_language": "hi",
+          "transcript": "आमास तो लिकाम का गो",
+          "avg_logprob": -0.668,
+          "first_latency_ms": 9120.4,
+          "latencies_ms": [
+            9120.4
+          ],
+          "median_latency_ms": 9120.4,
+          "postprocessed": "आमास तो लिकाम का गो",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "आमास तो लिकाम का गो",
+          "intent_category": "IntentCategory.CONVERSATIONAL",
+          "actionable": false,
+          "keyword_hits": {
+            "कम": false,
+            "करो": false
+          },
+          "keyword_recall": 0.0,
+          "entity_hits": {},
+          "confirmation_word": null
+        },
+        {
+          "id": "mx-01",
+          "group": "mixed",
+          "prompt": "YouTube pe Arijit Singh ka song chalao",
+          "mode": "en",
+          "detected_language": "en",
+          "transcript": "YouTube PRGIT SYNCAS ON CHALLOW",
+          "avg_logprob": -0.901,
+          "first_latency_ms": 8970.2,
+          "latencies_ms": [
+            8970.2
+          ],
+          "median_latency_ms": 8970.2,
+          "postprocessed": "YouTube PRGIT SYNCAS ON CHALLOW",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "youtube PRGIT SYNCAS ON CHALLOW",
+          "intent_category": "IntentCategory.CONVERSATIONAL",
+          "actionable": false,
+          "keyword_hits": {
+            "youtube": true,
+            "arijit": false,
+            "singh": false,
+            "chalao": false
+          },
+          "keyword_recall": 0.25,
+          "entity_hits": {
+            "youtube": true,
+            "arijit": false
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "mx-01",
+          "group": "mixed",
+          "prompt": "YouTube pe Arijit Singh ka song chalao",
+          "mode": "hi",
+          "detected_language": "hi",
+          "transcript": "YouTube PR इजट सिंकास नचालो",
+          "avg_logprob": -0.57,
+          "first_latency_ms": 8221.4,
+          "latencies_ms": [
+            8221.4
+          ],
+          "median_latency_ms": 8221.4,
+          "postprocessed": "YouTube PR इजट सिंकास नचालो",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "youtube PR इजट सिंकास नचालो",
+          "intent_category": "IntentCategory.CONVERSATIONAL",
+          "actionable": false,
+          "keyword_hits": {
+            "youtube": true,
+            "arijit": false,
+            "singh": false,
+            "chalao": false
+          },
+          "keyword_recall": 0.25,
+          "entity_hits": {
+            "youtube": true,
+            "arijit": false
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "mx-02",
+          "group": "mixed",
+          "prompt": "Firefox mein GitHub kholo",
+          "mode": "en",
+          "detected_language": "en",
+          "transcript": "Firefox main github colo",
+          "avg_logprob": -0.427,
+          "first_latency_ms": 8004.7,
+          "latencies_ms": [
+            8004.7
+          ],
+          "median_latency_ms": 8004.7,
+          "postprocessed": "Firefox main github colo",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "firefox main github colo",
+          "intent_category": "IntentCategory.CONVERSATIONAL",
+          "actionable": false,
+          "keyword_hits": {
+            "firefox": true,
+            "github": true,
+            "khol": false
+          },
+          "keyword_recall": 0.6666666666666666,
+          "entity_hits": {
+            "firefox": true,
+            "github": true
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "mx-02",
+          "group": "mixed",
+          "prompt": "Firefox mein GitHub kholo",
+          "mode": "hi",
+          "detected_language": "hi",
+          "transcript": "Firefox main GitHub Kolo",
+          "avg_logprob": -0.71,
+          "first_latency_ms": 7980.2,
+          "latencies_ms": [
+            7980.2
+          ],
+          "median_latency_ms": 7980.2,
+          "postprocessed": "Firefox main GitHub Kolo",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "firefox main github Kolo",
+          "intent_category": "IntentCategory.CONVERSATIONAL",
+          "actionable": false,
+          "keyword_hits": {
+            "firefox": true,
+            "github": true,
+            "khol": false
+          },
+          "keyword_recall": 0.6666666666666666,
+          "entity_hits": {
+            "firefox": true,
+            "github": true
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "amb-01",
+          "group": "ambiguous",
+          "prompt": "play thodi der on youtube",
+          "mode": "en",
+          "detected_language": "en",
+          "transcript": "Play Fodider on YouTube.",
+          "avg_logprob": -0.623,
+          "first_latency_ms": 7995.7,
+          "latencies_ms": [
+            7995.7
+          ],
+          "median_latency_ms": 7995.7,
+          "postprocessed": "Play Fodider on YouTube",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "play fodider on youtube",
+          "intent_category": "IntentCategory.DETERMINISTIC_COMMAND",
+          "actionable": true,
+          "keyword_hits": {
+            "play": true,
+            "youtube": true
+          },
+          "keyword_recall": 1.0,
+          "entity_hits": {
+            "youtube": true
+          },
+          "confirmation_word": null
+        },
+        {
+          "id": "amb-01",
+          "group": "ambiguous",
+          "prompt": "play thodi der on youtube",
+          "mode": "hi",
+          "detected_language": "hi",
+          "transcript": "व्लेफोदीबर नूटूब",
+          "avg_logprob": -0.599,
+          "first_latency_ms": 8180.9,
+          "latencies_ms": [
+            8180.9
+          ],
+          "median_latency_ms": 8180.9,
+          "postprocessed": "व्लेफोदीबर नूटूब",
+          "valid": true,
+          "fail_reason": "",
+          "garbage": false,
+          "low_quality": false,
+          "repeated_hallucination": false,
+          "hallucinated": false,
+          "usable": true,
+          "normalized_command": "व्लेफोदीबर नूटूब",
+          "intent_category": "IntentCategory.CONVERSATIONAL",
+          "actionable": false,
+          "keyword_hits": {
+            "play": false,
+            "youtube": false
+          },
+          "keyword_recall": 0.0,
+          "entity_hits": {
+            "youtube": false
+          },
+          "confirmation_word": null
+        }
+      ],
+      "stats_en": {
+        "n": 14,
+        "usable_rate": 0.8571,
+        "keyword_recall_mean": 0.506,
+        "median_ms": 8327.1,
+        "p95_ms": 9034.7,
+        "max_ms": 9034.7
+      },
+      "stats_hi": {
+        "n": 14,
+        "usable_rate": 0.8571,
+        "keyword_recall_mean": 0.2202,
+        "median_ms": 8503.5,
+        "p95_ms": 9120.4,
+        "max_ms": 9120.4
+      }
+    }
+  },
+  "process_ram_mb": {
+    "before": 128.2,
+    "after": 321.5,
+    "after_small": 716.7,
+    "after_turbo": 1391.7
+  }
+}

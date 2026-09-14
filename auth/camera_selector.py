@@ -43,18 +43,16 @@ SELECTION_PATH = DATA_DIR / "camera_selection.json"
 V4L2_CAP_VIDEO_CAPTURE = 0x00000001
 
 EXTERNAL_NAME_CUES = (
-    "zeb live pro", "zeb_live_pro", "logitech", "brio",
-    "c920", "c922", "c925", "streamcam", "external",
+    "external",
 )
 INTERNAL_NAME_CUES = (
-    "usb2.0 hd uvc webcam", "integrated camera", "hd camera",
-    "internal", "built-in", "builtin",
+    "integrated camera", "internal", "built-in", "builtin",
+    "uvc webcam", "hd uvc",
 )
-DEVICE_ALIASES = {
-    "zeb live pro": "ZEB LIVE PRO",
-    "usb2.0 hd uvc webcam": "USB2.0 HD UVC WebCam",
-    "usb2.0 hd uvc": "USB2.0 HD UVC WebCam",
-}
+# DEPRECATED: friendly labels are derived from each device's OWN runtime
+# metadata (see `CameraDevice.label`). Kept as an empty table so existing
+# imports keep working — product names are NEVER hardcoded here.
+DEVICE_ALIASES: dict = {}
 PROBE_MAX_FRAMES = 12
 PROBE_TIMEOUT_S = 3.0
 RESOLVE_TTL_S = 30.0
@@ -77,11 +75,19 @@ class CameraDevice:
 
     @property
     def label(self) -> str:
-        n = (self.name or "").strip().lower()
-        for key, lbl in DEVICE_ALIASES.items():
-            if key in n:
-                return lbl
-        return self.name.strip() or f"Camera {self.index}"
+        """Human-friendly label derived from the device's OWN runtime
+        metadata (product token of the V4L2 name / by-id symlink).
+
+        No alias tables, no hardcoded product names: whatever the connected
+        hardware reports is what the user sees.
+        """
+        label = ""
+        try:
+            from voice.runtime_devices import camera_friendly_name
+            label = camera_friendly_name(self.name, self.by_id_path)
+        except Exception:
+            label = ""
+        return label or (self.name or "").strip() or f"Camera {self.index}"
 
     @property
     def identity(self) -> str:
@@ -151,13 +157,42 @@ def _usb_path_for_index(index: int) -> str:
     return ""
 
 
-def _classify_external(name: str, by_id: str, usb_path: str) -> bool:
+def _integration_for_index(index: int, name: str) -> str:
+    """udev ID_INTEGRATION semantics from sysfs (best effort, no subprocess).
+
+    Trusted ONLY when the sysfs name matches the enumerated name, so a
+    stale/faked topology can never inject foreign metadata.
+    """
+    try:
+        from voice.runtime_devices import read_video_metadata
+        meta = read_video_metadata(int(index))
+    except Exception:
+        return ""
+    sysfs_name = str(meta.get("v4l_name") or "").strip()
+    if not sysfs_name or sysfs_name != (name or "").strip():
+        return ""
+    return str(meta.get("integration") or "")
+
+
+def _classify_external(name: str, by_id: str, usb_path: str,
+                       integration: str = "") -> bool:
+    """Generic external/internal classification (no product hardcodes).
+
+    Priority: runtime integration metadata (USB `removable` / bus) →
+    structural name cues → presence of a USB/by-id identity.
+    """
+    try:
+        from voice.runtime_devices import classify_camera_external
+        return classify_camera_external(name, by_id, usb_path, integration)
+    except Exception:
+        pass
     blob = f"{name} {by_id} {usb_path}".lower()
     if any(c in blob for c in EXTERNAL_NAME_CUES):
         return True
     if any(c in blob for c in INTERNAL_NAME_CUES):
         return False
     return bool(usb_path or by_id)
+
 class CameraSelector:
     """Enumerate, validate, select and persist a camera device."""
 
@@ -185,7 +220,8 @@ class CameraSelector:
             if by_id and "-index1" in by_id:
                 continue   # metadata-only node
             capture_capable = caps == 0 or bool(caps & V4L2_CAP_VIDEO_CAPTURE)
-            external = _classify_external(name, by_id, usb)
+            external = _classify_external(name, by_id, usb,
+                                          _integration_for_index(idx, name))
             devices.append(CameraDevice(
                 index=idx, path=f"/dev/video{idx}", name=name, caps=caps,
                 capture_capable=capture_capable, by_id_path=by_id,
@@ -197,7 +233,7 @@ class CameraSelector:
 
         The capture is initialized the SAME way the production face-auth
         pipeline initializes it (V4L2 backend, 640x480@30, MJPEG, buffersize
-        1). Some UVC cameras (e.g. the ZEB LIVE PRO) select()-time-out if the
+        1). Some UVC cameras select()-time-out if the
         format is not set before the first read, so probing WITHOUT these
         settings would falsely reject a camera the pipeline CAN use.
 

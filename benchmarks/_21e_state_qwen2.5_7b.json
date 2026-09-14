@@ -1,0 +1,45 @@
+{
+ "calls": {
+  "plan": [
+   {
+    "case": "A",
+    "status": "ok",
+    "latency_s": 17.098,
+    "model": "qwen2.5:7b",
+    "error": "",
+    "input_tokens": 321,
+    "output_tokens": 82,
+    "data_keys": [
+     "assumptions",
+     "constraints",
+     "needs_input",
+     "plan",
+     "question"
+    ],
+    "raw": "{\"plan\": [{\"action\": \"open_folder\", \"params\": {}, \"description\": \"Open the file manager\"}], \"assumptions\": [\"The desktop environment supports opening folders as a method to open the file manager.\"], \"constraints\": [\"Actions must be selected from the provided list.\", \"No external execution is performed by the assistant.\"], \"needs_input\": false, \"question\": \"\"}",
+    "data": {
+     "plan": [
+      {
+       "action": "open_folder",
+       "params": {},
+       "description": "Open the file manager"
+      }
+     ],
+     "assumptions": [
+      "The desktop environment supports opening folders as a method to open the file manager."
+     ],
+     "constraints": [
+      "Actions must be selected from the provided list.",
+      "No external execution is performed by the assistant."
+     ],
+     "needs_input": false,
+     "question": ""
+    }
+   }
+  ],
+  "revise": [],
+  "diagnose": [],
+  "reflect": []
+ },
+ "reps_done": 0
+}

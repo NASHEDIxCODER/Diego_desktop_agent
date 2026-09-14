@@ -111,6 +111,23 @@ class ActionDispatcher:
         if name == "read_screen":
             return await self._read_screen(params)
 
+        # ── Real browser URL observation (reliability layer, 2026-09-13) ──
+        # Evidence for GOAL-level navigation verification. Reads the
+        # ACTUAL focused browser tab via the OS (same source as the
+        # desktop-state feature) — never guesses.
+        if name == "browser_get_url":
+            try:
+                from services.desktop_state import desktop_state
+                snap = desktop_state.snapshot()
+                url = getattr(snap, "browser_url", "") or ""
+                title = getattr(snap, "browser_tab", "") or ""
+                if url:
+                    return f"Browser URL: {url} (tab: {title})"
+                return "Couldn't observe the browser URL (no focused browser tab)."
+            except Exception as e:
+                logger.warning("[ACTIONS] browser_get_url failed: %s", e)
+                return "Couldn't observe the browser URL."
+
         # ── Real web research (2026-08-30 hardening) ──
         # "search for X" must actually search, extract content, and answer —
         # never stop at opening the browser.
