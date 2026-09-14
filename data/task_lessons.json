@@ -47,11 +47,11 @@
    "lesson": "strategy that worked: desktop_open → open_folder",
    "evidence": "verified_success",
    "confidence": 0.05,
-   "timestamp": 1789210119.2127342,
+   "timestamp": 1789300919.9739835,
    "source_task_id": "f196156e43d5",
-   "reuse_count": 93,
+   "reuse_count": 97,
    "successes": 36,
-   "failures": 57
+   "failures": 61
   },
   {
    "id": "fe453af215",
@@ -59,12 +59,12 @@
    "task_pattern": "open_application",
    "lesson": "firefox launches reliably via desktop_open on this system",
    "evidence": "verified_success",
-   "confidence": 0.15,
-   "timestamp": 1789210119.213047,
+   "confidence": 0.25,
+   "timestamp": 1789311520.6686513,
    "source_task_id": "f196156e43d5",
-   "reuse_count": 254,
-   "successes": 124,
-   "failures": 130
+   "reuse_count": 322,
+   "successes": 152,
+   "failures": 170
   },
   {
    "id": "30796f2fb5",
@@ -73,11 +73,11 @@
    "lesson": "strategy that worked: desktop_open → shutdown",
    "evidence": "verified_success",
    "confidence": 0.05,
-   "timestamp": 1789210037.217014,
+   "timestamp": 1789311520.5177405,
    "source_task_id": "4a9e6a260638",
-   "reuse_count": 24,
+   "reuse_count": 44,
    "successes": 4,
-   "failures": 20
+   "failures": 40
   },
   {
    "id": "5213acf190",
@@ -86,11 +86,11 @@
    "lesson": "strategy that worked: desktop_open → close_app",
    "evidence": "verified_success",
    "confidence": 0.05,
-   "timestamp": 1789210036.0664325,
+   "timestamp": 1789311519.403477,
    "source_task_id": "3dfb48709543",
-   "reuse_count": 20,
+   "reuse_count": 32,
    "successes": 4,
-   "failures": 16
+   "failures": 28
   },
   {
    "id": "0db270a83e",
@@ -98,12 +98,12 @@
    "task_pattern": "open_application",
    "lesson": "strategy that worked: desktop_open → desktop_open",
    "evidence": "verified_success",
-   "confidence": 0.05,
-   "timestamp": 1789210037.3766296,
+   "confidence": 0.15,
+   "timestamp": 1789311520.6683457,
    "source_task_id": "81be4455c9a1",
-   "reuse_count": 29,
+   "reuse_count": 40,
    "successes": 7,
-   "failures": 22
+   "failures": 33
   },
   {
    "id": "58e6503b3a",
@@ -112,11 +112,11 @@
    "lesson": "strategy that worked: desktop_open",
    "evidence": "verified_success",
    "confidence": 0.05,
-   "timestamp": 1789210119.1833365,
+   "timestamp": 1789300919.9463668,
    "source_task_id": "ad38955c54e9",
-   "reuse_count": 47,
+   "reuse_count": 49,
    "successes": 16,
-   "failures": 31
+   "failures": 33
   },
   {
    "id": "4cef51e4cc",
@@ -124,12 +124,12 @@
    "task_pattern": "open_application",
    "lesson": "no verified steps: No further actions could be planned from the current state.",
    "evidence": "verified_failure",
-   "confidence": 0.15,
-   "timestamp": 1789210117.7953935,
+   "confidence": 0.2,
+   "timestamp": 1789300918.4313745,
    "source_task_id": "30866d296ee7",
-   "reuse_count": 199,
-   "successes": 117,
-   "failures": 82
+   "reuse_count": 243,
+   "successes": 145,
+   "failures": 98
   },
   {
    "id": "d2cce46868",
@@ -137,12 +137,12 @@
    "task_pattern": "open_application",
    "lesson": "desktop_open failed here (firefox is not installed) — do not repeat this strategy blindly",
    "evidence": "verified_failure",
-   "confidence": 0.05,
-   "timestamp": 1789210118.9003563,
+   "confidence": 0.15,
+   "timestamp": 1789300919.667371,
    "source_task_id": "721b0c06b6ce",
-   "reuse_count": 211,
-   "successes": 111,
-   "failures": 100
+   "reuse_count": 277,
+   "successes": 139,
+   "failures": 138
   },
   {
    "id": "58efa00608",
@@ -163,12 +163,12 @@
    "task_pattern": "open_application",
    "lesson": "no verified steps: The generated plan contained no executable actions: action 'click_text' not authorized for this request",
    "evidence": "verified_failure",
-   "confidence": 0.15,
+   "confidence": 0.2,
    "timestamp": 1789200478.100378,
    "source_task_id": "4d2cb783d22d",
-   "reuse_count": 83,
-   "successes": 50,
-   "failures": 33
+   "reuse_count": 125,
+   "successes": 78,
+   "failures": 47
   },
   {
    "id": "9943164f10",
@@ -189,12 +189,12 @@
    "task_pattern": "open_application",
    "lesson": "no verified steps: re-plan produced no valid new actions",
    "evidence": "verified_failure",
-   "confidence": 0.15,
-   "timestamp": 1789210403.626861,
+   "confidence": 0.05,
+   "timestamp": 1789300794.6819632,
    "source_task_id": "c9d666dbb447",
-   "reuse_count": 11,
+   "reuse_count": 14,
    "successes": 3,
-   "failures": 8
+   "failures": 11
   }
  ]
 }

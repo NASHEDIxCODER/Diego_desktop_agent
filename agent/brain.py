@@ -1548,6 +1548,32 @@ class AgentBrain:
         adjusted["params"] = params
         return adjusted
 
+    async def _observe_browser_url(self) -> Optional[str]:
+        """Observe the browser's REAL current URL (goal-verification
+        evidence). Returns None when the observation is unavailable —
+        callers must treat None as 'no evidence', never as success."""
+        # 1) Dispatcher observation (reads the focused browser tab via OS)
+        if self._dispatcher:
+            try:
+                result = await self._dispatcher.execute(
+                    {"action": "browser_get_url", "params": {}})
+                if result and "Couldn't" not in str(result):
+                    m = re.search(r"https?://\S+", str(result))
+                    if m:
+                        return m.group(0).rstrip(").,\"'")
+            except Exception as e:
+                logger.debug("[Brain] browser_get_url failed: %s", e)
+        # 2) Direct OS-level desktop-state snapshot (same real source)
+        try:
+            from services.desktop_state import desktop_state
+            snap = desktop_state.snapshot()
+            url = getattr(snap, "browser_url", "") or ""
+            if url:
+                return str(url)
+        except Exception as e:
+            logger.debug("[Brain] desktop_state URL observation failed: %s", e)
+        return None
+
     async def _verify(self, action_name: str, params: Dict[str, Any],
                       result: Optional[str]) -> bool:
         """
@@ -1630,13 +1656,31 @@ class AgentBrain:
                                    "appear within 1.5s settle-wait", proc)
 
                 elif action_name in ("browser_navigate", "browser_search"):
-                    chk = subprocess.run(
-                        ["pgrep", "-f", "firefox|chrome|chromium|brave"],
-                        capture_output=True, text=True, timeout=3,
-                    )
-                    if chk.returncode == 0:
-                        logger.info("[Brain] Verify OK: browser process running")
+                    # GOAL-LEVEL VERIFICATION (reliability layer, 2026-09-13):
+                    # "browser process is alive" is NOT proof that the
+                    # navigation succeeded. Observe the REAL current URL
+                    # and require an actual URL match against the target.
+                    from core.goal_verification import verify_browser_navigation
+                    observed_url = await self._observe_browser_url()
+                    if observed_url is None:
+                        # Observation is unavailable — never guess.
+                        logger.warning(
+                            "[Brain] Verify NO_EVIDENCE: could not observe "
+                            "browser URL for %s — treating as FAILED",
+                            action_name)
+                        return False
+                    target_url = (params.get("url")
+                                  or params.get("query") or "")
+                    goal = verify_browser_navigation(
+                        str(target_url), observed_url)
+                    if goal.passed:
+                        logger.info("[Brain] Verify GOAL PASS: %s (%s)",
+                                    action_name, goal.evidence)
                         return True
+                    logger.warning(
+                        "[Brain] Verify GOAL FAIL for %s: %s (observed=%s)",
+                        action_name, goal.evidence, goal.observation[:120])
+                    return False
 
                 elif action_name == "close_app":
                     # CRITICAL FIX: verify the app process is GONE (not running).

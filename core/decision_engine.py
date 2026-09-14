@@ -30,8 +30,7 @@ Important routing rule:
     an old reusable plan or generic LLM interpretation exists.
 """
 
-from __future__ import annotations
-
+import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
@@ -49,6 +48,7 @@ class DecisionPath(str, Enum):
     DIRECT_EXECUTION = "DIRECT_EXECUTION"
     REUSED_PLAN = "REUSED_PLAN"
     VISION = "VISION"
+    LOCAL_COMPUTER = "LOCAL_COMPUTER"
     SEARCH = "SEARCH"
     SYSTEM_INFO = "SYSTEM_INFO"
     DIAGNOSTIC = "DIAGNOSTIC"
@@ -334,6 +334,58 @@ class DecisionEngine:
                 decision,
             )
 
+            return decision
+
+        # ──────────────────────────────────────────────────────
+        # LOCAL COMPUTER — deterministic filesystem intents
+        #
+        # RELIABILITY FIX (2026-09-13): requests like "find the largest
+        # Python file in my Diego project" or "how many documents are on
+        # my PC?" are LOCAL computer operations. They must NEVER be
+        # routed to semantic knowledge retrieval, session memory, or web
+        # search. Detection is pure regex — no LLM. Resolution reads the
+        # real filesystem, so the response is evidence, not inference.
+        # Placement: AFTER vision (screen-dependent) and BEFORE session
+        # memory / system info / search / LLM fallbacks.
+        # ──────────────────────────────────────────────────────
+        try:
+            from core.local_computer_intent import detect_local_intent
+            local_intent = detect_local_intent(normalized)
+        except Exception as e:  # never break routing on detector failure
+            logger.debug("[DECIDE:LOCAL] detector failed: %s", e)
+            local_intent = None
+
+        if local_intent is not None:
+            from core.local_computer_intent import resolve_local_intent
+            try:
+                answer = await asyncio.get_event_loop().run_in_executor(
+                    None, resolve_local_intent, local_intent)
+            except Exception as e:
+                logger.warning("[DECIDE:LOCAL] resolution failed: %s", e)
+                answer = ("I couldn't scan your filesystem for that — "
+                          f"{e}")
+
+            logger.info(
+                "[DECIDE:LOCAL] %s → %s",
+                normalized[:80],
+                local_intent.describe(),
+            )
+
+            decision = Decision(
+                path=DecisionPath.LOCAL_COMPUTER,
+                needs_llm=False,
+                response=answer,
+                confidence=local_intent.confidence,
+                latency_us=(
+                    time.perf_counter_ns() - t_start
+                ) / 1000,
+                debug={
+                    "source": "local_computer_intent",
+                    "intent": local_intent.describe(),
+                },
+            )
+            # NOT cached: filesystem state changes between turns.
+            self._record(DecisionPath.LOCAL_COMPUTER, t_start)
             return decision
 
         # ──────────────────────────────────────────────────────

@@ -160,10 +160,15 @@ ALLOWED_TRANSITIONS: Dict[RuntimeState, set] = {
         RuntimeState.SHUTDOWN,
     },
     RuntimeState.THINKING: {
+        # LIFECYCLE GUARD (2026-09-13): THINKING may NOT transition
+        # directly to LISTENING. Every THINK must produce a SPEAK (or an
+        # explicit exceptional state) before the microphone re-opens.
+        # THINK → LISTEN without SPEAK is a lifecycle violation and is
+        # rejected (and tested) — fallback paths must go through
+        # SPEAKING / RECOVERING instead.
         RuntimeState.SPEAKING,
         RuntimeState.EXECUTING,
         RuntimeState.CONVERSATION,
-        RuntimeState.LISTENING,
         RuntimeState.RECOVERING,
         RuntimeState.SHUTDOWN,
     },

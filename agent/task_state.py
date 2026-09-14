@@ -283,6 +283,11 @@ class TaskExecutionState:
     # Sensitive action awaiting confirmation:
     pending_confirmation: Optional[StepRecord] = None
     confirmation_reason: str = ""
+    # RELIABILITY LAYER (2026-09-13): the entity ("it", "that", "there")
+    # resolved against this task — evidence-backed, never LLM-invented.
+    referenced_entity: str = ""
+    # Explicit goal reference (what the user asked for, verbatim).
+    active_goal: str = ""
 
     @property
     def total_latency_ms(self) -> float:
@@ -1497,16 +1502,44 @@ class FollowUpResolver:
     _PATTERNS: List[Tuple[str, str]] = [
         (r"^(continue|go on|keep going|carry on|proceed|finish (the )?task|"
          r"resume (the )?task)\b", "continue"),
+        # RELIABILITY FIX (2026-09-13): "do it" / "do that" / "then do
+        # that" / "now do that" are continuations of the ACTIVE task —
+        # never standalone conversational commands.
+        (r"^(do it|do that|now do it|now do that|then do it|then do that|"
+         r"go ahead and do it)\b", "continue"),
         (r"open (the )?(first|top) (result|link|hit|one)", "open_result"),
         (r"open (the )?(second) (result|link|hit|one)", "open_result"),
         (r"open (the )?(third) (result|link|hit|one)", "open_result"),
-        (r"^(try another|try the next|next result|try again|retry)\b", "retry_last"),
-        (r"(do the same for|same for|also for|now for)\s+([a-z0-9 \-]+)", "repeat_for"),
-        (r"^(close that|close it|close the (app|window|program))\b", "close_last"),
-        (r"^(cancel( the task)?|stop the task|abort( the task)?)\b", "cancel"),
+        # "open it" / "open that" → open the LAST referenced app/URL
+        (r"^(open it|open that|launch it|launch that|open them)\b",
+         "open_last"),
+        (r"^(try another|try the next|next result|try again|retry)\b",
+         "retry_last"),
+        # "repeat that" → run the last completed action again
+        (r"^(repeat that|do that again|again|say that again)\b",
+         "repeat_last"),
+        (r"(do the same for|same for|also for|now for)\s+([a-z0-9 \-]+)",
+         "repeat_for"),
+        (r"^(close that|close it|close the (app|window|program))\b",
+         "close_last"),
+        (r"^(cancel( the task)?|stop the task|abort( the task)?)\b",
+         "cancel"),
     ]
 
+    # Deferred imperatives: "(now|then) navigate to my profile",
+    # "then open settings" — resolved against the ACTIVE task's
+    # remaining steps instead of starting from zero.
+    _DEFERRED_RE = re.compile(
+        r"^(?:now|then|next)\s+(?P<rest>[a-z].+)$", re.IGNORECASE)
+
     _ORDINALS = {"first": 0, "top": 0, "second": 1, "third": 2}
+
+    # Stop-words excluded when matching a deferred imperative against
+    # remaining plan-step descriptions.
+    _MATCH_STOPWORDS = frozenset({
+        "now", "then", "next", "the", "a", "an", "to", "my", "me", "it",
+        "that", "there", "please", "and", "for",
+    })
 
     @classmethod
     def match(cls, text: str) -> Optional[Tuple[str, Any]]:
@@ -1526,6 +1559,39 @@ class FollowUpResolver:
                 return (kind, target) if target else None
             return (kind, None)
         return None
+
+    @classmethod
+    def match_deferred(
+        cls, text: str, remaining_steps: List[Dict[str, Any]],
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Resolve a deferred imperative ("now navigate to my profile",
+        "then open settings") against the ACTIVE task's remaining plan
+        steps by keyword overlap. Returns the matched steps, or None.
+
+        This prevents mid-task continuations from being treated as
+        brand-new conversational queries while a compatible active task
+        exists. Pure keyword overlap — no LLM.
+        """
+        if not remaining_steps:
+            return None
+        m = cls._DEFERRED_RE.match((text or "").strip())
+        if not m:
+            return None
+        rest_words = {
+            w for w in re.findall(r"[a-z0-9]+", m.group("rest").lower())
+            if w not in cls._MATCH_STOPWORDS
+        }
+        if not rest_words:
+            return None
+        matched: List[Dict[str, Any]] = []
+        for step in remaining_steps:
+            desc_words = set(re.findall(
+                r"[a-z0-9]+",
+                f"{step.get('description', '')} {step.get('action', '')} "
+                f"{step.get('params', '')}".lower()))
+            if rest_words & desc_words:
+                matched.append(step)
+        return matched or None
 
 
 class TaskStateStore:
@@ -1642,6 +1708,20 @@ class TaskStateStore:
             return None
         match = FollowUpResolver.match(text)
         if match is None:
+            # RELIABILITY FIX: no static pattern matched — try a deferred
+            # imperative ("now navigate to my profile", "then open
+            # settings") against the ACTIVE task's remaining steps
+            # before giving up (which would start a fresh conversation).
+            if self.active is not None:
+                remaining = self._remaining_steps(self.active)
+                matched = FollowUpResolver.match_deferred(text, remaining)
+                if matched:
+                    logger.info(
+                        "[FOLLOWUP] Deferred imperative '%s' matched %d "
+                        "remaining step(s) of task %s",
+                        text[:50], len(matched), self.active.task_id)
+                    return (f"continue: {self.active.normalized_goal} — {text}",
+                            matched, self.active)
             return None
         kind, arg = match
         prev = self.last
@@ -1658,6 +1738,48 @@ class TaskStateStore:
                 return None
             return (f"continue: {self.active.normalized_goal}",
                     remaining, self.active)
+
+        # RELIABILITY FIX: "open it" / "open that" — reopen the last
+        # successfully referenced app or URL instead of asking the LLM.
+        if kind == "open_last":
+            last_url = prev.artifacts.get("last_url")
+            last_app = prev.artifacts.get("last_app")
+            if last_url:
+                return (f"open {last_url}",
+                        [{"action": "browser_navigate",
+                          "params": {"url": last_url},
+                          "description": f"Open {last_url}"}],
+                        prev)
+            if last_app:
+                return (f"open {last_app}",
+                        [{"action": "desktop_open",
+                          "params": {"app": last_app},
+                          "description": f"Open {last_app}"}],
+                        prev)
+            return None
+
+        # "repeat that" — run the last completed action again.
+        if kind == "repeat_last":
+            if not prev.completed_steps:
+                return None
+            last = prev.completed_steps[-1]
+            return (f"repeat: {last.action}",
+                    [{"action": last.action, "params": dict(last.params),
+                      "description": f"Repeat {last.action}"}],
+                    prev)
+
+        # Deferred imperative ("now navigate to my profile") — resolve
+        # against the ACTIVE task's remaining plan steps.
+        if self.active is not None:
+            remaining = self._remaining_steps(self.active)
+            matched = FollowUpResolver.match_deferred(text, remaining)
+            if matched:
+                logger.info(
+                    "[FOLLOWUP] Deferred imperative '%s' matched %d "
+                    "remaining step(s) of task %s",
+                    text[:50], len(matched), self.active.task_id)
+                return (f"continue: {self.active.normalized_goal} — {text}",
+                        matched, self.active)
 
         if kind == "open_result":
             results = prev.artifacts.get("search_results") or prev.artifacts.get("urls") or []
@@ -1808,6 +1930,8 @@ def _task_state_to_dict(state: TaskExecutionState) -> Dict[str, Any]:
         "pending_confirmation": (_step_record_to_dict(state.pending_confirmation)
                                  if getattr(state, "pending_confirmation", None) is not None else None),
         "confirmation_reason": getattr(state, "confirmation_reason", ""),
+        "referenced_entity": getattr(state, "referenced_entity", ""),
+        "active_goal": getattr(state, "active_goal", ""),
     }
 
 
@@ -1839,6 +1963,8 @@ def _task_state_from_dict(data: Dict[str, Any]) -> TaskExecutionState:
         pending_confirmation=(_step_record_from_dict(data["pending_confirmation"])
                               if data.get("pending_confirmation") else None),
         confirmation_reason=str(data.get("confirmation_reason", "")),
+        referenced_entity=str(data.get("referenced_entity", "")),
+        active_goal=str(data.get("active_goal", "")),
     )
     return state
 
