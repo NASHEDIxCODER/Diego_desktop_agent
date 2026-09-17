@@ -10,7 +10,7 @@
     "is_camera_associated_audio": false,
     "runtime_index": 5,
     "source": "auto",
-    "saved_at": 1789379752.6873398
+    "saved_at": 1789625748.361255
   },
   "output": {
     "hardware_identity": "audio|7505d64a54e0",
@@ -23,7 +23,7 @@
     "is_camera_associated_audio": false,
     "runtime_index": 10,
     "source": "auto",
-    "saved_at": 1789379732.6728425
+    "saved_at": 1789625723.5998566
   },
   "camera": {
     "hardware_identity": "/dev/v4l/by-id/usb-BC-250603-ZW_ZEB_LIVE_PRO-video-index0",
@@ -36,6 +36,6 @@
     "is_camera_associated_audio": false,
     "runtime_index": 0,
     "source": "auto",
-    "saved_at": 1789379732.6735184
+    "saved_at": 1789625723.6003497
   }
 }
