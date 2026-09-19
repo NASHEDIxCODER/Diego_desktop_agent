@@ -17,13 +17,17 @@ Additive module: nothing here executes actions.
 """
 from __future__ import annotations
 
+import logging
 import queue
 import time
 from typing import Any, Dict, List, Optional
 
+logger = logging.getLogger(__name__)
+
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
-    QFrame, QLabel, QListWidget, QListWidgetItem, QVBoxLayout, QWidget,
+    QFrame, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
+    QPushButton, QVBoxLayout, QWidget,
 )
 
 from agent.trace import (
@@ -116,6 +120,36 @@ class AgentWorkflowPanel(QWidget):
         layout.addWidget(self._goal)
         layout.addWidget(self._stage)
         layout.addWidget(self._verify)
+
+        # Phase 24: confirmation card (Recipient / Message / Cancel / Send).
+        self._confirm_card = QFrame()
+        self._confirm_card.setStyleSheet(
+            "QFrame { background: #1a1b26; border: 1px solid #e0af68; "
+            "border-radius: 6px; }")
+        confirm_layout = QVBoxLayout(self._confirm_card)
+        confirm_layout.setSpacing(2)
+        self._confirm_title = QLabel("CONFIRMATION REQUIRED")
+        self._confirm_title.setStyleSheet(
+            "color: #e0af68; font-size: 10px; font-weight: 600;")
+        self._confirm_body = QLabel("")
+        self._confirm_body.setWordWrap(True)
+        self._confirm_body.setStyleSheet("color: #c0caf5; font-size: 11px;")
+        self._confirm_buttons = QHBoxLayout()
+        self._cancel_button = QPushButton("Cancel")
+        self._cancel_button.setStyleSheet(
+            "background: #2a2b3a; color: #f7768e; padding: 2px 8px;")
+        self._send_button = QPushButton("Send")
+        self._send_button.setStyleSheet(
+            "background: #39407a; color: #9ece6a; padding: 2px 12px;")
+        self._confirm_buttons.addStretch(1)
+        self._confirm_buttons.addWidget(self._cancel_button)
+        self._confirm_buttons.addWidget(self._send_button)
+        confirm_layout.addWidget(self._confirm_title)
+        confirm_layout.addWidget(self._confirm_body)
+        confirm_layout.addLayout(self._confirm_buttons)
+        self._confirm_card.hide()
+        layout.addWidget(self._confirm_card)
+
         layout.addWidget(self._plan_list, 1)
         layout.addWidget(self._log, 2)
 
@@ -123,6 +157,26 @@ class AgentWorkflowPanel(QWidget):
         self._timer.setInterval(120)
         self._timer.timeout.connect(self._drain)
         self._timer.start()
+
+        # Phase 24: confirmation card buttons route back into the engine.
+        self._cancel_button.clicked.connect(
+            lambda: self._answer_confirmation(False))
+        self._send_button.clicked.connect(
+            lambda: self._answer_confirmation(True))
+
+    # ── confirmation card answer (runs the engine resume) ────────
+
+    def _answer_confirmation(self, approved: bool) -> None:
+        answer = "yes" if approved else "cancel"
+        try:
+            from agent.desktop_goal_engine import desktop_goal_engine
+            import threading
+            threading.Thread(
+                target=desktop_goal_engine.resume, args=(answer,),
+                daemon=True).start()
+        except Exception:
+            logger.debug("[WORKFLOW] confirmation answer failed")
+
 
     # ── Trace subscription (recording thread) ────────────────────
 
@@ -203,6 +257,15 @@ class AgentWorkflowPanel(QWidget):
         if snap.final_result:
             verify_bits.append(snap.final_result[:120])
         self._verify.setText("  |  ".join(verify_bits))
+
+        # Phase 24: show/hide the confirmation card.
+        if snap.confirmation_required and snap.confirmation_recipient:
+            body = (f"Recipient: {snap.confirmation_recipient}\n"
+                    f"Message: \"{snap.confirmation_message}\"")
+            self._confirm_body.setText(body)
+            self._confirm_card.show()
+        else:
+            self._confirm_card.hide()
 
         if snap.plan and self._plan_list.count() != len(snap.plan):
             self._plan_list.clear()

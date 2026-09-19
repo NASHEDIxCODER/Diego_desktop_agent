@@ -104,6 +104,8 @@ class WorkflowSnapshot:
     recovery: str = ""
     confirmation: str = ""
     confirmation_required: bool = False
+    confirmation_recipient: str = ""
+    confirmation_message: str = ""
     final_result: str = ""
     last_error: str = ""
     retry_count: int = 0
@@ -246,14 +248,22 @@ class AgentTrace:
             elif et == TraceEventType.CONFIRMATION_REQUIRED:
                 w.confirmation_required = True
                 w.confirmation = event.detail[:200]
+                w.confirmation_recipient = str((event.evidence or {}).get(
+                    "recipient", "") or "")[:80]
+                w.confirmation_message = str((event.evidence or {}).get(
+                    "message", "") or "")[:200]
                 w.status = STATUS_WAITING_CONFIRMATION
                 w.phase = PHASE_ASKING_USER
             elif et == TraceEventType.CONFIRMATION_GRANTED:
                 w.confirmation_required = False
+                w.confirmation_recipient = ""
+                w.confirmation_message = ""
                 w.status = STATUS_RUNNING
                 w.confirmation = event.detail[:200] or w.confirmation
             elif et == TraceEventType.CONFIRMATION_DENIED:
                 w.confirmation_required = False
+                w.confirmation_recipient = ""
+                w.confirmation_message = ""
                 w.status = STATUS_FAILED
                 w.final_result = "cancelled: confirmation denied"
             elif et == TraceEventType.TASK_COMPLETED:

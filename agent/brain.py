@@ -547,6 +547,46 @@ class AgentBrain:
             self._last_intent_verdict = verdict
         self._last_intent_authorization = auth
 
+        # ── Step 0.44: Desktop GOAL delegation (PHASE 24) ─────
+        # Generic desktop-application goals (messaging: "send Rahul: X on
+        # telegram") go to the DesktopGoalEngine, which achieves the GOAL
+        # through the existing ComputerController (semantic perception,
+        # contact ambiguity handling, explicit send confirmation, target-
+        # verified send). Everything else keeps the existing pipeline.
+        if tool_execution_allowed:
+            try:
+                from agent.desktop_goal_engine import desktop_goal_engine
+                _dmsg = await asyncio.to_thread(
+                    desktop_goal_engine.handle_command, text)
+                if _dmsg:
+                    result.path = "DESKTOP_GOAL"
+                    result.response = _dmsg
+                    result.used_llm = False
+                    _drun = desktop_goal_engine.pending_run()
+                    result.verified = bool(
+                        _drun is not None and _drun.finished
+                        and _drun.verified)
+                    from agent.desktop_goal import DesktopStatus as _dstat
+                    if result.verified:
+                        result.task_status = "SUCCESS"
+                    elif _drun is not None and _drun.status in (
+                            _dstat.ASKING_USER, _dstat.WAITING_CONFIRMATION):
+                        result.task_status = "WAITING_USER"
+                    else:
+                        result.task_status = "FAILED"
+                    conv_memory.add_assistant(_dmsg)
+                    result.latency_ms = (time.time() - t0) * 1000
+                    logger.info(
+                        "[Brain] Desktop goal handled: task=%s verified=%s "
+                        "latency=%.0fms", (_drun.task_id if _drun else ""),
+                        result.verified, result.latency_ms)
+                    return result
+            except ImportError:
+                pass  # engine unavailable — the existing pipeline continues
+            except Exception as e:
+                logger.warning("[Brain] Desktop goal engine failed, falling "
+                               "back to the existing pipeline: %s", e)
+
         # ── Step 0.45: Browser GOAL delegation (PHASE 23) ─────
         # Site-scoped browser goals ("open linkedin", "search linkedin for
         # X") go to the BrowserGoalEngine, which achieves the GOAL through
