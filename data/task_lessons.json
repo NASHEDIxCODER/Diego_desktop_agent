@@ -46,12 +46,12 @@
    "task_pattern": "open_application",
    "lesson": "strategy that worked: desktop_open → open_folder",
    "evidence": "verified_success",
-   "confidence": 0.35,
-   "timestamp": 1789375126.3342147,
+   "confidence": 0.15,
+   "timestamp": 1789807919.2699325,
    "source_task_id": "f196156e43d5",
-   "reuse_count": 100,
+   "reuse_count": 107,
    "successes": 36,
-   "failures": 64
+   "failures": 71
   },
   {
    "id": "fe453af215",
@@ -59,12 +59,12 @@
    "task_pattern": "open_application",
    "lesson": "firefox launches reliably via desktop_open on this system",
    "evidence": "verified_success",
-   "confidence": 0.4,
-   "timestamp": 1789375126.3347454,
+   "confidence": 0.3,
+   "timestamp": 1789807919.2704844,
    "source_task_id": "f196156e43d5",
-   "reuse_count": 354,
-   "successes": 170,
-   "failures": 184
+   "reuse_count": 408,
+   "successes": 194,
+   "failures": 214
   },
   {
    "id": "30796f2fb5",
@@ -72,12 +72,12 @@
    "task_pattern": "open_application",
    "lesson": "strategy that worked: desktop_open → shutdown",
    "evidence": "verified_success",
-   "confidence": 0.15,
-   "timestamp": 1789374678.8316803,
+   "confidence": 0.1,
+   "timestamp": 1789807730.4342809,
    "source_task_id": "4a9e6a260638",
-   "reuse_count": 44,
+   "reuse_count": 48,
    "successes": 4,
-   "failures": 40
+   "failures": 44
   },
   {
    "id": "5213acf190",
@@ -86,11 +86,11 @@
    "lesson": "strategy that worked: desktop_open → close_app",
    "evidence": "verified_success",
    "confidence": 0.1,
-   "timestamp": 1789374678.7993822,
+   "timestamp": 1789807729.252995,
    "source_task_id": "3dfb48709543",
-   "reuse_count": 32,
+   "reuse_count": 34,
    "successes": 4,
-   "failures": 28
+   "failures": 30
   },
   {
    "id": "0db270a83e",
@@ -98,12 +98,12 @@
    "task_pattern": "open_application",
    "lesson": "strategy that worked: desktop_open → desktop_open",
    "evidence": "verified_success",
-   "confidence": 0.15,
-   "timestamp": 1789374678.8708572,
+   "confidence": 0.05,
+   "timestamp": 1789807730.6079273,
    "source_task_id": "81be4455c9a1",
-   "reuse_count": 41,
+   "reuse_count": 47,
    "successes": 7,
-   "failures": 34
+   "failures": 40
   },
   {
    "id": "58e6503b3a",
@@ -111,12 +111,12 @@
    "task_pattern": "open_application",
    "lesson": "strategy that worked: desktop_open",
    "evidence": "verified_success",
-   "confidence": 0.2,
-   "timestamp": 1789375126.3258646,
+   "confidence": 0.15,
+   "timestamp": 1789807919.2397606,
    "source_task_id": "ad38955c54e9",
-   "reuse_count": 51,
-   "successes": 16,
-   "failures": 35
+   "reuse_count": 58,
+   "successes": 19,
+   "failures": 39
   },
   {
    "id": "4cef51e4cc",
@@ -124,12 +124,12 @@
    "task_pattern": "open_application",
    "lesson": "no verified steps: No further actions could be planned from the current state.",
    "evidence": "verified_failure",
-   "confidence": 0.05,
-   "timestamp": 1789375124.925147,
+   "confidence": 0.15,
+   "timestamp": 1789807917.665781,
    "source_task_id": "30866d296ee7",
-   "reuse_count": 253,
-   "successes": 150,
-   "failures": 103
+   "reuse_count": 290,
+   "successes": 174,
+   "failures": 116
   },
   {
    "id": "d2cce46868",
@@ -138,11 +138,11 @@
    "lesson": "desktop_open failed here (firefox is not installed) — do not repeat this strategy blindly",
    "evidence": "verified_failure",
    "confidence": 0.2,
-   "timestamp": 1789375126.1836147,
+   "timestamp": 1789807918.9590492,
    "source_task_id": "721b0c06b6ce",
-   "reuse_count": 288,
-   "successes": 146,
-   "failures": 142
+   "reuse_count": 334,
+   "successes": 167,
+   "failures": 167
   },
   {
    "id": "58efa00608",
@@ -163,12 +163,12 @@
    "task_pattern": "open_application",
    "lesson": "no verified steps: The generated plan contained no executable actions: action 'click_text' not authorized for this request",
    "evidence": "verified_failure",
-   "confidence": 0.1,
+   "confidence": 0.05,
    "timestamp": 1789200478.100378,
    "source_task_id": "4d2cb783d22d",
-   "reuse_count": 139,
-   "successes": 88,
-   "failures": 51
+   "reuse_count": 148,
+   "successes": 94,
+   "failures": 54
   },
   {
    "id": "9943164f10",
@@ -190,11 +190,11 @@
    "lesson": "no verified steps: re-plan produced no valid new actions",
    "evidence": "verified_failure",
    "confidence": 0.05,
-   "timestamp": 1789300794.6819632,
+   "timestamp": 1789807801.0264792,
    "source_task_id": "c9d666dbb447",
-   "reuse_count": 14,
+   "reuse_count": 15,
    "successes": 3,
-   "failures": 11
+   "failures": 12
   },
   {
    "id": "685573643f",
@@ -283,9 +283,9 @@
    "confidence": 0.05,
    "timestamp": 1789371551.0098414,
    "source_task_id": "9c5c356bed4f",
-   "reuse_count": 3,
+   "reuse_count": 13,
    "successes": 0,
-   "failures": 3
+   "failures": 13
   },
   {
    "id": "4248d4006d",
@@ -293,12 +293,12 @@
    "task_pattern": "open_application",
    "lesson": "no verified steps: The generated plan contained no executable actions: missing/invalid argument 'app' for desktop_open",
    "evidence": "verified_failure",
-   "confidence": 0.05,
+   "confidence": 0.15,
    "timestamp": 1789371584.754223,
    "source_task_id": "bba1eccc9c70",
-   "reuse_count": 11,
-   "successes": 6,
-   "failures": 5
+   "reuse_count": 31,
+   "successes": 21,
+   "failures": 10
   },
   {
    "id": "d084c4773c",
@@ -306,12 +306,12 @@
    "task_pattern": "open_application",
    "lesson": "browser launches reliably via desktop_open on this system",
    "evidence": "verified_success",
-   "confidence": 0.3,
+   "confidence": 0.15,
    "timestamp": 1789371642.6802917,
    "source_task_id": "e848e8a4173e",
-   "reuse_count": 3,
+   "reuse_count": 4,
    "successes": 0,
-   "failures": 3
+   "failures": 4
   },
   {
    "id": "a1ed8e2291",
@@ -332,12 +332,12 @@
    "task_pattern": "open_application",
    "lesson": "open_app failed here (Couldn't open app: Couldn't find GitHub Desktop) — do not repeat this strategy blindly",
    "evidence": "verified_failure",
-   "confidence": 0.4,
+   "confidence": 0.1,
    "timestamp": 1789371784.8770494,
    "source_task_id": "7b691e1d153a",
-   "reuse_count": 4,
+   "reuse_count": 6,
    "successes": 2,
-   "failures": 2
+   "failures": 4
   },
   {
    "id": "f7b1c3afbc",
@@ -358,12 +358,12 @@
    "task_pattern": "open_application",
    "lesson": "Visual Studio Code launches reliably via desktop_open on this system",
    "evidence": "verified_success",
-   "confidence": 0.4,
+   "confidence": 0.1,
    "timestamp": 1789372749.9042373,
    "source_task_id": "66c6d920111b",
-   "reuse_count": 5,
+   "reuse_count": 7,
    "successes": 2,
-   "failures": 3
+   "failures": 5
   },
   {
    "id": "3d5d4081e6",
@@ -416,6 +416,19 @@
    "reuse_count": 0,
    "successes": 0,
    "failures": 0
+  },
+  {
+   "id": "49d02e54fc",
+   "type": "recurring_obstacle",
+   "task_pattern": "open_application",
+   "lesson": "desktop_open failed here (re-plan produced no valid new actions) — do not repeat this strategy blindly",
+   "evidence": "verified_failure",
+   "confidence": 0.05,
+   "timestamp": 1789807347.8573682,
+   "source_task_id": "1530586b0733",
+   "reuse_count": 8,
+   "successes": 3,
+   "failures": 5
   }
  ]
 }

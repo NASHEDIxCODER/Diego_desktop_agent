@@ -285,12 +285,18 @@ class ActionVerifier:
             return result
 
         # ── Partial change? ────────────────────────────
+        # FALSE-POSITIVE FIX (2026-09-17): a generic screen delta is NOT
+        # evidence that the TARGET effect happened. PARTIAL_CHANGE must
+        # never report success=True — "something changed somewhere" is
+        # not verification. Callers (Brain._verify) treat success=True
+        # as VERIFIED, so a True here turned any coincidental frame/text
+        # change into a verified app launch.
         if result.frame_changed or result.text_changed or result.window_changed:
             result.status = VerificationStatus.PARTIAL_CHANGE
             result.explanation = "UI changed but not as expected"
             result.elapsed_ms = (time.perf_counter_ns() - t0) / 1_000_000
             logger.info("[VERIFY] PARTIAL_CHANGE: %s changed but not verified", action_type)
-            result.success = True  # Something happened, count as partial success
+            result.success = False
             return result
 
         # ── NO CHANGE: Auto-retry ──────────────────────
@@ -332,8 +338,14 @@ class ActionVerifier:
             return result.frame_changed
 
         if action_type == "open_app":
-            # Opening an app should change the window
-            return result.window_changed or result.frame_changed
+            # Opening an app: a generic window/frame delta is NOT enough —
+            # any coincidental screen change (notification, clock, focus)
+            # would otherwise VERIFY a failed launch. Only an expected
+            # element tied to the TARGET app counts. Target-identity checks
+            # (process/WM_CLASS via services/app_resolver) live in
+            # Brain._verify and are authoritative for desktop_open.
+            # This verifier now refuses to confirm open_app on its own.
+            return bool(result.expected_element_found)
 
         if action_type == "key_press":
             # Key presses may or may not change the frame

@@ -347,6 +347,14 @@ _UNAVAILABLE_MARKERS = (
     "no player responded", "mpv is not installed", "no local music",
     "no browser", "couldn't open the browser", "unavailable",
 )
+_RESOLUTION_FAILED_MARKERS = (
+    "couldn't find", "isn't installed", "not installed",
+    "could refer to several apps", "which one did you mean",
+)
+_EFFECT_NOT_OBSERVED_MARKERS = (
+    "did not appear", "no process", "no window", "not verified",
+    "had no effect", "did not change", "still running after close",
+)
 _WRONG_TOOL_MARKERS = (
     "unknown action", "not in the allowed action schema", "unsupported",
 )
@@ -357,6 +365,11 @@ def classify_failure(action: str, result: str, error: str) -> FailureKind:
     text = f"{result or ''} {error or ''}".lower()
     if any(m in text for m in _WRONG_TOOL_MARKERS):
         return FailureKind.WRONG_TOOL
+    if action == "desktop_open" and any(
+            m in text for m in _RESOLUTION_FAILED_MARKERS):
+        # Unknown/ambiguous app: the resolver could not produce a launch
+        # target. Retrying the same string cannot help — honest stop.
+        return FailureKind.UNAVAILABLE_CAPABILITY
     if any(m in text for m in _UNAVAILABLE_MARKERS):
         return FailureKind.UNAVAILABLE_CAPABILITY
     if any(m in text for m in _TRANSIENT_MARKERS):
@@ -366,7 +379,16 @@ def classify_failure(action: str, result: str, error: str) -> FailureKind:
         # wrong parameters or a changed UI state.
         if action in ("click_text", "type_text", "scroll", "key_press"):
             return FailureKind.CHANGED_STATE
+        if action in ("desktop_open", "close_app"):
+            # Launched but the TARGET identity never appeared (or never
+            # went away): distinct from wrong-params and from
+            # resolution failure — the target was known, the world
+            # did not change as expected.
+            return FailureKind.CHANGED_STATE
         return FailureKind.WRONG_PARAMS
+    if action in ("desktop_open", "close_app") and any(
+            m in text for m in _EFFECT_NOT_OBSERVED_MARKERS):
+        return FailureKind.CHANGED_STATE
     return FailureKind.UNKNOWN
 
 
@@ -374,15 +396,14 @@ def adjust_params_for_retry(action: str, params: Dict[str, Any]) -> Dict[str, An
     """Deterministic parameter adjustment for a strategic retry."""
     adjusted = dict(params or {})
     if action == "desktop_open":
-        alt_map = {
-            "code": "code-insiders", "vscode": "code", "vs code": "code",
-            "firefox": "firefox-esr", "chrome": "chromium-browser",
-            "google-chrome": "chromium", "gnome-terminal": "xterm",
-            "terminal": "xterm", "nautilus": "thunar", "files": "thunar",
-        }
-        app = str(adjusted.get("app", "")).lower()
-        if app in alt_map:
-            adjusted["app"] = alt_map[app]
+        # Resolution/launch alternates now live in the canonical
+        # AppResolver (aliases -> .desktop Exec/TryExec -> PATH variants ->
+        # gtk-launch/xdg-open fallbacks). A blind rename retry here
+        # (e.g. code -> code-insiders) broke the resolver/verifier
+        # identity contract and could launch a DIFFERENT app than the
+        # one verification looks for. Retries re-attempt the same
+        # canonical target; unknown apps stay RESOLUTION_FAILED.
+        return adjusted
     elif action == "browser_navigate":
         url = str(adjusted.get("url", ""))
         if url.startswith("https://"):
@@ -831,6 +852,9 @@ class TaskRunner:
         identifiers, counts, and SHORT reasons only; action params (which
         may hold user/sensitive content) are never included.
         """
+        # Phase 22: mirror lifecycle events into the structured agent trace
+        # (best-effort, never fatal — same contract as the bus emit below).
+        self._mirror_to_trace(event_type, state, data)
         try:
             from core.event_bus import bus
             payload: Dict[str, Any] = {
@@ -850,6 +874,91 @@ class TaskRunner:
         except Exception as e:
             logger.debug("[TaskRunner] lifecycle event '%s' not emitted: %s",
                          event_type, e)
+
+    def _mirror_to_trace(self, event_type: str,
+                         state: TaskExecutionState,
+                         data: Dict[str, Any]) -> None:
+        """Reflect task lifecycle events into agent.trace (UI workflow).
+
+        Best-effort by contract: any failure is logged and swallowed — the
+        trace is a VIEW of the runtime, never a dependency of it.
+        """
+        try:
+            from agent.trace import agent_trace
+            from agent.trace_event import TraceEventType
+
+            task_id = state.task_id
+            if event_type == "task.started":
+                request = str(data.get("request") or
+                              state.original_request or "")
+                agent_trace.goal(request, task_id=task_id)
+                steps = [str(s.get("description") or s.get("action") or "")
+                         if isinstance(s, dict) else str(s)
+                         for s in (state.current_plan or [])]
+                if steps:
+                    agent_trace.plan(steps, task_id=task_id)
+                return
+
+            if event_type == "task.step.started":
+                step = data.get("step") or ""
+                desc = (step.get("description") or step.get("action", "")
+                        if isinstance(step, dict) else str(step))
+                agent_trace.step_started(str(desc), task_id=task_id,
+                                         index=int(data.get("index", 0) or 0),
+                                         step_id=str(data.get("step_id", "")))
+                return
+
+            if event_type in ("task.step.completed", "task.step.failed"):
+                ok = event_type == "task.step.completed"
+                step = data.get("step") or ""
+                action = (step.get("action", "") if isinstance(step, dict)
+                          else "")
+                agent_trace.emit(
+                    TraceEventType.ACTION_COMPLETED, task_id=task_id,
+                    action=str(action),
+                    target=str(step.get("target", "")
+                               if isinstance(step, dict) else ""),
+                    verification_result=("PASS" if ok else "FAIL"),
+                    detail=str(data.get("reason")
+                               or data.get("result") or "")[:200])
+                return
+
+            if event_type == "task.verification.failed":
+                agent_trace.verification("FAIL", task_id=task_id,
+                                         detail=str(data.get(
+                                             "reason", ""))[:200])
+                return
+
+            if event_type in ("task.retry",):
+                agent_trace.recovery("retry", task_id=task_id,
+                                     retry_count=state.retry_count)
+                return
+
+            if event_type in ("task.replan", "task.plan_adapted"):
+                agent_trace.replan(str(data.get("reason", ""))[:200],
+                                   task_id=task_id)
+                return
+
+            if event_type == "task.needs_confirmation":
+                agent_trace.confirmation_required(
+                    str(data.get("reason", ""))[:200], task_id=task_id,
+                    risk=str(data.get("risk", "")))
+                return
+
+            if event_type == "task.completed":
+                agent_trace.completed(str(data.get("summary", ""))[:300],
+                                      task_id=task_id)
+                return
+
+            if event_type in ("task.failed", "task.cancelled"):
+                agent_trace.failed(str(data.get("blocker")
+                                       or data.get("reason")
+                                       or event_type)[:300], task_id=task_id)
+                return
+        except Exception as e:
+            logger.debug("[TaskRunner] trace mirror skipped for '%s': %s",
+                         event_type, e)
+
 
     async def _emit_final_status(self, state: TaskExecutionState) -> None:
         """Emit the AUTHORITATIVE final lifecycle event for a task.

@@ -936,48 +936,55 @@ class ActionDispatcher:
     # ── App / URL launching ───────────────────────────────
 
     def _open_app(self, app: str) -> str:
-        """Open a desktop application by name (with smart mapping)."""
+        """Open a desktop application via the canonical AppResolver.
+
+        Resolution order (services/app_resolver.resolve_app): aliases ->
+        .desktop entries (Exec/TryExec/StartupWMClass) -> PATH -> bounded
+        fuzzy match. Unknown apps return an honest failure string (which
+        Brain treats as RESOLUTION_FAILED) — never a guessed launch.
+        """
         import shutil
-        import subprocess
-
-        app_lower = app.lower().strip()
-        # Map friendly names to actual binaries
-        app_map = {
-            "vs code": "code", "vscode": "code", "code": "code",
-            "browser": "firefox", "firefox": "firefox", "chrome": "google-chrome",
-            "spotify": "spotify", "terminal": "gnome-terminal",
-            "files": "nautilus", "file manager": "nautilus",
-            "calculator": "gnome-calculator", "settings": "gnome-control-center",
-            "slack": "slack", "discord": "discord", "telegram": "telegram-desktop",
-            "notion": "notion-app", "obsidian": "obsidian",
-            "music_player": "spotify", "music": "spotify", "music player": "spotify",
-        }
-        binary = app_map.get(app_lower, app_lower)
-
-        # Special case: Spotify via web if binary missing
-        if binary == "spotify" and not shutil.which("spotify"):
-            return self._open_url_fallback("https://open.spotify.com")
-
-        exe = shutil.which(binary)
-        if exe is None:
-            # Try common alternates
-            for alt in (binary, binary.replace("-", ""), f"{binary}-stable"):
-                exe = shutil.which(alt)
-                if exe:
-                    break
-        if exe is None:
-            logger.warning("[ACTIONS] App not found: %s", app)
-            return f"Couldn't find {app}"
 
         try:
-            subprocess.Popen(
-                [exe], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                start_new_session=True)
-            logger.info("[ACTIONS] Opened app: %s (%s)", app, exe)
-            return f"Opened {app}"
+            from services.app_resolver import (
+                ResolutionStatus, launch as _launch_resolved,
+                resolve_app as _resolve_app,
+            )
         except Exception as e:
-            logger.warning("[ACTIONS] Failed to open %s: %s", app, e)
+            logger.warning("[APP-DISPATCH] resolver unavailable for '%s': %s",
+                           app, e)
             return f"Couldn't open {app}"
+
+        resolution = _resolve_app(app)
+        if resolution.status == ResolutionStatus.AMBIGUOUS:
+            cands = ", ".join(resolution.candidates or [])
+            logger.warning("[APP-DISPATCH] ambiguous app '%s': %s",
+                           app, cands)
+            return (f"Couldn't open {app} — it could refer to several apps "
+                    f"({cands}). Which one did you mean?")
+        if resolution.status != ResolutionStatus.RESOLVED or \
+                resolution.identity is None:
+            # Preserve the legacy contract: "Couldn't find X" so Brain's
+            # dispatch-failure fast path keeps working.
+            logger.warning("[APP-DISPATCH] resolution failed for '%s': %s",
+                           app, resolution.message)
+            # Special case: Spotify via web if binary missing
+            if (app or "").lower().strip() in (
+                    "spotify", "music", "music player", "music_player"):
+                return self._open_url_fallback("https://open.spotify.com")
+            if resolution.message and "isn't installed" in resolution.message:
+                return f"Couldn't find {app}"
+            return f"Couldn't open {app}"
+
+        identity = resolution.identity
+        launched = _launch_resolved(identity)
+        if launched.ok:
+            logger.info("[APP-DISPATCH] opened '%s' as %s via %s",
+                        app, identity.canonical, launched.method)
+            return f"Opened {identity.display_name}"
+        logger.warning("[APP-DISPATCH] launch failed for '%s': %s",
+                       app, launched.message)
+        return f"Couldn't open {app}"
 
     def _close_app(self, app: str) -> str:
         """Close a desktop application by name (with smart mapping).
@@ -1004,21 +1011,44 @@ class ActionDispatcher:
         import os
         import signal
 
-        app_lower = app.lower().strip()
-        # Map friendly names to process names for pkill
-        proc_map = {
-            "vs code": "code", "vscode": "code", "code": "code",
-            "browser": "firefox", "firefox": "firefox", "chrome": "google-chrome",
-            "google-chrome": "google-chrome", "spotify": "spotify",
-            "terminal": "xterm", "gnome-terminal": "gnome-terminal",
-            "xterm": "xterm", "konsole": "konsole", "alacritty": "alacritty",
-            "kitty": "kitty", "wezterm": "wezterm", "tilix": "tilix",
-            "files": "nautilus", "file manager": "nautilus", "nautilus": "nautilus",
-            "calculator": "gnome-calculator", "settings": "gnome-control-center",
-            "slack": "slack", "discord": "discord", "telegram": "telegram-desktop",
-            "notion": "notion-app", "pycharm": "pycharm",
-        }
-        proc = proc_map.get(app_lower, app_lower)
+        # Resolve via the canonical AppResolver so close targets the same
+        # identity open launched (e.g. telegram -> telegram/TelegramDesktop,
+        # not the stale "telegram-desktop" guess).
+        try:
+            from services.app_resolver import resolve_app as _resolve_app
+            _res = _resolve_app(app)
+            _ident = _res.identity if _res is not None else None
+            _patterns = list(_ident.process_patterns) if _ident else []
+        except Exception:
+            _ident, _patterns = None, []
+        if _patterns:
+            # Prefer the shortest exact process name (usually the real comm).
+            procs = sorted({p.lower() for p in _patterns if p})
+            proc = procs[0]
+            win_pats = list(_ident.window_patterns) if _ident else []
+        else:
+            app_lower = app.lower().strip()
+            # Map friendly names to process names for pkill
+            proc_map = {
+                "vs code": "code", "vscode": "code", "code": "code",
+                "browser": "firefox", "firefox": "firefox",
+                "chrome": "google-chrome",
+                "google-chrome": "google-chrome", "spotify": "spotify",
+                "terminal": "xterm", "gnome-terminal": "gnome-terminal",
+                "xterm": "xterm", "konsole": "konsole",
+                "alacritty": "alacritty",
+                "kitty": "kitty", "wezterm": "wezterm", "tilix": "tilix",
+                "files": "nautilus", "file manager": "nautilus",
+                "nautilus": "nautilus",
+                "calculator": "gnome-calculator",
+                "settings": "gnome-control-center",
+                "slack": "slack", "discord": "discord",
+                "telegram": "telegram", "telegram-desktop": "telegram",
+                "notion": "notion-app", "notion-app": "notion",
+                "pycharm": "pycharm",
+            }
+            proc = proc_map.get(app_lower, app_lower)
+            win_pats = [proc]
 
         # ── Self-kill guard: never kill Diego's own process tree ──
         def _self_pids() -> set:
@@ -1055,7 +1085,9 @@ class ActionDispatcher:
                 if out.returncode == 0:
                     for line in out.stdout.splitlines():
                         parts = line.split(None, 3)
-                        if len(parts) >= 4 and proc.lower() in parts[3].lower():
+                        if len(parts) >= 4 and any(
+                                w.lower() in parts[3].lower()
+                                for w in (win_pats or [proc])):
                             wid = parts[0]
                             subprocess.run(
                                 ["wmctrl", "-ic", wid],
@@ -1163,20 +1195,27 @@ class ActionDispatcher:
                     return False  # Still alive even after SIGKILL
             return True
 
-        if _signal_and_wait(proc):
-            logger.info("[ACTIONS] Closed app: %s (%s)", app, proc)
-            return f"Closed {app}"
+        # Try every resolved process pattern (e.g. telegram + Telegram),
+        # not just the first, so renamed binaries still close.
+        _close_names = ([proc] if not _patterns
+                        else sorted({p.lower() for p in _patterns if p}))
+        for _name in _close_names:
+            if _signal_and_wait(_name):
+                logger.info("[ACTIONS] Closed app: %s (%s)", app, _name)
+                return f"Closed {app}"
 
         # ── 4. killall (exact name match) as last resort ──
         if shutil.which("killall"):
             try:
-                result = subprocess.run(
-                    ["killall", proc],
-                    capture_output=True, text=True, timeout=3,
-                )
-                if result.returncode == 0:
-                    logger.info("[ACTIONS] Closed app via killall: %s", app)
-                    return f"Closed {app}"
+                for _name in _close_names:
+                    result = subprocess.run(
+                        ["killall", _name],
+                        capture_output=True, text=True, timeout=3,
+                    )
+                    if result.returncode == 0:
+                        logger.info("[ACTIONS] Closed app via killall: %s (%s)",
+                                    app, _name)
+                        return f"Closed {app}"
             except Exception as e:
                 logger.warning("[ACTIONS] killall failed for %s: %s", app, e)
 

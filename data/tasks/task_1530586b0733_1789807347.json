@@ -1,0 +1,62 @@
+{
+  "task_id": "1530586b0733",
+  "original_request": "open vscode and start working",
+  "normalized_goal": "open vscode and start working",
+  "current_plan": [],
+  "completed_steps": [],
+  "current_step": null,
+  "failed_steps": [
+    {
+      "index": 1,
+      "action": "desktop_open",
+      "params": {
+        "app": "code"
+      },
+      "description": "Open VSCode using the desktop_open action with the app parameter set to 'code'",
+      "status": "failed",
+      "result": "Executed desktop_open",
+      "verification": "failed: Executed desktop_open",
+      "verified": false,
+      "retries": 0,
+      "error": "Executed desktop_open",
+      "latency_ms": 13716.277360916138,
+      "evidence_source": "unknown",
+      "sensitive_reason": ""
+    }
+  ],
+  "observed_state": "",
+  "verification_results": [
+    {
+      "step": 1,
+      "action": "desktop_open",
+      "verified": false,
+      "evidence": "Executed desktop_open",
+      "reason": "Executed desktop_open"
+    }
+  ],
+  "retry_count": 0,
+  "replan_count": 2,
+  "total_steps": 1,
+  "final_status": "FAILED",
+  "plan_version": 2,
+  "started_at": 1789807319.8969715,
+  "ended_at": 1789807347.8144817,
+  "artifacts": {},
+  "log": [
+    "[TASK] id=1530586b0733 goal=\"open vscode and start working\"",
+    "[PLAN] v1 steps=0",
+    "[REPLAN] state changed, replan 1/3, remaining goal: open vscode and start working",
+    "[PLAN] v2 steps=1 (replan)",
+    "[STEP 1/1] desktop_open",
+    "[VERIFY] failure — Executed desktop_open",
+    "[REPLAN] state changed, replan 2/3, remaining goal: open vscode and start working",
+    "[TASK] STOPPED — unrecoverable step failure",
+    "[TASK] FAILED (steps=0 ok, 1 failed, replans=2, latency=27918ms)"
+  ],
+  "blocker": "re-plan produced no valid new actions",
+  "evidence_log": [],
+  "pending_confirmation": null,
+  "confirmation_reason": "",
+  "referenced_entity": "",
+  "active_goal": ""
+}

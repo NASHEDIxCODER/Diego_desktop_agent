@@ -350,9 +350,11 @@ async def test_turn_state_invariant():
     check("SPEAK → IDLE is valid", True)
 
     # No illegal transitions
-    assert EngineState.LISTEN not in ALLOWED_TRANSITIONS.get(EngineState.IDLE, set())
+    # IDLE → LISTEN is a valid Diego transition (wake-word while idle)
+    assert EngineState.LISTEN in ALLOWED_TRANSITIONS.get(EngineState.IDLE, set())
+    check("IDLE → LISTEN is valid (Diego wake-word)", True)
+    # SPEAK must not jump straight to THINK
     assert EngineState.THINK not in ALLOWED_TRANSITIONS.get(EngineState.SPEAK, set())
-    check("No illegal IDLE → LISTEN", True)
     check("No illegal SPEAK → THINK", True)
 
 

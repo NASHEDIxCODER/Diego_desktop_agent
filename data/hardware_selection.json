@@ -5,12 +5,12 @@
     "manufacturer": "snd_hda_intel",
     "model": "Generic_1",
     "family_id": "family:a9ad1b675c44",
-    "raw_name": "HD-Audio Generic: ALC256 Analog (hw:2,0)",
+    "raw_name": "HD-Audio Generic: ALC256 Analog (hw:3,0)",
     "category": "PHYSICAL",
     "is_camera_associated_audio": false,
-    "runtime_index": 5,
+    "runtime_index": 6,
     "source": "auto",
-    "saved_at": 1789375133.2438278
+    "saved_at": 1789807870.9238374
   },
   "output": {
     "hardware_identity": "audio|7505d64a54e0",
@@ -21,9 +21,9 @@
     "raw_name": "default",
     "category": "VIRTUAL",
     "is_camera_associated_audio": false,
-    "runtime_index": 10,
+    "runtime_index": 17,
     "source": "auto",
-    "saved_at": 1789375133.2441795
+    "saved_at": 1789807870.924132
   },
   "camera": {
     "hardware_identity": "/dev/v4l/by-id/usb-BC-250603-ZW_ZEB_LIVE_PRO-video-index0",
@@ -36,6 +36,6 @@
     "is_camera_associated_audio": false,
     "runtime_index": 0,
     "source": "auto",
-    "saved_at": 1789375133.2835715
+    "saved_at": 1789807870.9638207
   }
 }

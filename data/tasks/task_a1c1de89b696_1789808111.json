@@ -1,0 +1,93 @@
+{
+  "task_id": "a1c1de89b696",
+  "original_request": "Open Firefox",
+  "normalized_goal": "Open Firefox",
+  "current_plan": [
+    {
+      "action": "desktop_open",
+      "params": {
+        "app": "firefox"
+      }
+    }
+  ],
+  "completed_steps": [
+    {
+      "index": 1,
+      "action": "desktop_open",
+      "params": {
+        "app": "firefox"
+      },
+      "description": "",
+      "status": "completed",
+      "result": "Opened firefox",
+      "verification": "success",
+      "verified": true,
+      "retries": 0,
+      "error": "",
+      "latency_ms": 0.010013580322265625,
+      "evidence_source": "unknown",
+      "sensitive_reason": ""
+    }
+  ],
+  "current_step": null,
+  "failed_steps": [],
+  "observed_state": "firefox window focused",
+  "verification_results": [
+    {
+      "step": 1,
+      "action": "desktop_open",
+      "verified": true,
+      "evidence": "Opened firefox",
+      "reason": ""
+    }
+  ],
+  "retry_count": 0,
+  "replan_count": 0,
+  "total_steps": 1,
+  "final_status": "SUCCESS",
+  "plan_version": 1,
+  "started_at": 1789808111.6783857,
+  "ended_at": 1789808111.67935,
+  "artifacts": {
+    "last_app": "firefox"
+  },
+  "log": [
+    "[TASK] id=a1c1de89b696 goal=\"Open Firefox\"",
+    "[PLAN] v1 steps=1",
+    "[STEP 1/1] desktop_open",
+    "[VERIFY] success",
+    "[TASK] COMPLETE",
+    "[TASK] SUCCESS (steps=1 ok, 0 failed, replans=0, latency=1ms)"
+  ],
+  "blocker": "",
+  "evidence_log": [
+    {
+      "fact": "Window: [jetbrains] Diego_Desktop_agent – browser_goal_engine.py\nPage: settings\nWindow: Diego_Desktop_agent – browser_goal_engine.py\nApplication: PyCharm (jetbrains)\nProcess: pycharm (PID 48703)\nSummary: Screen type: settings\nClipboard: Implement PHASE 23: GOAL-DIRECTED BROWSER AGENT for Diego.\n\nPhase 22 is COMPLETE",
+      "source": "live_observation",
+      "timestamp": 1789808111.6793928,
+      "confidence": 1.0
+    },
+    {
+      "fact": "",
+      "source": "local_knowledge",
+      "timestamp": 1789808111.6793942,
+      "confidence": 0.7993
+    },
+    {
+      "fact": "",
+      "source": "local_knowledge",
+      "timestamp": 1789808111.6793954,
+      "confidence": 0.7745
+    },
+    {
+      "fact": "",
+      "source": "local_knowledge",
+      "timestamp": 1789808111.6793962,
+      "confidence": 0.7564
+    }
+  ],
+  "pending_confirmation": null,
+  "confirmation_reason": "",
+  "referenced_entity": "",
+  "active_goal": ""
+}
