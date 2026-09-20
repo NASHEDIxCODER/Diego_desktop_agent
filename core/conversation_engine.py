@@ -584,6 +584,21 @@ class ConversationEngine:
                 await self._speak_guarded("My speech recognizer isn't available right now.")
                 return
 
+        # ── POST-WAKE READINESS FIX (2026-09-20) ──
+        # The post-wake path runs FACE_AUTH (which greets via
+        # _speak_guarded → resume_listening → _drain_requested=True) BEFORE
+        # this LISTEN session. That drain request lingers because no command
+        # stream consumed it, and stream_utterances()'s first loop iteration
+        # would then execute it AFTER establishing its command_session_start
+        # boundary — discarding the first 1-2s of the spoken command. Prepare
+        # the listener NOW (clear stale drain, force gate open, reset VAD,
+        # anchor the boundary) so the command session boundary is honored
+        # from the very first sample after face auth.
+        try:
+            command_listener.prepare_command_session()
+        except Exception as e:
+            logger.warning("[LISTEN] prepare_command_session failed: %s", e)
+
         events: "asyncio.Queue[UtteranceEvent]" = asyncio.Queue()
         # CRITICAL FIX (2026-08-29): stream_utterances() can raise (e.g.
         # _frames_to_bytes ValueError on empty frames). Wrap it so the

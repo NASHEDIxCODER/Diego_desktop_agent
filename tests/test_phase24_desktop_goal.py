@@ -203,90 +203,108 @@ class TestVerification:
 
 
 # ═══════════════════════════════════════════════════════════════
-# 5. Engine (fake controller + fake observer)
+# 5. Engine (stateful fake desktop: controller mutates, observer reads)
 # ═══════════════════════════════════════════════════════════════
 
-class FakeController:
-    """Record calls and simulate a desktop app UI driven by observation."""
+class FakeDesktop:
+    """A minimal in-memory Telegram-like UI the controller mutates."""
 
-    def __init__(self) -> None:
+    def __init__(self, contacts=None, *, message: str = "") -> None:
+        self.app = ""                      # '' until opened
+        self.window_title = ""
+        self.contacts = list(contacts or ["Rahul"])   # visible contact list
+        self.active_contact = ""           # '' = chat list view
+        self.draft = ""                    # message input value
+        self.sent = []                     # [(contact, text), ...]
+        self.message = message             # the body the agent will send
+
+    def open_app(self) -> None:
+        self.app = "telegram"
+        self.window_title = "Telegram"
+
+    def open_conversation(self, contact: str) -> None:
+        self.active_contact = contact
+        self.window_title = f"Telegram — {contact}"
+
+    def type_text(self, text: str) -> None:
+        if self.active_contact:
+            self.draft = text
+
+    def send(self) -> None:
+        if self.active_contact and self.draft:
+            self.sent.append((self.active_contact, self.draft))
+            self.draft = ""
+
+    def context(self) -> DesktopContext:
+        elements: List[InteractiveElement] = []
+        if not self.app:
+            return DesktopContext(application_state="unavailable")
+        if not self.active_contact:
+            # Chat list: contact rows visible.
+            elements = [el(c) for c in self.contacts]
+            visible = "\n".join(self.contacts)
+        else:
+            # Conversation view: sent messages are visible, plus the input.
+            visible = "\n".join(t for c, t in self.sent
+                                if c == self.active_contact)
+            elements = [el("Message", kind="input", value=self.draft)]
+        return DesktopContext(
+            active_application=self.app,
+            window_title=self.window_title,
+            window_class="TelegramDesktop",
+            application_state="present",
+            observation_method="accessibility",
+            interactive_elements=elements,
+            visible_text=visible,
+        )
+
+
+class StatefulController:
+    def __init__(self, desktop: FakeDesktop) -> None:
+        self.desktop = desktop
         self.calls: List[tuple] = []
-        self._app_open = False
 
     def execute(self, action: str, params: Optional[Dict[str, Any]] = None):
-        # Import here to avoid a module-level computer import in tests.
         from computer.action_result import ActionOutcome, ActionResult
         params = dict(params or {})
         self.calls.append((action, params))
+        d = self.desktop
         if action == "open_app":
-            self._app_open = True
-            return ActionResult(action=action, method="app_resolver",
-                                success=True, outcome=ActionOutcome.SUCCESS)
-        if action in ("click", "find_element", "type_text", "press_key",
-                      "clear_text", "focus_window"):
-            return ActionResult(action=action, method="native_input",
-                                success=True, outcome=ActionOutcome.SUCCESS)
-        return ActionResult(action=action, method="perception", success=True,
+            d.open_app()
+        elif action == "click":
+            target = str(params.get("target") or "")
+            if target and not str(target).startswith("@"):
+                d.open_conversation(target)
+        elif action == "type_text":
+            d.type_text(str(params.get("text") or ""))
+        elif action == "press_key":
+            d.send()
+        return ActionResult(action=action, method="native_input", success=True,
                             outcome=ActionOutcome.SUCCESS)
 
 
-class FakeObserver:
-    """A scripted observer that returns contexts in order, then holds."""
-
-    def __init__(self, contexts: List[DesktopContext]) -> None:
-        self._contexts = list(contexts)
-        self._index = 0
-        self.notes: List[str] = []
+class StatefulObserver:
+    def __init__(self, desktop: FakeDesktop) -> None:
+        self.desktop = desktop
 
     def observe(self, note: str = "") -> DesktopContext:
-        self.notes.append(note)
-        if self._contexts:
-            ctx = self._contexts[min(self._index, len(self._contexts) - 1)]
-            if self._index < len(self._contexts) - 1:
-                self._index += 1
-            return ctx
-        return DesktopContext(application_state="unavailable")
+        return self.desktop.context()
 
 
-def make_engine(ctxs: List[DesktopContext]) -> DesktopGoalEngine:
+def make_stateful_engine(desktop: FakeDesktop) -> DesktopGoalEngine:
     return DesktopGoalEngine(
-        controller=FakeController(),
-        observer=FakeObserver(ctxs),
+        controller=StatefulController(desktop),
+        observer=StatefulObserver(desktop),
         trace=AgentTrace(),
         limits=fast_limits(),
     )
 
 
-def full_success_contexts() -> List[DesktopContext]:
-    """Telegram → contact search → conversation → input → draft → sent."""
-    msg = "I'll call you after 6"
-    return [
-        # OPEN_APPLICATION before
-        DesktopContext(application_state="unavailable"),
-        # OPEN_APPLICATION after → app present
-        DesktopContext(active_application="telegram", window_title="Telegram",
-                       window_class="TelegramDesktop", application_state="present",
-                       observation_method="native_window"),
-        # FIND_CONTACT after → contact observed
-        contact_ctx(["Rahul"]),
-        # VERIFY_CONTACT / OPEN_CONVERSATION after → conversation identity
-        conversation_ctx("Rahul", ""),
-        # COMPOSE / DRAFT after → input holds draft
-        DesktopContext(active_application="telegram",
-                       window_title="Telegram — Rahul",
-                       interactive_elements=[
-                           InteractiveElement(label="Message", kind="input",
-                                              value=msg)],
-                       application_state="present",
-                       observation_method="accessibility"),
-        # SEND / VERIFY after → message inside conversation
-        conversation_ctx("Rahul", msg),
-    ]
-
-
 class TestEngineFlow:
     def test_send_goal_pauses_for_confirmation_then_completes(self):
-        eng = make_engine(full_success_contexts())
+        desktop = FakeDesktop(contacts=["Rahul"],
+                              message="I'll call you after 6")
+        eng = make_stateful_engine(desktop)
         run = eng.start("Send Rahul: I'll call you after 6 on Telegram")
         assert run is not None
         eng.run_to_terminal(run)
@@ -296,22 +314,28 @@ class TestEngineFlow:
         assert "Rahul" in (run.question or "")
         assert "I'll call you after 6" in (run.question or "")
         assert eng.has_pending()
+        # Nothing was sent yet — the agent paused BEFORE the send.
+        assert desktop.sent == []
         # Confirm → resume the SAME run (no restart).
         eng.resume("yes", task_id=run.task_id)
         assert run.status == DesktopStatus.COMPLETED, (run.status, run.error)
         assert run.sent_verified
+        assert ("Rahul", "I'll call you after 6") in desktop.sent
 
     def test_confirm_pause_cancels(self):
-        eng = make_engine(full_success_contexts())
+        desktop = FakeDesktop(message="I'll call you after 6")
+        eng = make_stateful_engine(desktop)
         run = eng.start("Send Rahul: I'll call you after 6 on Telegram")
         eng.run_to_terminal(run)
         assert run.status == DesktopStatus.WAITING_CONFIRMATION
         eng.resume("cancel", task_id=run.task_id)
         assert run.status == DesktopStatus.FAILED
         assert run.error
+        assert desktop.sent == []
 
     def test_trace_emits_full_lifecycle(self):
-        eng = make_engine(full_success_contexts())
+        desktop = FakeDesktop(message="I'll call you after 6")
+        eng = make_stateful_engine(desktop)
         run = eng.start("Send Rahul: I'll call you after 6 on Telegram")
         eng.run_to_terminal(run)
         eng.resume("yes", task_id=run.task_id)
@@ -324,28 +348,29 @@ class TestEngineFlow:
             assert want in types, want
 
     def test_completion_requires_sent_verification(self):
-        # If the message never appears inside the conversation, the goal can
-        # never complete (no false success from "send executed").
-        ctxs = full_success_contexts()[:-1]  # drop the "message inside chat"
-        eng = make_engine(ctxs)
+        # A desktop where "send" executes but the message never appears in the
+        # conversation must not complete (no false success from "send ran").
+        desktop = FakeDesktop(message="I'll call you after 6")
+        eng = make_stateful_engine(desktop)
+
+        def _noop_send(action, params):
+            from computer.action_result import ActionOutcome, ActionResult
+            return ActionResult(action=action, method="native_input",
+                                success=True, outcome=ActionOutcome.SUCCESS)
+        # Sabotage: make press_key "succeed" without recording the message.
+        eng._controller.execute = _noop_send  # type: ignore[assignment]
         run = eng.start("Send Rahul: I'll call you after 6 on Telegram")
         eng.run_to_terminal(run)
         eng.resume("yes", task_id=run.task_id)
-        # May recover then fail — but never COMPLETED without sent_verified.
         assert run.status != DesktopStatus.COMPLETED
         assert not run.sent_verified
 
 
 class TestEngineAmbiguity:
     def test_ambiguous_contact_asks(self):
-        ctxs = [
-            DesktopContext(application_state="unavailable"),
-            DesktopContext(active_application="telegram", window_title="Telegram",
-                           application_state="present",
-                           observation_method="native_window"),
-            contact_ctx(["Rahul Kumar", "Rahul Sharma", "Rahul Singh"]),
-        ]
-        eng = make_engine(ctxs)
+        desktop = FakeDesktop(
+            contacts=["Rahul Kumar", "Rahul Sharma", "Rahul Singh"])
+        eng = make_stateful_engine(desktop)
         run = eng.start("Send Rahul: hello on Telegram")
         eng.run_to_terminal(run)
         assert run.status == DesktopStatus.ASKING_USER, (run.status, run.error)
@@ -355,49 +380,42 @@ class TestEngineAmbiguity:
         assert "Rahul Kumar" in labels and "Rahul Sharma" in labels
 
     def test_ambiguous_contact_resume_uses_choice(self):
-        ctxs = [
-            DesktopContext(application_state="unavailable"),
-            DesktopContext(active_application="telegram", window_title="Telegram",
-                           application_state="present",
-                           observation_method="native_window"),
-            contact_ctx(["Rahul Kumar", "Rahul Sharma", "Rahul Singh"]),
-            conversation_ctx("Rahul Sharma", ""),
-            DesktopContext(active_application="telegram",
-                           window_title="Telegram — Rahul Sharma",
-                           interactive_elements=[
-                               InteractiveElement(label="Message", kind="input",
-                                                  value="hello")],
-                           observation_method="accessibility"),
-            conversation_ctx("Rahul Sharma", "hello"),
-        ]
-        eng = make_engine(ctxs)
+        desktop = FakeDesktop(
+            contacts=["Rahul Kumar", "Rahul Sharma", "Rahul Singh"],
+            message="hello")
+        eng = make_stateful_engine(desktop)
         run = eng.start("Send Rahul: hello on Telegram")
         eng.run_to_terminal(run)
         assert run.status == DesktopStatus.ASKING_USER
-        # User picks "Rahul Sharma".
         eng.resume("Rahul Sharma", task_id=run.task_id)
-        assert run.status == DesktopStatus.WAITING_CONFIRMATION
+        assert run.status == DesktopStatus.WAITING_CONFIRMATION, \
+            (run.status, run.error)
         eng.resume("yes", task_id=run.task_id)
-        assert run.status == DesktopStatus.COMPLETED
-        # The send used the chosen contact.
+        assert run.status == DesktopStatus.COMPLETED, (run.status, run.error)
         assert run.resolved_contact == "Rahul Sharma"
+        assert ("Rahul Sharma", "hello") in desktop.sent
 
 
 class TestEngineRecovery:
     def test_app_open_failure_is_bounded(self):
-        ctxs = [DesktopContext(application_state="unavailable")] * 10
-        eng = make_engine(ctxs)
-        eng._controller.execute = lambda a, p: _fail_result(a)
+        desktop = FakeDesktop(message="hello")
+
+        eng = make_stateful_engine(desktop)
+
+        def _fail(action, params):
+            from computer.action_result import ActionOutcome, ActionResult
+            return ActionResult(action=action, method="app_resolver",
+                                success=False, outcome=ActionOutcome.FAILED,
+                                error="couldn't find app")
+
+        eng._controller.execute = _fail  # type: ignore[assignment]
         run = eng.start("Send Rahul: hello on Telegram")
         eng.run_to_terminal(run)
         assert run.status == DesktopStatus.FAILED
-        assert run.recoveries <= fast_limits().max_retries_per_step + 1
-
-
-def _fail_result(action: str):
-    from computer.action_result import ActionOutcome, ActionResult
-    return ActionResult(action=action, method="perception", success=False,
-                        outcome=ActionOutcome.FAILED, error="unavailable")
+        # Bounded: never infinite — recoveries stay within the retry/replan
+        # budgets (max_retries + max_replans + one final attempt).
+        assert run.recoveries <= (fast_limits().max_retries_per_step
+                                  + fast_limits().max_replans + 1)
 
 
 

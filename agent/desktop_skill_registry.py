@@ -14,15 +14,11 @@ Future applications register capabilities here without touching
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from agent.desktop_context import DesktopContext, InteractiveElement
-from agent.desktop_goal import (
-    ROLE_MESSAGE_INPUT,
-    ROLE_SEARCH,
-    DesktopAction,
-)
+from agent.desktop_goal import DesktopAction
 
 logger = logging.getLogger(__name__)
 

@@ -506,6 +506,11 @@ class DesktopGoalEngine:
             params = self._prepare_params(step, ctx)
         if params is None:
             return None, None
+        comp_action = COMPUTER_ACTION.get(step.action, "")
+        # Engine-internal steps (verification/read) perform no controller
+        # action: they are satisfied purely by observation.
+        if not comp_action:
+            return None, params
         run.actions += 1
         try:
             self.trace().action_started(
@@ -514,9 +519,6 @@ class DesktopGoalEngine:
                 expected_effect=step.expected_effect, task_id=run.task_id)
         except Exception:
             pass
-        comp_action = COMPUTER_ACTION.get(step.action, "")
-        if not comp_action:
-            return None, params
         # Copy params without engine-internal keys.
         exec_params = {k: v for k, v in params.items()
                        if not str(k).startswith("_")}
@@ -568,6 +570,12 @@ class DesktopGoalEngine:
 
     def _run_step(self, run: DesktopTaskRun, step: DesktopStep) -> str:
         """Returns 'done' | 'retry' | 'paused' | 'failed'."""
+        try:
+            self.trace().step_started(
+                step.description or step.action.value, index=step.index,
+                total=len(run.steps), task_id=run.task_id)
+        except Exception:
+            pass
         if step.action == DesktopAction.ASK_USER:
             return self._ask_user(run, str(step.params.get("question")
                                            or "How should I proceed?"), None)

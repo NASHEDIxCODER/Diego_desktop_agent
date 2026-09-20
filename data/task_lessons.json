@@ -429,6 +429,45 @@
    "reuse_count": 8,
    "successes": 3,
    "failures": 5
+  },
+  {
+   "id": "77ba2e339a",
+   "type": "failed_strategy",
+   "task_pattern": "general",
+   "lesson": "no verified steps: The generated plan contained no executable actions: action 'shutdown' not authorized for this request; action 'get_time' not authorized for this request; action 'notify' not authorized for this reques",
+   "evidence": "verified_failure",
+   "confidence": 0.5,
+   "timestamp": 1789904577.4081118,
+   "source_task_id": "ab59468d5fb4",
+   "reuse_count": 0,
+   "successes": 0,
+   "failures": 0
+  },
+  {
+   "id": "afbcf95d72",
+   "type": "failed_strategy",
+   "task_pattern": "general",
+   "lesson": "no verified steps: The generated plan contained no executable actions: action 'open_url' not authorized for this request; action 'type_text' not authorized for this request",
+   "evidence": "verified_failure",
+   "confidence": 0.5,
+   "timestamp": 1789904646.8535001,
+   "source_task_id": "050f425b26ef",
+   "reuse_count": 0,
+   "successes": 0,
+   "failures": 0
+  },
+  {
+   "id": "a4ef227bf8",
+   "type": "successful_strategy",
+   "task_pattern": "open_application",
+   "lesson": "strategy that worked: open_url",
+   "evidence": "verified_success",
+   "confidence": 0.7,
+   "timestamp": 1789904766.5446925,
+   "source_task_id": "45e62fb31c78",
+   "reuse_count": 0,
+   "successes": 0,
+   "failures": 0
   }
  ]
 }

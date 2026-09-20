@@ -257,34 +257,7 @@ class DesktopObserver:
             return None
 
     def _observe_ocr(self, ctx: Optional[DesktopContext]) -> Optional[DesktopContext]:
-        text = ""
-        try:
-            from services.vision_service import vision_service
-
-            async def _scan():
-                c = await vision_service.force_analyze()
-                return getattr(c, "ocr_only", None)
-
-            try:
-                import asyncio
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    fut = asyncio.run_coroutine_threadsafe(_scan(), loop)
-                    raw = fut.result(timeout=8)
-                else:
-                    raw = loop.run_until_complete(_scan())
-            except RuntimeError:
-                raw = asyncio.run(_scan())
-            except Exception as e:
-                logger.debug("[PERCEPTION] desktop ocr failed: %s", e)
-                raw = ""
-            if callable(raw):
-                text = str(raw() or "")
-            else:
-                text = str(raw or "")
-        except Exception as e:
-            logger.debug("[PERCEPTION] desktop ocr unavailable: %s", e)
-            text = ""
+        text = self._ocr_text()
         if not text:
             return ctx
         c = ctx or DesktopContext(application_state="present",
@@ -294,6 +267,27 @@ class DesktopObserver:
             c.observation_method = "ocr"
         c.screen_hash = _screen_hash() or c.screen_hash
         return c
+
+    @staticmethod
+    def _ocr_text() -> str:
+        """Best-effort OCR of the visible screen (never raises)."""
+        try:
+            from services.vision_service import vision_service
+            import asyncio
+            method = getattr(vision_service, "ocr_only", None)
+            if not callable(method):
+                return ""
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    fut = asyncio.run_coroutine_threadsafe(method(), loop)
+                    return str(fut.result(timeout=8) or "")
+                return str(loop.run_until_complete(method()) or "")
+            except RuntimeError:
+                return str(asyncio.run(method()) or "")
+        except Exception as e:
+            logger.debug("[PERCEPTION] desktop ocr unavailable: %s", e)
+            return ""
 
     @staticmethod
     def _native_window() -> Dict[str, Any]:

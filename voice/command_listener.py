@@ -1076,6 +1076,16 @@ class CommandListener:
         # fresh ID so logs can prove no state leaks across sessions.
         self._session_id = 0
 
+        # POST-WAKE READINESS FIX (2026-09-20): the command-session start
+        # boundary, recorded EAGERLY by prepare_command_session() at LISTEN
+        # entry. stream_utterances() opens (through async __anext__) slightly
+        # LATER — after the conversation engine has awaited its setup work —
+        # so a boundary captured lazily at __anext__ time would miss the
+        # first words a user speaks immediately after the face-auth greeting.
+        # When set, stream_utterances() starts from THIS boundary instead of
+        # the current write head.
+        self._session_start_override: Optional[int] = None
+
     def initialize(self) -> bool:
         whisper_ok = self._whisper.load()
         vad_ok = unified_vad.load()
@@ -1150,6 +1160,62 @@ class CommandListener:
     def reset_cancel(self) -> None:
         self._cancel.clear()
 
+    def prepare_command_session(self) -> None:
+        """Make the command listener IMMEDIATELY ready for a fresh LISTEN
+        session (POST-WAKE READINESS FIX, 2026-09-20).
+
+        The normal post-wake sequence is:
+
+            WAKE → (chime) → FACE_AUTH (greeting via _speak_guarded)
+                 → LISTEN → command capture
+
+        _speak_guarded() runs pause_listening() → speak → resume_listening().
+        resume_listening() sets `_drain_requested = True`. Because the command
+        STREAM is not running yet at that point, that drain request is never
+        consumed and LINGERS into the next LISTEN session. stream_utterances()
+        then fixes its command_session_start boundary on the first __anext__(),
+        and its very first loop iteration executes the leftover drain — moving
+        `last_total` back to the current write head AFTER the boundary was
+        established and discarding the first 1-2s of the spoken command, so
+        the listener stays in WAITING_FOR_SPEECH and ends in "NO SPEECH
+        evidence".
+
+        This method runs at LISTEN entry, BEFORE the stream is created, and
+        eagerly clears that stale state so the boundary that stream_utterances()
+        establishes is never invalidated by a leftover drain:
+
+          1. clear any lingering drain request (it belongs to the previous
+             TTS/guard cycle, not this command session),
+          2. release the gate-hold timestamp so the BACKLOG backstop never
+             force-resumes and re-drains mid-command,
+          3. force the listen gate OPEN (idempotent),
+          4. reset VAD state so no stale EMA/in-speech latch leaks in, and
+          5. anchor the command-session boundary EAGERLY so audio spoken in
+             the brief setup window (before __anext__) is preserved.
+
+        These are exactly the steps the drain path would run, but they happen
+        eagerly so the FIRST words after face auth are not discarded.
+        """
+        self._drain_requested = False
+        self._gate_closed_at = None
+        self._listen_enabled.set()
+        try:
+            unified_vad.reset_state()
+        except Exception as e:
+            logger.warning("[CMD] VAD reset in prepare_command_session failed: %s", e)
+
+        # Record the boundary EAGERLY at LISTEN entry so audio spoken in the
+        # brief setup window (between this call and stream_utterances()
+        # actually opening) is NOT lost. stream_utterances() consumes it.
+        try:
+            self._session_start_override = int(audio_manager.total_samples)
+        except Exception:
+            self._session_start_override = None
+
+        logger.info(
+            "[CMD] command session prepared (drain cleared, gate OPEN, VAD "
+            "reset, start_override=%s)", self._session_start_override)
+
     # ── TASK 2: speech state machine helpers ───────────────
 
     @staticmethod
@@ -1222,7 +1288,20 @@ class CommandListener:
         # advance our read cursor to the current write position. Everything
         # written before this boundary (wake word, chime, TTS, face auth,
         # previous command) is discarded.
-        command_session_start = audio_manager.total_samples
+        #
+        # POST-WAKE READINESS FIX (2026-09-20): if prepare_command_session()
+        # already anchored the boundary at LISTEN entry (before the async
+        # generator opened), honor THAT boundary so audio spoken in the setup
+        # window is preserved. Otherwise fall back to the current write head.
+        if self._session_start_override is not None:
+            command_session_start = self._session_start_override
+            self._session_start_override = None
+            logger.info(
+                "[CMD] session_start overridden to prepare() boundary=%d "
+                "(current_write_head=%d)",
+                command_session_start, audio_manager.total_samples)
+        else:
+            command_session_start = int(audio_manager.total_samples)
         logger.info("[CMD] session_start total_samples=%d", command_session_start)
         logger.info("[CMD] buffer_before_flush=%d buffer_after_flush=0", command_session_start)
         last_total = command_session_start
