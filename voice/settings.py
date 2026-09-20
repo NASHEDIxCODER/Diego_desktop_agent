@@ -59,6 +59,15 @@ class VoiceSettings:
     lang_code: str = "en-IN"
     stt_timeout: float = 3.0       # Seconds to wait for speech start
     stt_phrase_limit: float = 7.0  # Max seconds per phrase
+    # ── STT backend selection (2026-09-20) ──
+    # Primary / fallback ASR backends. Default primary is faster-whisper
+    # (unchanged production baseline). `qwen3` (Qwen3-ASR 0.6B INT8 via
+    # sherpa-onnx) is selectable via STT_PRIMARY=qwen3; when selected, the
+    # faster-whisper fallback is ALWAYS kept alive to supply the transcript
+    # confidence evidence that downstream quality gates require, so the
+    # hallucination band can never be bypassed.
+    stt_primary: str = "faster_whisper"   # faster_whisper | qwen3
+    stt_fallback: str = "faster_whisper"  # faster_whisper (configurable)
 
     # Audio backend (auto-detected)
     tts_backend: str = "auto"  # auto, alsa, pulseaudio, pipewire, jack
@@ -131,6 +140,10 @@ class VoiceSettings:
             self.wake_model = os.getenv("WAKE_MODEL")
         if os.getenv("LANG_CODE"):
             self.lang_code = os.getenv("LANG_CODE", "en-IN")
+        if os.getenv("STT_PRIMARY"):
+            self.stt_primary = os.getenv("STT_PRIMARY", "faster_whisper")
+        if os.getenv("STT_FALLBACK"):
+            self.stt_fallback = os.getenv("STT_FALLBACK", "faster_whisper")
         if os.getenv("WAKE_DEVICE_INDEX"):
             try:
                 self.device_index = int(os.getenv("WAKE_DEVICE_INDEX", ""))
@@ -158,6 +171,8 @@ class VoiceSettings:
             "lang_code": self.lang_code,
             "stt_timeout": self.stt_timeout,
             "stt_phrase_limit": self.stt_phrase_limit,
+            "stt_primary": self.stt_primary,
+            "stt_fallback": self.stt_fallback,
             "tts_backend": self.tts_backend,
             "device_index": self.device_index,
         }

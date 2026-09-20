@@ -1087,6 +1087,17 @@ class CommandListener:
         self._session_start_override: Optional[int] = None
 
     def initialize(self) -> bool:
+        # ── STT backend selection (2026-09-20) ──
+        # Default resolves to _WhisperTranscriber (unchanged). STT_PRIMARY=qwen3
+        # swaps in the sherpa-onnx composite while ALWAYS keeping faster-whisper
+        # for confidence/verify/partials so downstream quality gates never
+        # degrade. VAD / wake / auth / Brain / routing are untouched.
+        try:
+            from voice.stt_backend import build_stt_backend
+            self._whisper = build_stt_backend()
+        except Exception as e:
+            logger.warning("[CMD-LISTEN] STT backend build failed (%s) — "
+                           "using faster-whisper default", e)
         whisper_ok = self._whisper.load()
         vad_ok = unified_vad.load()
         self._ready = whisper_ok
