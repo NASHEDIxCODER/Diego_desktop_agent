@@ -1,0 +1,1165 @@
+{
+  "phase": "24.7Q",
+  "timestamp": "2026-09-21T10:42:26.785228+00:00",
+  "candidate": "qwen3-1.7b",
+  "kind": "local",
+  "note": "production default via build_stt_backend(). Sarvam side pending API key; clips frozen for 1:1 merge.",
+  "preprocessing": "wave->mono-mean->/32768->linear-16k-f32; Qwen via production int16 composite path",
+  "utterances": [
+    {
+      "id": "real-Diego_voice_backup",
+      "group": "real-diego",
+      "kind": "real",
+      "dur_s": 0.35,
+      "clip_meta": {
+        "src_sr": 44100,
+        "src_ch": 1,
+        "file": "/home/nashedi_x_coder/Workspace/PycharmProjects/Diego_desktop_agent/Diego_voice_backup.wav"
+      },
+      "transcript": "",
+      "confidence": 0.0,
+      "first_latency_ms": 1223.8,
+      "latencies_ms": [
+        1223.8,
+        1020.8
+      ],
+      "median_latency_ms": 1122.3,
+      "rtf": 3.207,
+      "latency_kind": "on-device",
+      "usable": false,
+      "keyword_recall": null,
+      "note": "no ground truth; verbatim only"
+    },
+    {
+      "id": "real-Diego",
+      "group": "real-diego",
+      "kind": "real",
+      "dur_s": 0.35,
+      "clip_meta": {
+        "src_sr": 44100,
+        "src_ch": 1,
+        "file": "/home/nashedi_x_coder/Workspace/PycharmProjects/Diego_desktop_agent/Diego.wav"
+      },
+      "transcript": "",
+      "confidence": 0.0,
+      "first_latency_ms": 1037.3,
+      "latencies_ms": [
+        1037.3,
+        1003.3
+      ],
+      "median_latency_ms": 1020.3,
+      "rtf": 2.916,
+      "latency_kind": "on-device",
+      "usable": false,
+      "keyword_recall": null,
+      "note": "no ground truth; verbatim only"
+    },
+    {
+      "id": "wake-positive_001",
+      "group": "real-wake",
+      "kind": "real",
+      "dur_s": 2.816,
+      "clip_meta": {
+        "src_sr": 16000,
+        "src_ch": 1,
+        "file": "/home/nashedi_x_coder/Workspace/PycharmProjects/Diego_desktop_agent/models/wake/positives/positive_001.wav"
+      },
+      "transcript": "",
+      "confidence": 0.0,
+      "first_latency_ms": 1341.6,
+      "latencies_ms": [
+        1341.6,
+        1322.6
+      ],
+      "median_latency_ms": 1332.1,
+      "rtf": 0.473,
+      "latency_kind": "on-device",
+      "postprocessed": "",
+      "valid": false,
+      "fail_reason": "TRANSCRIPTION_FAILED",
+      "garbage": true,
+      "low_quality": true,
+      "repeated_hallucination": false,
+      "hallucinated": true,
+      "usable": false,
+      "normalized_command": "",
+      "intent_category": "IntentCategory.UNCERTAIN",
+      "actionable": false,
+      "keyword_hits": {
+        "diego": false,
+        "hello": false
+      },
+      "keyword_recall": 0.0,
+      "entity_hits": {},
+      "confirmation_word": null
+    },
+    {
+      "id": "wake-positive_002",
+      "group": "real-wake",
+      "kind": "real",
+      "dur_s": 2.816,
+      "clip_meta": {
+        "src_sr": 16000,
+        "src_ch": 1,
+        "file": "/home/nashedi_x_coder/Workspace/PycharmProjects/Diego_desktop_agent/models/wake/positives/positive_002.wav"
+      },
+      "transcript": "",
+      "confidence": 0.0,
+      "first_latency_ms": 1446.5,
+      "latencies_ms": [
+        1446.5,
+        1311.6
+      ],
+      "median_latency_ms": 1379.1,
+      "rtf": 0.49,
+      "latency_kind": "on-device",
+      "postprocessed": "",
+      "valid": false,
+      "fail_reason": "TRANSCRIPTION_FAILED",
+      "garbage": true,
+      "low_quality": true,
+      "repeated_hallucination": false,
+      "hallucinated": true,
+      "usable": false,
+      "normalized_command": "",
+      "intent_category": "IntentCategory.UNCERTAIN",
+      "actionable": false,
+      "keyword_hits": {
+        "diego": false,
+        "hello": false
+      },
+      "keyword_recall": 0.0,
+      "entity_hits": {},
+      "confirmation_word": null
+    },
+    {
+      "id": "wake-positive_003",
+      "group": "real-wake",
+      "kind": "real",
+      "dur_s": 2.816,
+      "clip_meta": {
+        "src_sr": 16000,
+        "src_ch": 1,
+        "file": "/home/nashedi_x_coder/Workspace/PycharmProjects/Diego_desktop_agent/models/wake/positives/positive_003.wav"
+      },
+      "transcript": "",
+      "confidence": 0.0,
+      "first_latency_ms": 1308.6,
+      "latencies_ms": [
+        1308.6,
+        1315.7
+      ],
+      "median_latency_ms": 1312.1,
+      "rtf": 0.466,
+      "latency_kind": "on-device",
+      "postprocessed": "",
+      "valid": false,
+      "fail_reason": "TRANSCRIPTION_FAILED",
+      "garbage": true,
+      "low_quality": true,
+      "repeated_hallucination": false,
+      "hallucinated": true,
+      "usable": false,
+      "normalized_command": "",
+      "intent_category": "IntentCategory.UNCERTAIN",
+      "actionable": false,
+      "keyword_hits": {
+        "diego": false,
+        "hello": false
+      },
+      "keyword_recall": 0.0,
+      "entity_hits": {},
+      "confirmation_word": null
+    },
+    {
+      "id": "wake-positive_004",
+      "group": "real-wake",
+      "kind": "real",
+      "dur_s": 3.061,
+      "clip_meta": {
+        "src_sr": 16000,
+        "src_ch": 1,
+        "file": "/home/nashedi_x_coder/Workspace/PycharmProjects/Diego_desktop_agent/models/wake/positives/positive_004.wav"
+      },
+      "transcript": "",
+      "confidence": 0.0,
+      "first_latency_ms": 1393.0,
+      "latencies_ms": [
+        1393.0,
+        1382.7
+      ],
+      "median_latency_ms": 1387.9,
+      "rtf": 0.453,
+      "latency_kind": "on-device",
+      "postprocessed": "",
+      "valid": false,
+      "fail_reason": "TRANSCRIPTION_FAILED",
+      "garbage": true,
+      "low_quality": true,
+      "repeated_hallucination": false,
+      "hallucinated": true,
+      "usable": false,
+      "normalized_command": "",
+      "intent_category": "IntentCategory.UNCERTAIN",
+      "actionable": false,
+      "keyword_hits": {
+        "diego": false,
+        "hello": false
+      },
+      "keyword_recall": 0.0,
+      "entity_hits": {},
+      "confirmation_word": null
+    },
+    {
+      "id": "wake-positive_005",
+      "group": "real-wake",
+      "kind": "real",
+      "dur_s": 2.607,
+      "clip_meta": {
+        "src_sr": 16000,
+        "src_ch": 1,
+        "file": "/home/nashedi_x_coder/Workspace/PycharmProjects/Diego_desktop_agent/models/wake/positives/positive_005.wav"
+      },
+      "transcript": "",
+      "confidence": 0.0,
+      "first_latency_ms": 1295.5,
+      "latencies_ms": [
+        1295.5,
+        1639.7
+      ],
+      "median_latency_ms": 1467.6,
+      "rtf": 0.563,
+      "latency_kind": "on-device",
+      "postprocessed": "",
+      "valid": false,
+      "fail_reason": "TRANSCRIPTION_FAILED",
+      "garbage": true,
+      "low_quality": true,
+      "repeated_hallucination": false,
+      "hallucinated": true,
+      "usable": false,
+      "normalized_command": "",
+      "intent_category": "IntentCategory.UNCERTAIN",
+      "actionable": false,
+      "keyword_hits": {
+        "diego": false,
+        "hello": false
+      },
+      "keyword_recall": 0.0,
+      "entity_hits": {},
+      "confirmation_word": null
+    },
+    {
+      "id": "wake-positive_006",
+      "group": "real-wake",
+      "kind": "real",
+      "dur_s": 1.435,
+      "clip_meta": {
+        "src_sr": 16000,
+        "src_ch": 1,
+        "file": "/home/nashedi_x_coder/Workspace/PycharmProjects/Diego_desktop_agent/models/wake/positives/positive_006.wav"
+      },
+      "transcript": "Hello, Diego.",
+      "confidence": 0.0,
+      "first_latency_ms": 2113.4,
+      "latencies_ms": [
+        2113.4,
+        2360.7
+      ],
+      "median_latency_ms": 2237.0,
+      "rtf": 1.559,
+      "latency_kind": "on-device",
+      "postprocessed": "Hello, Diego",
+      "valid": true,
+      "fail_reason": "",
+      "garbage": false,
+      "low_quality": false,
+      "repeated_hallucination": false,
+      "hallucinated": false,
+      "usable": true,
+      "normalized_command": "Hello,",
+      "intent_category": "IntentCategory.CONVERSATIONAL",
+      "actionable": false,
+      "keyword_hits": {
+        "diego": true,
+        "hello": true
+      },
+      "keyword_recall": 1.0,
+      "entity_hits": {},
+      "confirmation_word": null
+    },
+    {
+      "id": "wake-positive_007",
+      "group": "real-wake",
+      "kind": "real",
+      "dur_s": 1.105,
+      "clip_meta": {
+        "src_sr": 16000,
+        "src_ch": 1,
+        "file": "/home/nashedi_x_coder/Workspace/PycharmProjects/Diego_desktop_agent/models/wake/positives/positive_007.wav"
+      },
+      "transcript": "Hello, Diego.",
+      "confidence": 0.0,
+      "first_latency_ms": 2256.4,
+      "latencies_ms": [
+        2256.4,
+        1979.9
+      ],
+      "median_latency_ms": 2118.2,
+      "rtf": 1.916,
+      "latency_kind": "on-device",
+      "postprocessed": "Hello, Diego",
+      "valid": true,
+      "fail_reason": "",
+      "garbage": false,
+      "low_quality": false,
+      "repeated_hallucination": false,
+      "hallucinated": false,
+      "usable": true,
+      "normalized_command": "Hello,",
+      "intent_category": "IntentCategory.CONVERSATIONAL",
+      "actionable": false,
+      "keyword_hits": {
+        "diego": true,
+        "hello": true
+      },
+      "keyword_recall": 1.0,
+      "entity_hits": {},
+      "confirmation_word": null
+    },
+    {
+      "id": "wake-positive_008",
+      "group": "real-wake",
+      "kind": "real",
+      "dur_s": 1.925,
+      "clip_meta": {
+        "src_sr": 16000,
+        "src_ch": 1,
+        "file": "/home/nashedi_x_coder/Workspace/PycharmProjects/Diego_desktop_agent/models/wake/positives/positive_008.wav"
+      },
+      "transcript": "Hello, Diego.",
+      "confidence": 0.0,
+      "first_latency_ms": 2285.3,
+      "latencies_ms": [
+        2285.3,
+        1987.0
+      ],
+      "median_latency_ms": 2136.1,
+      "rtf": 1.109,
+      "latency_kind": "on-device",
+      "postprocessed": "Hello, Diego",
+      "valid": true,
+      "fail_reason": "",
+      "garbage": false,
+      "low_quality": false,
+      "repeated_hallucination": false,
+      "hallucinated": false,
+      "usable": true,
+      "normalized_command": "Hello,",
+      "intent_category": "IntentCategory.CONVERSATIONAL",
+      "actionable": false,
+      "keyword_hits": {
+        "diego": true,
+        "hello": true
+      },
+      "keyword_recall": 1.0,
+      "entity_hits": {},
+      "confirmation_word": null
+    },
+    {
+      "id": "wake-positive_009",
+      "group": "real-wake",
+      "kind": "real",
+      "dur_s": 0.923,
+      "clip_meta": {
+        "src_sr": 16000,
+        "src_ch": 1,
+        "file": "/home/nashedi_x_coder/Workspace/PycharmProjects/Diego_desktop_agent/models/wake/positives/positive_009.wav"
+      },
+      "transcript": "Hello, Diego.",
+      "confidence": 0.0,
+      "first_latency_ms": 1837.9,
+      "latencies_ms": [
+        1837.9,
+        1824.7
+      ],
+      "median_latency_ms": 1831.3,
+      "rtf": 1.984,
+      "latency_kind": "on-device",
+      "postprocessed": "Hello, Diego",
+      "valid": true,
+      "fail_reason": "",
+      "garbage": false,
+      "low_quality": false,
+      "repeated_hallucination": false,
+      "hallucinated": false,
+      "usable": true,
+      "normalized_command": "Hello,",
+      "intent_category": "IntentCategory.CONVERSATIONAL",
+      "actionable": false,
+      "keyword_hits": {
+        "diego": true,
+        "hello": true
+      },
+      "keyword_recall": 1.0,
+      "entity_hits": {},
+      "confirmation_word": null
+    },
+    {
+      "id": "wake-positive_010",
+      "group": "real-wake",
+      "kind": "real",
+      "dur_s": 1.097,
+      "clip_meta": {
+        "src_sr": 16000,
+        "src_ch": 1,
+        "file": "/home/nashedi_x_coder/Workspace/PycharmProjects/Diego_desktop_agent/models/wake/positives/positive_010.wav"
+      },
+      "transcript": "Hello, Diego.",
+      "confidence": 0.0,
+      "first_latency_ms": 1927.8,
+      "latencies_ms": [
+        1927.8,
+        1876.0
+      ],
+      "median_latency_ms": 1901.9,
+      "rtf": 1.734,
+      "latency_kind": "on-device",
+      "postprocessed": "Hello, Diego",
+      "valid": true,
+      "fail_reason": "",
+      "garbage": false,
+      "low_quality": false,
+      "repeated_hallucination": false,
+      "hallucinated": false,
+      "usable": true,
+      "normalized_command": "Hello,",
+      "intent_category": "IntentCategory.CONVERSATIONAL",
+      "actionable": false,
+      "keyword_hits": {
+        "diego": true,
+        "hello": true
+      },
+      "keyword_recall": 1.0,
+      "entity_hits": {},
+      "confirmation_word": null
+    },
+    {
+      "id": "wake-positive_011",
+      "group": "real-wake",
+      "kind": "real",
+      "dur_s": 1.298,
+      "clip_meta": {
+        "src_sr": 16000,
+        "src_ch": 1,
+        "file": "/home/nashedi_x_coder/Workspace/PycharmProjects/Diego_desktop_agent/models/wake/positives/positive_011.wav"
+      },
+      "transcript": "Hello, Diego.",
+      "confidence": 0.0,
+      "first_latency_ms": 1900.5,
+      "latencies_ms": [
+        1900.5,
+        1895.1
+      ],
+      "median_latency_ms": 1897.8,
+      "rtf": 1.462,
+      "latency_kind": "on-device",
+      "postprocessed": "Hello, Diego",
+      "valid": true,
+      "fail_reason": "",
+      "garbage": false,
+      "low_quality": false,
+      "repeated_hallucination": false,
+      "hallucinated": false,
+      "usable": true,
+      "normalized_command": "Hello,",
+      "intent_category": "IntentCategory.CONVERSATIONAL",
+      "actionable": false,
+      "keyword_hits": {
+        "diego": true,
+        "hello": true
+      },
+      "keyword_recall": 1.0,
+      "entity_hits": {},
+      "confirmation_word": null
+    },
+    {
+      "id": "noise-neg_esp_010",
+      "group": "real-noise",
+      "kind": "real",
+      "dur_s": 0.953,
+      "clip_meta": {
+        "src_sr": 16000,
+        "src_ch": 1,
+        "file": "/home/nashedi_x_coder/Workspace/PycharmProjects/Diego_desktop_agent/models/wake/negatives/neg_esp_010.wav"
+      },
+      "transcript": "Good morning.",
+      "confidence": 0.0,
+      "first_latency_ms": 1698.4,
+      "latencies_ms": [
+        1698.4,
+        1618.5
+      ],
+      "median_latency_ms": 1658.4,
+      "rtf": 1.74,
+      "latency_kind": "on-device",
+      "usable": true,
+      "keyword_recall": null,
+      "note": "no ground truth; verbatim only"
+    },
+    {
+      "id": "noise-neg_sil_066",
+      "group": "real-noise",
+      "kind": "real",
+      "dur_s": 2.0,
+      "clip_meta": {
+        "src_sr": 16000,
+        "src_ch": 1,
+        "file": "/home/nashedi_x_coder/Workspace/PycharmProjects/Diego_desktop_agent/models/wake/negatives/neg_sil_066.wav"
+      },
+      "transcript": "",
+      "confidence": 0.0,
+      "first_latency_ms": 1185.9,
+      "latencies_ms": [
+        1185.9,
+        1188.5
+      ],
+      "median_latency_ms": 1187.2,
+      "rtf": 0.594,
+      "latency_kind": "on-device",
+      "usable": false,
+      "keyword_recall": null,
+      "note": "no ground truth; verbatim only"
+    },
+    {
+      "id": "en-01",
+      "group": "synth-en",
+      "kind": "synthetic",
+      "dur_s": 3.0,
+      "clip_meta": {
+        "src": "espeak-ng",
+        "voice": "en",
+        "prompt": "Open Firefox"
+      },
+      "transcript": "Open Firefox.",
+      "confidence": 0.0,
+      "first_latency_ms": 2002.9,
+      "latencies_ms": [
+        2002.9,
+        1916.3
+      ],
+      "median_latency_ms": 1959.6,
+      "rtf": 0.653,
+      "latency_kind": "on-device",
+      "postprocessed": "Open Firefox",
+      "valid": true,
+      "fail_reason": "",
+      "garbage": false,
+      "low_quality": false,
+      "repeated_hallucination": false,
+      "hallucinated": false,
+      "usable": true,
+      "normalized_command": "Open firefox",
+      "intent_category": "IntentCategory.DETERMINISTIC_COMMAND",
+      "actionable": true,
+      "keyword_hits": {
+        "firefox": true
+      },
+      "keyword_recall": 1.0,
+      "entity_hits": {
+        "firefox": true
+      },
+      "confirmation_word": null
+    },
+    {
+      "id": "en-02",
+      "group": "synth-en",
+      "kind": "synthetic",
+      "dur_s": 3.0,
+      "clip_meta": {
+        "src": "espeak-ng",
+        "voice": "en",
+        "prompt": "Open the terminal"
+      },
+      "transcript": "Open the terminal.",
+      "confidence": 0.0,
+      "first_latency_ms": 2202.1,
+      "latencies_ms": [
+        2202.1,
+        2467.1
+      ],
+      "median_latency_ms": 2334.6,
+      "rtf": 0.778,
+      "latency_kind": "on-device",
+      "postprocessed": "Open the terminal",
+      "valid": true,
+      "fail_reason": "",
+      "garbage": false,
+      "low_quality": false,
+      "repeated_hallucination": false,
+      "hallucinated": false,
+      "usable": true,
+      "normalized_command": "open terminal",
+      "intent_category": "IntentCategory.DETERMINISTIC_COMMAND",
+      "actionable": true,
+      "keyword_hits": {
+        "terminal": true
+      },
+      "keyword_recall": 1.0,
+      "entity_hits": {
+        "terminal": true
+      },
+      "confirmation_word": null
+    },
+    {
+      "id": "en-03",
+      "group": "synth-en",
+      "kind": "synthetic",
+      "dur_s": 3.0,
+      "clip_meta": {
+        "src": "espeak-ng",
+        "voice": "en",
+        "prompt": "Play Believer on YouTube"
+      },
+      "transcript": "Play believer on YouTube.",
+      "confidence": 0.0,
+      "first_latency_ms": 2559.3,
+      "latencies_ms": [
+        2559.3,
+        2349.3
+      ],
+      "median_latency_ms": 2454.3,
+      "rtf": 0.818,
+      "latency_kind": "on-device",
+      "postprocessed": "Play believer on YouTube",
+      "valid": true,
+      "fail_reason": "",
+      "garbage": false,
+      "low_quality": false,
+      "repeated_hallucination": false,
+      "hallucinated": false,
+      "usable": true,
+      "normalized_command": "play believer on youtube",
+      "intent_category": "IntentCategory.DETERMINISTIC_COMMAND",
+      "actionable": true,
+      "keyword_hits": {
+        "believer": true,
+        "youtube": true
+      },
+      "keyword_recall": 1.0,
+      "entity_hits": {
+        "youtube": true,
+        "believer": true
+      },
+      "confirmation_word": null
+    },
+    {
+      "id": "en-04",
+      "group": "synth-en",
+      "kind": "synthetic",
+      "dur_s": 3.0,
+      "clip_meta": {
+        "src": "espeak-ng",
+        "voice": "en",
+        "prompt": "What's my RAM?"
+      },
+      "transcript": "What's my R A M?",
+      "confidence": 0.0,
+      "first_latency_ms": 3185.0,
+      "latencies_ms": [
+        3185.0,
+        3009.1
+      ],
+      "median_latency_ms": 3097.1,
+      "rtf": 1.032,
+      "latency_kind": "on-device",
+      "postprocessed": "What's my R A M",
+      "valid": true,
+      "fail_reason": "",
+      "garbage": false,
+      "low_quality": false,
+      "repeated_hallucination": false,
+      "hallucinated": false,
+      "usable": true,
+      "normalized_command": "search my r a m",
+      "intent_category": "IntentCategory.SEARCH_REQUEST",
+      "actionable": true,
+      "keyword_hits": {
+        "ram": false
+      },
+      "keyword_recall": 0.0,
+      "entity_hits": {
+        "ram": false
+      },
+      "confirmation_word": null
+    },
+    {
+      "id": "hx-01",
+      "group": "synth-hinglish",
+      "kind": "synthetic",
+      "dur_s": 3.0,
+      "clip_meta": {
+        "src": "espeak-ng",
+        "voice": "hi",
+        "prompt": "Firefox kholo"
+      },
+      "transcript": "Firefox Colo.",
+      "confidence": 0.0,
+      "first_latency_ms": 2010.1,
+      "latencies_ms": [
+        2010.1,
+        1925.4
+      ],
+      "median_latency_ms": 1967.7,
+      "rtf": 0.656,
+      "latency_kind": "on-device",
+      "postprocessed": "Firefox Colo",
+      "valid": true,
+      "fail_reason": "",
+      "garbage": false,
+      "low_quality": false,
+      "repeated_hallucination": false,
+      "hallucinated": false,
+      "usable": true,
+      "normalized_command": "firefox Colo",
+      "intent_category": "IntentCategory.CONVERSATIONAL",
+      "actionable": false,
+      "keyword_hits": {
+        "firefox": true,
+        "khol": false
+      },
+      "keyword_recall": 0.5,
+      "entity_hits": {
+        "firefox": true
+      },
+      "confirmation_word": null
+    },
+    {
+      "id": "hx-02",
+      "group": "synth-hinglish",
+      "kind": "synthetic",
+      "dur_s": 3.0,
+      "clip_meta": {
+        "src": "espeak-ng",
+        "voice": "hi",
+        "prompt": "YouTube pe Believer chalao"
+      },
+      "transcript": "YouTube, P B L I V A, tchau.",
+      "confidence": 0.0,
+      "first_latency_ms": 4187.8,
+      "latencies_ms": [
+        4187.8,
+        3886.8
+      ],
+      "median_latency_ms": 4037.3,
+      "rtf": 1.346,
+      "latency_kind": "on-device",
+      "postprocessed": "YouTube, P B L I V A, tchau",
+      "valid": true,
+      "fail_reason": "",
+      "garbage": false,
+      "low_quality": false,
+      "repeated_hallucination": false,
+      "hallucinated": false,
+      "usable": true,
+      "normalized_command": "youtube, P B L I V A, tchau",
+      "intent_category": "IntentCategory.CONVERSATIONAL",
+      "actionable": false,
+      "keyword_hits": {
+        "youtube": true,
+        "believer": false,
+        "chalao": false
+      },
+      "keyword_recall": 0.3333333333333333,
+      "entity_hits": {
+        "youtube": true,
+        "believer": false
+      },
+      "confirmation_word": null
+    },
+    {
+      "id": "hx-03",
+      "group": "synth-hinglish",
+      "kind": "synthetic",
+      "dur_s": 3.0,
+      "clip_meta": {
+        "src": "espeak-ng",
+        "voice": "hi",
+        "prompt": "Volume thoda kam karo"
+      },
+      "transcript": "Volume folder Camcaro.",
+      "confidence": 0.0,
+      "first_latency_ms": 2681.5,
+      "latencies_ms": [
+        2681.5,
+        2508.5
+      ],
+      "median_latency_ms": 2595.0,
+      "rtf": 0.865,
+      "latency_kind": "on-device",
+      "postprocessed": "Volume folder Camcaro",
+      "valid": true,
+      "fail_reason": "",
+      "garbage": false,
+      "low_quality": false,
+      "repeated_hallucination": false,
+      "hallucinated": false,
+      "usable": true,
+      "normalized_command": "Volume folder Camcaro",
+      "intent_category": "IntentCategory.DETERMINISTIC_COMMAND",
+      "actionable": true,
+      "keyword_hits": {
+        "volume": true,
+        "kam": false
+      },
+      "keyword_recall": 0.5,
+      "entity_hits": {
+        "volume": true
+      },
+      "confirmation_word": null
+    },
+    {
+      "id": "hx-04",
+      "group": "synth-hinglish",
+      "kind": "synthetic",
+      "dur_s": 3.0,
+      "clip_meta": {
+        "src": "espeak-ng",
+        "voice": "hi",
+        "prompt": "Mera CPU kitna use ho raha hai"
+      },
+      "transcript": "Mira CPU kitna use so rather high.",
+      "confidence": 0.0,
+      "first_latency_ms": 3653.2,
+      "latencies_ms": [
+        3653.2,
+        3292.8
+      ],
+      "median_latency_ms": 3473.0,
+      "rtf": 1.158,
+      "latency_kind": "on-device",
+      "postprocessed": "Mira CPU kitna use so rather high",
+      "valid": true,
+      "fail_reason": "",
+      "garbage": false,
+      "low_quality": false,
+      "repeated_hallucination": false,
+      "hallucinated": false,
+      "usable": true,
+      "normalized_command": "Mira CPU kitna use so rather high",
+      "intent_category": "IntentCategory.CONVERSATIONAL",
+      "actionable": false,
+      "keyword_hits": {
+        "cpu": true,
+        "kitna": true
+      },
+      "keyword_recall": 1.0,
+      "entity_hits": {
+        "cpu": true
+      },
+      "confirmation_word": null
+    },
+    {
+      "id": "hi-01",
+      "group": "synth-hindi",
+      "kind": "synthetic",
+      "dur_s": 3.0,
+      "clip_meta": {
+        "src": "espeak-ng",
+        "voice": "hi",
+        "prompt": "फायरफॉक्स खोलो"
+      },
+      "transcript": "Pyrocortol.",
+      "confidence": 0.0,
+      "first_latency_ms": 2453.0,
+      "latencies_ms": [
+        2453.0,
+        2613.8
+      ],
+      "median_latency_ms": 2533.4,
+      "rtf": 0.844,
+      "latency_kind": "on-device",
+      "postprocessed": "Pyrocortol",
+      "valid": true,
+      "fail_reason": "",
+      "garbage": false,
+      "low_quality": true,
+      "repeated_hallucination": false,
+      "hallucinated": true,
+      "usable": false,
+      "normalized_command": "Pyrocortol",
+      "intent_category": "IntentCategory.UNCERTAIN",
+      "actionable": false,
+      "keyword_hits": {
+        "फायरफॉक्स": false,
+        "खोल": false
+      },
+      "keyword_recall": 0.0,
+      "entity_hits": {},
+      "confirmation_word": null
+    },
+    {
+      "id": "hi-02",
+      "group": "synth-hindi",
+      "kind": "synthetic",
+      "dur_s": 3.0,
+      "clip_meta": {
+        "src": "espeak-ng",
+        "voice": "hi",
+        "prompt": "यूट्यूब पर गाना चलाओ"
+      },
+      "transcript": "YouTube parca achou?",
+      "confidence": 0.0,
+      "first_latency_ms": 3057.7,
+      "latencies_ms": [
+        3057.7,
+        2556.9
+      ],
+      "median_latency_ms": 2807.3,
+      "rtf": 0.936,
+      "latency_kind": "on-device",
+      "postprocessed": "YouTube parca achou",
+      "valid": true,
+      "fail_reason": "",
+      "garbage": false,
+      "low_quality": false,
+      "repeated_hallucination": false,
+      "hallucinated": false,
+      "usable": true,
+      "normalized_command": "youtube parca achou",
+      "intent_category": "IntentCategory.CONVERSATIONAL",
+      "actionable": false,
+      "keyword_hits": {
+        "यूट्यूब": false,
+        "गाना": false,
+        "चलाओ": false
+      },
+      "keyword_recall": 0.0,
+      "entity_hits": {},
+      "confirmation_word": null
+    },
+    {
+      "id": "hi-03",
+      "group": "synth-hindi",
+      "kind": "synthetic",
+      "dur_s": 3.0,
+      "clip_meta": {
+        "src": "espeak-ng",
+        "voice": "hi",
+        "prompt": "आवाज़ थोड़ी कम करो"
+      },
+      "transcript": "アマストリカムカゴ。",
+      "confidence": 0.0,
+      "first_latency_ms": 3432.2,
+      "latencies_ms": [
+        3432.2,
+        3193.8
+      ],
+      "median_latency_ms": 3313.0,
+      "rtf": 1.104,
+      "latency_kind": "on-device",
+      "postprocessed": "アマストリカムカゴ。",
+      "valid": true,
+      "fail_reason": "",
+      "garbage": false,
+      "low_quality": true,
+      "repeated_hallucination": false,
+      "hallucinated": true,
+      "usable": false,
+      "normalized_command": "アマストリカムカゴ。",
+      "intent_category": "IntentCategory.UNCERTAIN",
+      "actionable": false,
+      "keyword_hits": {
+        "कम": false,
+        "करो": false
+      },
+      "keyword_recall": 0.0,
+      "entity_hits": {},
+      "confirmation_word": null
+    },
+    {
+      "id": "mx-01",
+      "group": "synth-mixed",
+      "kind": "synthetic",
+      "dur_s": 3.0,
+      "clip_meta": {
+        "src": "espeak-ng",
+        "voice": "hi",
+        "prompt": "YouTube pe Arijit Singh ka song chalao"
+      },
+      "transcript": "YouTube, Pia Rijitsing Carson Chalou.",
+      "confidence": 0.0,
+      "first_latency_ms": 4208.3,
+      "latencies_ms": [
+        4208.3,
+        4415.9
+      ],
+      "median_latency_ms": 4312.1,
+      "rtf": 1.437,
+      "latency_kind": "on-device",
+      "postprocessed": "YouTube, Pia Rijitsing Carson Chalou",
+      "valid": true,
+      "fail_reason": "",
+      "garbage": false,
+      "low_quality": false,
+      "repeated_hallucination": false,
+      "hallucinated": false,
+      "usable": true,
+      "normalized_command": "youtube, Pia Rijitsing Carson Chalou",
+      "intent_category": "IntentCategory.CONVERSATIONAL",
+      "actionable": false,
+      "keyword_hits": {
+        "youtube": true,
+        "arijit": false,
+        "singh": false,
+        "chalao": false
+      },
+      "keyword_recall": 0.25,
+      "entity_hits": {
+        "youtube": true,
+        "arijit": false
+      },
+      "confirmation_word": null
+    },
+    {
+      "id": "mx-02",
+      "group": "synth-mixed",
+      "kind": "synthetic",
+      "dur_s": 3.0,
+      "clip_meta": {
+        "src": "espeak-ng",
+        "voice": "hi",
+        "prompt": "Firefox mein GitHub kholo"
+      },
+      "transcript": "Firefox main GitHub colo.",
+      "confidence": 0.0,
+      "first_latency_ms": 2875.6,
+      "latencies_ms": [
+        2875.6,
+        2868.9
+      ],
+      "median_latency_ms": 2872.3,
+      "rtf": 0.957,
+      "latency_kind": "on-device",
+      "postprocessed": "Firefox main GitHub colo",
+      "valid": true,
+      "fail_reason": "",
+      "garbage": false,
+      "low_quality": false,
+      "repeated_hallucination": false,
+      "hallucinated": false,
+      "usable": true,
+      "normalized_command": "firefox main github colo",
+      "intent_category": "IntentCategory.CONVERSATIONAL",
+      "actionable": false,
+      "keyword_hits": {
+        "firefox": true,
+        "github": true,
+        "khol": false
+      },
+      "keyword_recall": 0.6666666666666666,
+      "entity_hits": {
+        "firefox": true,
+        "github": true
+      },
+      "confirmation_word": null
+    },
+    {
+      "id": "amb-01",
+      "group": "synth-ambiguous",
+      "kind": "synthetic",
+      "dur_s": 3.0,
+      "clip_meta": {
+        "src": "espeak-ng",
+        "voice": "hi",
+        "prompt": "play thodi der on youtube"
+      },
+      "transcript": "Play So Di There on YouTube.",
+      "confidence": 0.0,
+      "first_latency_ms": 3167.8,
+      "latencies_ms": [
+        3167.8,
+        3181.8
+      ],
+      "median_latency_ms": 3174.8,
+      "rtf": 1.058,
+      "latency_kind": "on-device",
+      "postprocessed": "Play So Di There on YouTube",
+      "valid": true,
+      "fail_reason": "",
+      "garbage": false,
+      "low_quality": false,
+      "repeated_hallucination": false,
+      "hallucinated": false,
+      "usable": true,
+      "normalized_command": "play so di there on youtube",
+      "intent_category": "IntentCategory.DETERMINISTIC_COMMAND",
+      "actionable": true,
+      "keyword_hits": {
+        "play": true,
+        "youtube": true
+      },
+      "keyword_recall": 1.0,
+      "entity_hits": {
+        "youtube": true
+      },
+      "confirmation_word": null
+    }
+  ],
+  "stats_real-diego": {
+    "n": 2,
+    "median_ms": 1071.3,
+    "p95_ms": 1122.3,
+    "keyword_recall_mean": null,
+    "nonempty_rate": 0.0
+  },
+  "stats_real-noise": {
+    "n": 2,
+    "median_ms": 1422.8,
+    "p95_ms": 1658.4,
+    "keyword_recall_mean": null,
+    "nonempty_rate": 0.5
+  },
+  "stats_real-wake": {
+    "n": 11,
+    "median_ms": 1831.3,
+    "p95_ms": 2237.0,
+    "keyword_recall_mean": 0.5455,
+    "nonempty_rate": 0.5455
+  },
+  "stats_synth-ambiguous": {
+    "n": 1,
+    "median_ms": 3174.8,
+    "p95_ms": 3174.8,
+    "keyword_recall_mean": 1.0,
+    "nonempty_rate": 1.0
+  },
+  "stats_synth-en": {
+    "n": 4,
+    "median_ms": 2394.4,
+    "p95_ms": 3097.1,
+    "keyword_recall_mean": 0.75,
+    "nonempty_rate": 1.0
+  },
+  "stats_synth-hindi": {
+    "n": 3,
+    "median_ms": 2807.3,
+    "p95_ms": 3313.0,
+    "keyword_recall_mean": 0.0,
+    "nonempty_rate": 1.0
+  },
+  "stats_synth-hinglish": {
+    "n": 4,
+    "median_ms": 3034.0,
+    "p95_ms": 4037.3,
+    "keyword_recall_mean": 0.5833,
+    "nonempty_rate": 1.0
+  },
+  "stats_synth-mixed": {
+    "n": 2,
+    "median_ms": 3592.2,
+    "p95_ms": 4312.1,
+    "keyword_recall_mean": 0.4583,
+    "nonempty_rate": 1.0
+  }
+}

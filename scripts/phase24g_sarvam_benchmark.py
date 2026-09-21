@@ -73,6 +73,11 @@ DATASET = P20E.DATASET
 ENTITY_KEYS = P20E.ENTITY_KEYS
 
 # candidate id → (kind, builder description)
+# Phase-24.7Q ADDENDUM: scripts/phase24g_qwen_baseline.py owns the frozen
+# dataset + preprocessing. New rows must be added there first; this harness
+# MUST import and reuse its build_rows()/load_wav_to_16k_mono_f32()/to_pcm16...
+# helpers so every Saaras row is byte-identical to a Qwen row (merge key:
+# utterance id). Do NOT add dataset rows here.
 CANDIDATES: dict[str, dict[str, str]] = {
     "qwen3-1.7b": {"kind": "local", "provider": "qwen3-asr-1.7b-int8",
                    "note": "production default (local, sherpa-onnx INT8)"},

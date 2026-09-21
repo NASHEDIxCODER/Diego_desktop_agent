@@ -17,6 +17,8 @@ Providers:
 from __future__ import annotations
 
 import logging
+import re
+from typing import Optional, Tuple
 
 import sherpa_onnx
 
@@ -28,7 +30,88 @@ from voice.providers.sherpa_base import (
 logger = logging.getLogger(__name__)
 
 
-class Qwen3ASR17BProvider(SherpaOnnxProvider):
+# ── Qwen3-ASR output format ───────────────────────────────────────────────
+# The Qwen3-ASR export is a chat model, so the decoder can emit its
+# chat-template preamble alongside the text:
+#
+#     "language English<asr_text>Hello, Diego."
+#
+# Only the part AFTER <asr_text> is the transcript; the prefix is model
+# bookkeeping. This preamble is emitted NONDETERMINISTICALLY — int8
+# multithreaded inference means an input differing by a single LSB (exactly
+# what the float→int16→float round-trip in the command path produces) can
+# flip the greedy decode between the two forms. Both forms are therefore
+# reachable in production, and the preamble must never reach the intent
+# parser ("language English<asr_text>turn on the lights" would not match any
+# command).
+_ASR_TEXT_MARKER = "<asr_text>"
+
+# `language <Name><asr_text>`; the language name is free-form ("English",
+# "Hindi", "Chinese", "None", ...), so capture non-greedily up to the marker.
+_LANGUAGE_PREAMBLE_RE = re.compile(
+    r"^\s*language\s+(?P<lang>[^<]*?)\s*" + re.escape(_ASR_TEXT_MARKER),
+    re.IGNORECASE,
+)
+
+# Degenerate language values the model emits when it cannot decide.
+_NO_LANGUAGE = frozenset({"", "none", "null", "unknown", "n/a", "auto", "undefined"})
+
+
+def parse_qwen3_asr_output(raw: Optional[str]) -> Tuple[str, str]:
+    """Split raw Qwen3-ASR output into ``(transcript, detected_language)``.
+
+    Handles every form observed from the real 0.6B and 1.7B exports::
+
+        'language English<asr_text>Hello, Diego.'  -> ('Hello, Diego.', 'English')
+        'language Hindi<asr_text>बंद करो'            -> ('बंद करो', 'Hindi')
+        '<asr_text>Hello'                          -> ('Hello', '')
+        'language None<asr_text>'                  -> ('', '')
+        'Hello, Diego.'                            -> ('Hello, Diego.', '')
+
+    When no marker is present the text is returned UNCHANGED — a transcript is
+    never discarded or altered on a guess. `detected_language` is returned as
+    the model's own name ("English"), already normalised, or "" when absent.
+    """
+    text = (raw or "").strip()
+    if not text:
+        return "", ""
+    if _ASR_TEXT_MARKER not in text:
+        # No chat-template preamble: already a plain transcript.
+        return text, ""
+
+    # Everything after the FIRST marker is the transcript; the preamble (and
+    # its optional `language <Name>` field) is before it.
+    _preamble, _marker, transcript = text.partition(_ASR_TEXT_MARKER)
+    match = _LANGUAGE_PREAMBLE_RE.match(text)
+    language = (match.group("lang") or "").strip() if match else ""
+    if language.lower() in _NO_LANGUAGE:
+        language = ""
+    return transcript.strip(), language
+
+
+class _Qwen3ASROutputMixin:
+    """Strips the Qwen3-ASR chat-template preamble off raw recognizer output.
+
+    Mixed in BEFORE `SherpaOnnxProvider` so `_recognize_offline` wraps the
+    shared sherpa-onnx recognizer call for both the 0.6B and 1.7B exports —
+    identical transcript shape, only the model differs. Kept as a plain
+    (non-ABC) mixin so instantiating it standalone never trips abstract
+    checks; only the concrete provider subclasses are ever constructed.
+    """
+
+    _last_detected_language = ""
+
+    def _recognize_offline(self, audio, sample_rate: int) -> str:  # noqa: ANN001,ANN202
+        # noinspection PyProtectedMember — intended: this mixin wraps the base
+        # SherpaOnnxProvider._recognize_offline via cooperative inheritance.
+        raw = super()._recognize_offline(audio, sample_rate)  # type: ignore[misc]
+        text, language = parse_qwen3_asr_output(raw)
+        if language:
+            self._last_detected_language = language
+        return text
+
+
+class Qwen3ASR17BProvider(_Qwen3ASROutputMixin, SherpaOnnxProvider):
     """Qwen3-ASR 1.7B INT8 via sherpa-onnx (offline, multilingual).
 
     Production default (Phase 24.7): larger model for better English / Hindi /
@@ -75,11 +158,12 @@ class Qwen3ASR17BProvider(SherpaOnnxProvider):
         )
 
 
-class Qwen3ASRProvider(SherpaOnnxProvider):
+class Qwen3ASRProvider(_Qwen3ASROutputMixin, SherpaOnnxProvider):
     """Qwen3-ASR 0.6B INT8 via sherpa-onnx (offline, multilingual).
 
     Previous default (Phase 24.6). Kept as a lighter fallback for low-RAM
-    devices. Select via STT_MODEL_SIZE=0.6b.
+    devices. Select via STT_MODEL_SIZE=0.6b. Shares the chat-template
+    preamble parsing with the 1.7B export (see `parse_qwen3_asr_output`).
     """
 
     name = "qwen3-asr-0.6b-int8"
