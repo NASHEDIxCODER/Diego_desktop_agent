@@ -347,7 +347,7 @@ class DesktopGoalEngine:
     def _send_plan(self, goal: DesktopGoal) -> List[DesktopStep]:
         recipient = goal.recipient
         msg = goal.message
-        return [
+        steps: List[DesktopStep] = [
             DesktopStep(
                 action=DesktopAction.OPEN_APPLICATION,
                 description=f"Open {goal.app_display or goal.app}",
@@ -377,6 +377,18 @@ class DesktopGoalEngine:
                 params={"recipient": recipient},
                 expected_effect=expected_effect_text(
                     DesktopAction.VERIFY_CONVERSATION, {"recipient": recipient})),
+        ]
+        if not msg:
+            # Phase 24.6 §4: the goal gave a recipient but no body — ASK the
+            # user (a clarification pause, never a failure, never a guess).
+            steps.append(DesktopStep(
+                action=DesktopAction.ASK_USER,
+                description=f"Ask what message to send to '{recipient}'",
+                params={"question": (f"What message should I send to "
+                                     f"'{recipient}'?"),
+                        "kind": "compose_text"},
+                expected_effect=expected_effect_text(DesktopAction.ASK_USER)))
+        steps.extend([
             DesktopStep(
                 action=DesktopAction.FIND_INPUT,
                 description="Locate the message input",
@@ -412,7 +424,8 @@ class DesktopGoalEngine:
                 params={"recipient": recipient, "text": msg},
                 expected_effect=expected_effect_text(
                     DesktopAction.VERIFY_SENT_MESSAGE, {"recipient": recipient})),
-        ]
+        ])
+        return steps
 
     # ── observation ──────────────────────────────────────────────
 
@@ -695,6 +708,47 @@ class DesktopGoalEngine:
                               detail=f"{step.action.value} could not run")
         return None
 
+    def _recovery_strategy(self, step: DesktopStep,
+                           ctx: DesktopContext) -> str:
+        """Phase 24.6 §6: a DIFFERENT strategy per attempt — never the same
+        click with identical evidence.
+
+            attempt 1 → semantic accessibility / native re-observe
+            attempt 2 → inspect application state (accessibility + OCR)
+            attempt 3 → refocus the target window / re-observe / alternate
+        """
+        if step.attempts == 1:
+            if step.action in (DesktopAction.FIND_CONTACT,
+                               DesktopAction.OPEN_CONVERSATION,
+                               DesktopAction.FIND_INPUT):
+                return "re-observe"
+            return "wait for content"
+        if step.attempts == 2:
+            return "inspect application state (accessibility + OCR)"
+        return "refocus the target window and re-observe"
+
+    def _failure_signature(self, step: DesktopStep,
+                           ctx: DesktopContext) -> str:
+        """Identity of one failure: action + target + observed-state hash."""
+        screen = str(getattr(ctx, "screen_hash", "") or "")
+        return f"{step.action.value}:{step.target[:40]}:{screen[:32]}"
+
+    def _escalate_if_identical(self, run: DesktopTaskRun, step: DesktopStep,
+                               ctx: DesktopContext, strategy: str) -> str:
+        """Phase 24.6 §10: repeated IDENTICAL failure must trigger a
+        DIFFERENT recovery strategy, never the same action again."""
+        sig = self._failure_signature(step, ctx)
+        hist = run.evidence.setdefault("failure_signatures", [])
+        same_as_last = bool(hist) and hist[-1] == sig
+        hist.append(sig)
+        if same_as_last and strategy != "refocus the target window and re-observe":
+            escalated = "refocus the target window and re-observe"
+            run.evidence["replan_diff_reason"] = (
+                f"identical failure repeated ({sig[:60]}); escalated "
+                f"'{strategy}' → '{escalated}'")
+            return escalated
+        return strategy
+
     def _recover_missing_target(self, run: DesktopTaskRun, step: DesktopStep,
                                 ctx: DesktopContext) -> str:
         step.attempts += 1
@@ -704,18 +758,41 @@ class DesktopGoalEngine:
                 run, f"'{step.target[:60]}' is not present on the current "
                      f"screen",
                 detail=f"classified NOT_FOUND ({ctx.summary()})")
-        strategy = ("re-observe" if step.attempts == 1
-                    else "scroll to reveal the target")
+        strategy = self._escalate_if_identical(
+            run, step, ctx, self._recovery_strategy(step, ctx))
         self._phase(run, "RECOVERING", strategy)
         try:
             self.trace().recovery(strategy, action=step.action.value,
                                   retry_count=step.attempts,
                                   task_id=run.task_id,
-                                  evidence={"target": step.target[:80]})
+                                  evidence={"target": step.target[:80],
+                                            "why_different":
+                                                run.evidence.get(
+                                                    "replan_diff_reason", "")})
         except Exception:
             pass
         if strategy == "scroll to reveal the target":
             self.controller().execute("scroll", {"delta": 600})
+        elif strategy == "inspect application state (accessibility + OCR)":
+            # Phase 24.6 §6 attempt 2: look at what IS on the screen before
+            # choosing the next action — record it as evidence, not as a click.
+            fresh = self._observe(run, note="inspect state (a11y + OCR)")
+            try:
+                self.trace().observation(
+                    f"inspect: {fresh.summary()[:160]}", task_id=run.task_id)
+            except Exception:
+                pass
+            return "retry"
+        elif strategy == "refocus the target window and re-observe":
+            app = run.goal.app or step.params.get("app") or ""
+            if app:
+                try:
+                    self.controller().execute("focus_window",
+                                              {"app": app, "target": app})
+                except Exception:
+                    pass
+            self._observe(run, note="re-observe after refocus (recovery)")
+            return "retry"
         self._observe(run, note="recovery re-observe")
         return "retry"
 
@@ -731,13 +808,17 @@ class DesktopGoalEngine:
             return self._fail(
                 run, f"expected effect not observed for {step.action.value}",
                 detail=verdict.detail[:200])
-        strategy = self._recovery_strategy(step, after)
+        strategy = self._escalate_if_identical(
+            run, step, after, self._recovery_strategy(step, after))
         self._phase(run, "RECOVERING", strategy)
         try:
             self.trace().recovery(strategy, action=step.action.value,
                                   retry_count=step.attempts,
                                   task_id=run.task_id,
-                                  evidence=dict(verdict.evidence or {}))
+                                  evidence={"why_different":
+                                                run.evidence.get(
+                                                    "replan_diff_reason", ""),
+                                            **dict(verdict.evidence or {})})
         except Exception:
             pass
         if strategy == "wait for content":
@@ -746,19 +827,25 @@ class DesktopGoalEngine:
         elif strategy == "scroll to reveal the target":
             self.controller().execute("scroll", {"delta": 600})
             self._observe(run, note="after scroll (recovery)")
+        elif strategy == "inspect application state (accessibility + OCR)":
+            fresh = self._observe(run, note="inspect state (a11y + OCR)")
+            try:
+                self.trace().observation(
+                    f"inspect: {fresh.summary()[:160]}", task_id=run.task_id)
+            except Exception:
+                pass
+        elif strategy == "refocus the target window and re-observe":
+            app = run.goal.app or step.params.get("app") or ""
+            if app:
+                try:
+                    self.controller().execute("focus_window",
+                                              {"app": app, "target": app})
+                except Exception:
+                    pass
+            self._observe(run, note="re-observe after refocus (recovery)")
         else:
             self._observe(run, note="re-observe (recovery)")
         return "retry"
-
-    def _recovery_strategy(self, step: DesktopStep,
-                           ctx: DesktopContext) -> str:
-        if step.attempts == 1:
-            if step.action in (DesktopAction.FIND_CONTACT,
-                               DesktopAction.OPEN_CONVERSATION,
-                               DesktopAction.FIND_INPUT):
-                return "re-observe"
-            return "wait for content"
-        return "scroll to reveal the target"
 
     def _replan(self, run: DesktopTaskRun, reason: str) -> bool:
         if run.replans >= self._limits.max_replans:
@@ -776,11 +863,13 @@ class DesktopGoalEngine:
     def _ask_user(self, run: DesktopTaskRun, question: str,
                   ctx: Optional[DesktopContext],
                   *, candidates: Optional[List[Candidate]] = None,
-                  role: str = "") -> str:
+                  role: str = "", pending_reason: str = "") -> str:
         run.status = DesktopStatus.ASKING_USER
         run.question = question
         run.candidates = list(candidates or [])
-        run.pending_reason = "ambiguous_target" if run.candidates else "clarify"
+        run.pending_reason = (pending_reason
+                              or ("ambiguous_target" if run.candidates
+                                  else "clarify"))
         self._phase(run, "ASKING_USER", question[:120])
         try:
             self.trace().confirmation_required(

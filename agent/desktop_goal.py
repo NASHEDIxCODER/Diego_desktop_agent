@@ -346,7 +346,11 @@ def parse_desktop_goal(text: str) -> Optional[DesktopGoal]:
     if app and verb:
         after = _after_verb(body, verb)
         recipient, message = _split_recipient_message(after)
-        if recipient and message:
+        # Phase 24.6: a recipient WITHOUT a message body is still a valid
+        # SEND_MESSAGE goal — the body is asked of the user (ASK_USER step)
+        # before compose, and the send itself stays behind explicit
+        # confirmation. External side effects must ASK, not fail.
+        if recipient:
             return DesktopGoal(
                 raw_text=raw, kind=DesktopGoalKind.SEND_MESSAGE,
                 app=app, app_display=display, recipient=recipient,
@@ -375,13 +379,41 @@ def _after_verb(body: str, verb: str) -> str:
 
 
 def _split_recipient_message(after: str) -> Tuple[str, str]:
-    """'Rahul: I'll call you after 6.' -> ('Rahul', "I'll call you after 6.")."""
+    """Split the post-verb text into (recipient, message).
+
+    Supported forms (Phase 24.6 added the phrasings users actually say):
+      "Rahul: I'll call you after 6."      -> ('Rahul', "I'll call you after 6.")
+      "message to Delhi"                   -> ('Delhi', '')      (body asked later)
+      "a message to Delhi"                 -> ('Delhi', '')
+      "Rahul a message"                    -> ('Rahul', '')
+      "hello to Rahul"                     -> ('Rahul', 'hello')
+      "Rahul I'll call you"                -> ('Rahul', "I'll call you")
+    """
     a = str(after or "").strip().strip(".")
     if not a:
         return "", ""
     if ":" in a:
         recipient, message = a.split(":", 1)
         return recipient.strip(), message.strip().strip(".")
+    # "message to Delhi" / "a message to Delhi" — recipient only; the message
+    # body is asked of the user (external side effect still confirmed later).
+    m = re.match(r"^(?:a\s+)?message\s+(?:to|for)\s+(?P<rcpt>[A-Za-z]"
+                 r"[\w .'\-]{0,40}?)(?:\s+(?P<msg>.+))?$", a, re.IGNORECASE)
+    if m:
+        return (m.group("rcpt").strip().strip(","),
+                (m.group("msg") or "").strip().strip("."))
+    # "Rahul a message" / "Rahul the message" — recipient first, no body.
+    m = re.match(r"^(?P<rcpt>[A-Za-z][\w .'\-]{0,40}?)\s+(?:a\s+|the\s+)?"
+                 r"messages?$", a, re.IGNORECASE)
+    if m:
+        return m.group("rcpt").strip().strip(","), ""
+    # "hello to Rahul" — <message> to <recipient>.
+    m = re.match(r"^(?P<msg>.+?)\s+to\s+(?P<rcpt>[A-Za-z][\w .'\-]{0,40})$",
+                 a, re.IGNORECASE)
+    if m:
+        msg = m.group("msg").strip()
+        if msg.lower() not in ("message", "a message", "the message"):
+            return (m.group("rcpt").strip().strip(","), msg.strip("."))
     # "Rahul I'll call you" — recipient is the leading capitalized name cluster.
     m = re.match(r"^([A-Z][\w.\- ]{0,40}?)\s+(.{2,})$", a)
     if m:

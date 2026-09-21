@@ -1087,14 +1087,20 @@ class CommandListener:
         self._session_start_override: Optional[int] = None
 
     def initialize(self) -> bool:
-        # ── STT backend selection (2026-09-20) ──
-        # Default resolves to _WhisperTranscriber (unchanged). STT_PRIMARY=qwen3
-        # swaps in the sherpa-onnx composite while ALWAYS keeping faster-whisper
-        # for confidence/verify/partials so downstream quality gates never
-        # degrade. VAD / wake / auth / Brain / routing are untouched.
+        # ── STT backend selection (Phase 24.6 / 24.7) ──
+        # Default primary is qwen3 (Qwen3-ASR 1.7B INT8 via sherpa-onnx;
+        # STT_MODEL_SIZE=0.6b for low-RAM) with faster-whisper ALWAYS loaded
+        # for confidence/verify/partials so downstream transcript-quality,
+        # intent and authorization gates never degrade (Qwen3 exposes no
+        # log-probs). STT_PRIMARY=faster_whisper restores the previous
+        # baseline. openai/gemini are reserved and `sarvam` is an EXPERIMENTAL
+        # benchmark-only provider: both report UNAVAILABLE/EXPERIMENTAL and
+        # safely fall back — never faked, never routed.
+        # VAD / wake / auth / Brain / routing are untouched.
         try:
-            from voice.stt_backend import build_stt_backend
+            from voice.stt_backend import build_stt_backend, active_stt_report
             self._whisper = build_stt_backend()
+            logger.info("[CMD-LISTEN] %s", active_stt_report())
         except Exception as e:
             logger.warning("[CMD-LISTEN] STT backend build failed (%s) — "
                            "using faster-whisper default", e)

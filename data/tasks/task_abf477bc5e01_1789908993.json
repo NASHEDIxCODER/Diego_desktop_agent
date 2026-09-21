@@ -1,0 +1,29 @@
+{
+  "task_id": "abf477bc5e01",
+  "original_request": "send help to David on telegram",
+  "normalized_goal": "send help to David on telegram",
+  "current_plan": [],
+  "completed_steps": [],
+  "current_step": null,
+  "failed_steps": [],
+  "observed_state": "",
+  "verification_results": [],
+  "retry_count": 0,
+  "replan_count": 0,
+  "total_steps": 0,
+  "final_status": "FAILED",
+  "plan_version": 0,
+  "started_at": 1789908993.3079116,
+  "ended_at": 1789908993.3082314,
+  "artifacts": {},
+  "log": [
+    "[TASK] id=abf477bc5e01 goal=\"send help to David on telegram\"",
+    "[PLAN] v0 rejected — action 'open_url' not authorized for this request; action 'click_text' not authorized for this request; action 'type_text' not authorized for this request; action 'click_text' not authorized for this request"
+  ],
+  "blocker": "The generated plan contained no executable actions: action 'open_url' not authorized for this request; action 'click_text' not authorized for this request; action 'type_text' not authorized for this request",
+  "evidence_log": [],
+  "pending_confirmation": null,
+  "confirmation_reason": "",
+  "referenced_entity": "",
+  "active_goal": ""
+}

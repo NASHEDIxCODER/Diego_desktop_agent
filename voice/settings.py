@@ -21,6 +21,12 @@ Settings:
   LANG_CODE: Language code for STT
   STT_TIMEOUT: Max seconds to wait for speech
   STT_PHRASE_LIMIT: Max seconds per phrase
+  STT_PRIMARY: Primary command-STT backend (qwen3 | faster_whisper)
+  STT_FALLBACK: Fallback backend, ALSO the confidence/verify source
+  STT_MODEL_SIZE: Qwen3-ASR model variant (1.7b | 0.6b)
+  SARVAM_API_KEY: Sarvam Saaras v4 key — EXPERIMENTAL BENCHMARK ONLY,
+                  never used in production routing (see
+                  scripts/phase24g_sarvam_benchmark.py)
   TTS_BACKEND: Auto-detected or forced audio backend
 """
 
@@ -59,15 +65,33 @@ class VoiceSettings:
     lang_code: str = "en-IN"
     stt_timeout: float = 3.0       # Seconds to wait for speech start
     stt_phrase_limit: float = 7.0  # Max seconds per phrase
-    # ── STT backend selection (2026-09-20) ──
-    # Primary / fallback ASR backends. Default primary is faster-whisper
-    # (unchanged production baseline). `qwen3` (Qwen3-ASR 0.6B INT8 via
-    # sherpa-onnx) is selectable via STT_PRIMARY=qwen3; when selected, the
-    # faster-whisper fallback is ALWAYS kept alive to supply the transcript
-    # confidence evidence that downstream quality gates require, so the
-    # hallucination band can never be bypassed.
-    stt_primary: str = "faster_whisper"   # faster_whisper | qwen3
+    # ── STT backend selection (Phase 24.7) ──
+    # Primary / fallback ASR backends. The production default is now `qwen3`
+    # (Qwen3-ASR 1.7B INT8 via sherpa-onnx) because real-microphone command
+    # recognition — especially Hindi and Hinglish — is measurably better than
+    # the 0.6B variant. STT_MODEL_SIZE=0.6b selects the lighter model for
+    # low-RAM devices. `faster_whisper` is ALWAYS kept alive as the
+    # verification / confidence source: Qwen3 does not expose token log-probs,
+    # so the faster-whisper fallback supplies the avg_logprob that the
+    # downstream transcript-quality, intent and authorization gates consume.
+    # That keeps the hallucination band active and never allows "missing
+    # Qwen confidence" to be treated as a trusted path.
+    stt_primary: str = "qwen3"            # qwen3 | faster_whisper
     stt_fallback: str = "faster_whisper"  # faster_whisper (configurable)
+    stt_model_size: str = "1.7b"          # 1.7b | 0.6b  (Qwen3 model variant)
+
+    # ── Sarvam Saaras (experimental, benchmarking only) ──
+    # Credentials + endpoint for the Sarvam Saaras v4 cloud STT. NOT used in
+    # production routing: STT_PRIMARY=sarvam is rejected as an EXPERIMENTAL
+    # provider and safely falls back to the configured fallback backend, even
+    # when a key is present. The provider is only instantiated by the isolated
+    # benchmark harness (scripts/phase24g_sarvam_benchmark.py). When the key is
+    # empty the provider reports UNAVAILABLE and the benchmark skips it — it is
+    # never faked.
+    sarvam_api_key: str = ""                                    # SARVAM_API_KEY
+    sarvam_stt_url: str = "https://api.sarvam.ai/speech-to-text"  # SARVAM_STT_URL
+    sarvam_stt_model: str = "saaras:v4"                         # SARVAM_STT_MODEL
+    sarvam_timeout_s: float = 30.0                              # SARVAM_TIMEOUT_S
 
     # Audio backend (auto-detected)
     tts_backend: str = "auto"  # auto, alsa, pulseaudio, pipewire, jack
@@ -141,9 +165,23 @@ class VoiceSettings:
         if os.getenv("LANG_CODE"):
             self.lang_code = os.getenv("LANG_CODE", "en-IN")
         if os.getenv("STT_PRIMARY"):
-            self.stt_primary = os.getenv("STT_PRIMARY", "faster_whisper")
+            self.stt_primary = os.getenv("STT_PRIMARY", "qwen3")
         if os.getenv("STT_FALLBACK"):
             self.stt_fallback = os.getenv("STT_FALLBACK", "faster_whisper")
+        if os.getenv("STT_MODEL_SIZE"):
+            self.stt_model_size = os.getenv("STT_MODEL_SIZE", "1.7b")
+        # ── Sarvam Saaras (experimental benchmark provider) ──
+        if os.getenv("SARVAM_API_KEY"):
+            self.sarvam_api_key = os.getenv("SARVAM_API_KEY", "")
+        if os.getenv("SARVAM_STT_URL"):
+            self.sarvam_stt_url = os.getenv("SARVAM_STT_URL", self.sarvam_stt_url)
+        if os.getenv("SARVAM_STT_MODEL"):
+            self.sarvam_stt_model = os.getenv("SARVAM_STT_MODEL", "saaras:v4")
+        if os.getenv("SARVAM_TIMEOUT_S"):
+            try:
+                self.sarvam_timeout_s = float(os.getenv("SARVAM_TIMEOUT_S", "30"))
+            except (ValueError, TypeError):
+                pass
         if os.getenv("WAKE_DEVICE_INDEX"):
             try:
                 self.device_index = int(os.getenv("WAKE_DEVICE_INDEX", ""))
@@ -173,6 +211,10 @@ class VoiceSettings:
             "stt_phrase_limit": self.stt_phrase_limit,
             "stt_primary": self.stt_primary,
             "stt_fallback": self.stt_fallback,
+            "stt_model_size": self.stt_model_size,
+            # Never serialize the secret itself — only whether one is set.
+            "sarvam_api_key_set": bool(self.sarvam_api_key),
+            "sarvam_stt_model": self.sarvam_stt_model,
             "tts_backend": self.tts_backend,
             "device_index": self.device_index,
         }
