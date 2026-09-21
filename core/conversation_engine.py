@@ -28,7 +28,9 @@ HARD INVARIANTS:
 
   LISTEN state:
     Streaming Whisper exists ONLY here. Created on entry, DESTROYED
-    after endpoint. Silence >= CONVERSATION_TIMEOUT_S returns to IDLE.
+    after endpoint. The conversation session is ENDLESS: silence NEVER
+    returns to IDLE — only an explicit sleep command ("go to sleep",
+    "stop listening", …) closes the session and returns to wake mode.
 
   THINK state:  LLM runs only here.
   SPEAK state:  TTS runs only here.
@@ -67,15 +69,19 @@ from core.response_guarantee import response_guarantee
 logger = logging.getLogger(__name__)
 
 # ── Tuning ─────────────────────────────────────────────────────
-# Silence timeout: how long the system waits in LISTEN after the last
-# speech before returning to IDLE (wake mode). 60s is the documented
-# conversational timeout — long enough for natural pauses, short enough
-# to return to wake mode when the user is done.
+# Silence budget: how long the system stays in LISTEN after the last speech
+# before the session loop refreshes its wait. In the ENDLESS conversation
+# session (2026-09-21) silence NEVER returns to IDLE (wake mode) — the
+# deadline is refreshed and Diego keeps listening. Only an explicit SLEEP
+# command closes the session. This value is kept as a re-arm cadence and
+# for the between-turn deadline bookkeeping.
 CONVERSATION_TIMEOUT_S = 60.0
 # Per-state watchdog ceilings (Phase 3). Any state held longer than its
 # ceiling is reported as a structured STATE TIMEOUT record and the turn
 # recovers safely. WAKE and FACE_AUTH are intentionally unbounded (Diego
 # waits forever for the wake word / camera popup), so they are NOT listed.
+# LISTEN is also exempt while the endless conversation session is active
+# (the session only ends on an explicit sleep command).
 
 STATE_WATCHDOG_INTERVAL_S = 1.0
 STATE_TIMEOUTS_S = {
@@ -83,11 +89,17 @@ STATE_TIMEOUTS_S = {
     "THINK": 60.0,
     "SPEAK": 120.0,
 }
-GOODBYE_PHRASES = {
-    "bye", "goodbye", "see you", "see ya", "later", "that's all",
-    "thats all", "nothing else", "i'm done", "im done", "stop listening",
-    "go to sleep", "good night", "goodnight", "cancel",
+# ── SLEEP commands (endless session exit, 2026-09-21) ─────────
+# Explicit user commands that close the conversation session and return
+# Diego to wake mode. Silence NEVER closes the session anymore.
+SLEEP_PHRASES = {
+    "go to sleep", "sleep", "that's all", "thats all", "nothing else",
+    "i'm done", "im done", "stop listening", "stop the session",
+    "end session", "end the session", "good night", "goodnight", "cancel",
 }
+# Deprecated alias — older scripts/tests (debug/voice_pipeline_validation.py)
+# reference GOODBYE_PHRASES. Same set; sleep commands are the canonical name.
+GOODBYE_PHRASES = SLEEP_PHRASES
 AUTH_SESSION_S = 600.0  # 10 minutes
 CHIME_PATH = Path(__file__).resolve().parent.parent / "Diego.wav"
 
@@ -157,6 +169,12 @@ class ConversationEngine:
 
         # Session
         self._session_deadline: float = 0.0
+        # Endless conversation session (2026-09-21): True while the
+        # wake+auth LISTEN → THINK → SPEAK → LISTEN session is active.
+        # While True, silence NEVER ends the session (the deadline is
+        # refreshed instead) and the LISTEN watchdog ceiling is exempt —
+        # only an explicit SLEEP command closes the session.
+        self._endless_session: bool = False
         self._turn_count = 0
 
         # GUI pump
@@ -421,6 +439,15 @@ class ConversationEngine:
                     prev_state = name
                     continue
 
+                # ── ENDLESS SESSION (2026-09-21) ──
+                # While the endless conversation session is active, LISTEN
+                # may idle for an arbitrarily long time between turns — the
+                # session is only closed by an explicit SLEEP command.
+                # Silence must not trip the watchdog or tear down the stream.
+                if name == "LISTEN" and self._endless_session:
+                    prev_state = name
+                    continue
+
                 elapsed = time.monotonic() - self._state_entered
                 if elapsed <= ceiling:
                     prev_state = name
@@ -573,7 +600,13 @@ class ConversationEngine:
     # ── STATE: LISTEN / THINK / SPEAK ─────────────────────
 
     async def _conversation_session(self) -> None:
-        """LISTEN → THINK → SPEAK → LISTEN … until timeout or goodbye."""
+        """ENDLESS conversation session: LISTEN → THINK → SPEAK → LISTEN …
+
+        After wake + face auth the session NEVER ends on its own: silence
+        refreshes the listen deadline and Diego keeps listening. The session
+        closes ONLY on an explicit SLEEP command (SLEEP_PHRASES), then the
+        engine returns to wake mode (IDLE → WAKE).
+        """
         loop = asyncio.get_event_loop()
         t_session_start = time.time()
 
@@ -611,6 +644,11 @@ class ConversationEngine:
             return
         pump = asyncio.create_task(self._stt_event_pump(stream, events))
 
+        # ── ENDLESS SESSION (2026-09-21) ──
+        # Mark the session active ONLY here (after the early-error returns,
+        # inside the try/finally reach): the finally block clears it, so the
+        # LISTEN watchdog exemption can never leak past a failed session.
+        self._endless_session = True
         self._session_deadline = time.monotonic() + CONVERSATION_TIMEOUT_S
         self._set_state(EngineState.LISTEN)
 
@@ -618,6 +656,18 @@ class ConversationEngine:
             while self._running:
                 remaining = self._session_deadline - time.monotonic()
                 if remaining <= 0:
+                    if self._endless_session:
+                        # ── ENDLESS SESSION (2026-09-21) ──
+                        # Silence NEVER ends the session. Refresh the
+                        # deadline and keep listening until an explicit
+                        # SLEEP command.
+                        logger.info(
+                            "[LISTEN] Silence %.0fs — endless session stays "
+                            "open (say a sleep command to end)",
+                            CONVERSATION_TIMEOUT_S)
+                        self._session_deadline = (
+                            time.monotonic() + CONVERSATION_TIMEOUT_S)
+                        continue
                     logger.info("[LISTEN] Silence %.0fs — conversation timeout",
                                 CONVERSATION_TIMEOUT_S)
                     break
@@ -625,6 +675,14 @@ class ConversationEngine:
                 try:
                     ev = await asyncio.wait_for(events.get(), timeout=remaining)
                 except asyncio.TimeoutError:
+                    if self._endless_session:
+                        logger.info(
+                            "[LISTEN] Silence %.0fs — endless session stays "
+                            "open (say a sleep command to end)",
+                            CONVERSATION_TIMEOUT_S)
+                        self._session_deadline = (
+                            time.monotonic() + CONVERSATION_TIMEOUT_S)
+                        continue
                     logger.info("[LISTEN] Silence %.0fs — conversation timeout",
                                 CONVERSATION_TIMEOUT_S)
                     break
@@ -691,10 +749,15 @@ class ConversationEngine:
                     await self._think_and_speak(intro, events, canned=True)
                     continue
 
-                if lower in GOODBYE_PHRASES or any(g in lower for g in GOODBYE_PHRASES if len(g) > 5):
+                # ── SLEEP COMMAND (endless session exit, 2026-09-21) ──
+                # Only an explicit sleep command closes the session and
+                # returns Diego to wake mode. Silence never does.
+                if lower in SLEEP_PHRASES or any(
+                        g in lower for g in SLEEP_PHRASES if len(g) > 5):
                     self._set_state(EngineState.THINK)
                     await self._think_and_speak(personality.farewell(), events, canned=True)
-                    logger.info("[ENGINE] Goodbye — returning to IDLE")
+                    logger.info("[ENGINE] Sleep command '%s' — session over, "
+                                "returning to wake mode", text)
                     break
 
                 self._turn_count += 1
@@ -770,7 +833,13 @@ class ConversationEngine:
                 # is discarded before the next command is captured. TTS
                 # protection is NOT removed — _think_and_speak still pauses
                 # during playback and resumes after the echo decay.
-                command_listener.resume_listening()
+                # ── ENDLESS SESSION (2026-09-21) ──
+                # rearm_between_turns() combines the resume above with an
+                # eager VAD reset so NO stale drain/gate/VAD state survives
+                # the THINK/SPEAK boundary between turns (the stream keeps
+                # running across turns of the endless session, so the drain
+                # it requests is consumed by the live streaming loop).
+                command_listener.rearm_between_turns()
 
                 # ── Record decision ──
                 if result is not None:
@@ -819,6 +888,10 @@ class ConversationEngine:
                 await stream.aclose()
             except Exception:
                 pass
+            # Session closed (sleep command / error) — clear the endless
+            # flag so the LISTEN watchdog ceiling is enforced again on the
+            # next session entry and silence semantics return to normal.
+            self._endless_session = False
             logger.info("[STT] Streaming Whisper stopped (session over)")
 
         self._set_state(EngineState.IDLE,

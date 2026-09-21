@@ -1154,6 +1154,48 @@ class CommandListener:
         self._listen_enabled.set()
         logger.info("[CMD-LISTEN] Listening RESUMED — drain + VAD reset requested")
 
+    def rearm_between_turns(self) -> None:
+        """Endless-session between-turns re-arm (2026-09-21).
+
+        Called by the engine after EVERY completed turn while the endless
+        conversation session is active, before returning to LISTEN. This is
+        deliberately DIFFERENT from prepare_command_session():
+
+          * prepare_command_session() runs BEFORE a stream exists — it must
+            CLEAR a stale drain request (a leftover drain would invalidate
+            the not-yet-established session boundary and clip the first
+            command after wake).
+          * rearm_between_turns() runs WHILE the stream is still running —
+            the drain request it sets is consumed by the live streaming
+            loop on its next gate-open iteration, which advances the audio
+            cursor to the current write head and discards TTS-contaminated
+            audio.
+
+        Steps:
+          1. release the gate-hold timestamp (the backlog backstop must not
+             force-resume and re-drain mid-command),
+          2. request a drain of TTS-contaminated audio (consumed by the
+             running loop),
+          3. force the listen gate OPEN (idempotent),
+          4. reset VAD state eagerly so no residual TTS tail EMA/in-speech
+             latch leaks into the next turn (belt-and-braces — the drain
+             path resets it again).
+
+        Guarantees: no stale drain/gate/VAD state survives the THINK/SPEAK
+        boundary between turns of an endless session.
+        """
+        self._gate_closed_at = None
+        self._drain_requested = True
+        self._listen_enabled.set()
+        try:
+            unified_vad.reset_state()
+        except Exception as e:
+            logger.warning(
+                "[CMD] VAD reset in rearm_between_turns failed: %s", e)
+        logger.info(
+            "[CMD] between-turns re-arm (gate OPEN, drain requested, "
+            "VAD reset) — endless session stays in LISTEN")
+
     def _gate_hold_exceeded(self) -> bool:
         """BLOCKER 2 FIX (2026-08-30): True when the listen gate has been
         held closed longer than GATE_MAX_HOLD_S.

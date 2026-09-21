@@ -16,8 +16,9 @@ THE VOICE PIPELINE (exactly ONE implementation — core/conversation_engine.py):
   Microphone → AudioManager → VAD → openWakeWord → wake-transcript
   verification → face authentication (camera opens ONLY here) →
   streaming Whisper → LLM → tool execution (ONE dispatcher) →
-  streaming TTS → continuous conversation → 60 s silence / goodbye →
-  back to wake listening. Models load ONCE. Diego NEVER exits on its own.
+  streaming TTS → ENDLESS conversation (silence never ends it; only an
+  explicit sleep command like "go to sleep" does) → back to wake
+  listening. Models load ONCE. Diego NEVER exits on its own.
 
 Heavy subsystems are imported LAZILY inside each command so the runtime
 entry path never inherits a broken legacy import.

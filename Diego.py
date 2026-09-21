@@ -17,7 +17,9 @@ Pipeline:
     → Streaming LLM (sentence-by-sentence)
     → Streaming TTS (interruptible)
     → Full duplex: interrupt Diego any time by speaking
-    → 60 s of silence / "goodbye" / "stop listening" / "cancel"
+    → ENDLESS conversation: silence NEVER ends the session
+    → Only an explicit sleep command ("go to sleep" / "stop listening" /
+      "cancel") closes the session
     → Back to wake listening (Diego NEVER exits on its own)
 
 Everything is async and cancellable. Graceful shutdown on Ctrl+C.
