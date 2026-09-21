@@ -107,6 +107,8 @@ class Subgoal:
     status: GoalStatus = GoalStatus.PENDING
     attempts: int = 0
     max_attempts: int = 3
+    required: bool = True         # advisory subgoals may fail without
+                                  # failing the goal
     error: str = ""
     evidence: Dict[str, Any] = field(default_factory=dict)
 

@@ -286,7 +286,7 @@ class ComputerController:
                                 outcome=ActionOutcome.FAILED,
                                 error=launched.message or "launch failed",
                                 evidence={"canonical": res.identity.canonical})
-        pres = wait_for_presence(res.identity, timeout=4.0)
+        pres = wait_for_presence(res.identity, timeout_s=4.0)
         ok = self._present(pres)
         return ActionResult(
             action="open_app", target=app, method="app_resolver", success=ok,

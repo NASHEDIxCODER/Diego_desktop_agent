@@ -86,11 +86,21 @@ class BrowserController:
             return True
 
         # Step 2: Try launching Chrome with CDP enabled
-        if self._ensure_chrome_running():
-            if self._try_cdp_attach():
-                self._attached = True
-                logger.info("Browser attached via CDP (launched Chrome)")
-                return True
+        launched = self._ensure_chrome_running()
+        if launched and self._try_cdp_attach():
+            self._attached = True
+            logger.info("Browser attached via CDP (launched Chrome)")
+            return True
+
+        # Step 2b: A launched Chrome can take longer than the readiness probe
+        # to expose CDP, so keep polling BEFORE attempting a persistent
+        # launch — that profile is locked by the Chrome we just started and
+        # a persistent launch would only fail on the profile lock.
+        if self._cdp_port_open() and self._attach_with_retry():
+            self._attached = True
+            logger.info("Browser attached via CDP (retried while Chrome "
+                        "started)")
+            return True
 
         # Step 3: Fallback to persistent Diego profile
         # This is the recommended path for Chrome 136+ which blocks
@@ -104,7 +114,21 @@ class BrowserController:
             logger.info("Browser launched with persistent Diego profile")
             return True
 
-        logger.warning("No browser available — agent mode limited to desktop actions")
+        logger.warning("No browser available — agent mode limited to desktop "
+                       "actions")
+        return False
+
+    def _attach_with_retry(self, timeout: float = 20.0,
+                           poll_s: float = 1.0) -> bool:
+        """Retry the CDP attach until the deadline (bounded, no busy loop)."""
+        import time
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self._try_cdp_attach():
+                return True
+            if not self._cdp_port_open():
+                return False          # nothing to attach to any more
+            time.sleep(poll_s)
         return False
 
     def _find_chrome_binary(self) -> Optional[str]:
@@ -131,21 +155,14 @@ class BrowserController:
         Checks if Chrome is already running on the CDP port.
         If not, launches Chrome with --remote-debugging-port.
         """
-        import socket
         import subprocess
-        import shutil
 
-        # Check if something is already listening on the CDP port
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        try:
-            result = sock.connect_ex(('127.0.0.1', self._cdp_port))
-            sock.close()
-            if result == 0:
-                # Port is already in use — Chrome might be running
-                logger.debug("CDP port %d is already in use", self._cdp_port)
-                return True
-        except Exception:
-            sock.close()
+        # A CDP endpoint that already answers the version probe is THE thing we
+        # need: reuse it (a mere open TCP port is not proof of a CDP browser).
+        if self._cdp_ready():
+            logger.debug("Reusing the live CDP endpoint on port %d",
+                         self._cdp_port)
+            return True
 
         # Find Chrome binary
         chrome_path = self._find_chrome_binary()
@@ -153,49 +170,79 @@ class BrowserController:
             logger.warning("Chrome binary not found")
             return False
 
-        # Find user's default Chrome profile
-        import os
-        home = os.path.expanduser("~")
-        # Common Chrome profile paths
-        profile_paths = [
-            os.path.join(home, ".config", "google-chrome"),
-            os.path.join(home, ".config", "chromium"),
-            os.path.join(home, "snap", "chromium", "current", ".config", "chromium"),
-        ]
-        
-        user_data_dir = None
-        for p in profile_paths:
-            if os.path.isdir(p):
-                user_data_dir = p
-                break
+        # Chrome 136+ REFUSES --remote-debugging-port on the default profile
+        # dir, so the CDP instance must run on the dedicated persistent Diego
+        # profile (the same one the persistent-launch fallback uses). It stays
+        # persistent, so a one-time login there is reused afterwards.
+        user_data_dir = str(DIEGO_PROFILE_DIR)
+        try:
+            os.makedirs(user_data_dir, exist_ok=True)
+        except Exception as e:
+            logger.warning("Cannot create CDP profile dir %s: %s",
+                           user_data_dir, e)
+            return False
 
-        if not user_data_dir:
-            # Use default location
-            user_data_dir = os.path.join(home, ".config", "google-chrome")
+        args = [
+            chrome_path,
+            f"--remote-debugging-port={self._cdp_port}",
+            f"--user-data-dir={user_data_dir}",
+            "--no-first-run",
+            "--no-default-browser-check",
+        ]
+        if not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
+            # Headless host: still expose CDP, just without a visible window.
+            args.append("--headless=new")
 
         # Launch Chrome with remote debugging
         try:
             subprocess.Popen(
-                [
-                    chrome_path,
-                    f"--remote-debugging-port={self._cdp_port}",
-                    f"--user-data-dir={user_data_dir}",
-                    "--no-first-run",
-                    "--no-default-browser-check",
-                ],
+                args,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                # Detach from Diego's process group so the browser outlives
+                # the agent process that started it.
+                start_new_session=True,
             )
             logger.info("Launched Chrome with CDP on port %d (profile: %s)",
                        self._cdp_port, user_data_dir)
-            
-            # Wait for Chrome to start
-            import time
-            time.sleep(2)
-            return True
+            # Wait for the CDP endpoint to actually answer (not a blind sleep).
+            return self._wait_for_cdp_port()
         except Exception as e:
             logger.warning("Failed to launch Chrome: %s", e)
             return False
+
+    def _cdp_port_open(self) -> bool:
+        """True when something accepts TCP connections on the CDP port."""
+        import socket
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            sock.settimeout(1.0)
+            return sock.connect_ex(("127.0.0.1", self._cdp_port)) == 0
+        except Exception:
+            return False
+        finally:
+            sock.close()
+
+    def _cdp_ready(self) -> bool:
+        """True when the CDP endpoint answers the version probe."""
+        from urllib.request import urlopen
+        try:
+            with urlopen(f"http://127.0.0.1:{self._cdp_port}/json/version",
+                         timeout=3) as resp:
+                return getattr(resp, "status", 200) == 200
+        except Exception:
+            return False
+
+    def _wait_for_cdp_port(self, timeout: float = 20.0) -> bool:
+        """Poll until Chrome's CDP endpoint is genuinely serving."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self._cdp_ready():
+                return True
+            time.sleep(0.5)
+        logger.warning("CDP endpoint on port %d did not become ready in %.0fs",
+                       self._cdp_port, timeout)
+        return False
 
     def _try_cdp_attach(self) -> bool:
         """Try to attach to a running Chrome instance via CDP."""
@@ -203,20 +250,23 @@ class BrowserController:
             from playwright.sync_api import sync_playwright
 
             self._playwright = sync_playwright().start()
-            cdp_url = f"http://localhost:{self._cdp_port}"
+            # Chrome binds its CDP endpoint on IPv4 loopback; "localhost" can
+            # resolve to ::1 first and yield ECONNREFUSED.
+            cdp_url = f"http://127.0.0.1:{self._cdp_port}"
 
             # Try to connect
             self._browser = self._playwright.chromium.connect_over_cdp(cdp_url)
-            self._context = self._browser.contexts[0] if self._browser.contexts else None
-            self._page = self._browser.pages[0] if self._browser.pages else None
+            # `Browser` exposes contexts, not pages: reuse the first context
+            # (and its first tab) when present, otherwise create them.
+            self._context = (self._browser.contexts[0]
+                             if self._browser.contexts
+                             else self._browser.new_context())
+            self._page = (self._context.pages[0]
+                          if self._context.pages
+                          else self._context.new_page())
 
             if self._page:
                 logger.info("CDP attach successful: %s", self._page.url)
-                return True
-
-            # No pages yet — create one
-            if self._context:
-                self._page = self._context.new_page()
                 return True
 
             return False
