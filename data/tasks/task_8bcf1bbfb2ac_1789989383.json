@@ -1,0 +1,71 @@
+{
+  "task_id": "8bcf1bbfb2ac",
+  "original_request": "open my Instagram profile. My account section",
+  "normalized_goal": "open my Instagram profile. My account section",
+  "current_plan": [
+    {
+      "action": "open_url",
+      "params": {
+        "url": "https://www.instagram.com/username/section"
+      },
+      "description": "Open the user's Instagram profile page"
+    }
+  ],
+  "completed_steps": [
+    {
+      "index": 1,
+      "action": "open_url",
+      "params": {
+        "url": "https://www.instagram.com/username/section"
+      },
+      "description": "Open the user's Instagram profile page",
+      "status": "completed",
+      "result": "Opened https://www.instagram.com/username/section",
+      "verification": "success",
+      "verified": true,
+      "retries": 0,
+      "error": "",
+      "latency_ms": 4.482507705688477,
+      "evidence_source": "unknown",
+      "sensitive_reason": ""
+    }
+  ],
+  "current_step": null,
+  "failed_steps": [],
+  "observed_state": "Window: [chrome] (1) Instagram - Google Chrome\nPage: terminal\nA11y: 0 clickable, 1 nodes (x11_window)\nWindow: (1) Instagram - Google Chrome\nApplication: Chrome (chrome)\nAccessibility: 1 nodes, 0 clickable\n♿ window \"(1) Instagram - Google Chrome\" @(0,0,1920x1068) [FOCUSED] [x11_window]\nSummary: Screen type: terminal\nFocused: window '(1) Instagram - Google Chrome'\nClipboard: Implement a persistent ENDLESS CONVERSATION SESSION after wake + face authentica\nBrowser: (1) Instagram",
+  "verification_results": [
+    {
+      "step": 1,
+      "action": "open_url",
+      "verified": true,
+      "evidence": "Opened https://www.instagram.com/username/section",
+      "reason": ""
+    }
+  ],
+  "retry_count": 0,
+  "replan_count": 0,
+  "total_steps": 1,
+  "final_status": "SUCCESS",
+  "plan_version": 1,
+  "started_at": 1789989383.2710848,
+  "ended_at": 1789989383.5131881,
+  "artifacts": {
+    "urls": [
+      "https://www.instagram.com/username/section"
+    ]
+  },
+  "log": [
+    "[TASK] id=8bcf1bbfb2ac goal=\"open my Instagram profile. My account section\"",
+    "[PLAN] v1 steps=1",
+    "[STEP 1/1] open_url",
+    "[VERIFY] success",
+    "[TASK] COMPLETE",
+    "[TASK] SUCCESS (steps=1 ok, 0 failed, replans=0, latency=242ms)"
+  ],
+  "blocker": "",
+  "evidence_log": [],
+  "pending_confirmation": null,
+  "confirmation_reason": "",
+  "referenced_entity": "",
+  "active_goal": ""
+}

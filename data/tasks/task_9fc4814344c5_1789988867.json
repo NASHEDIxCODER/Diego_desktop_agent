@@ -1,0 +1,29 @@
+{
+  "task_id": "9fc4814344c5",
+  "original_request": "Tell me about my battery level",
+  "normalized_goal": "Tell me about my battery level",
+  "current_plan": [],
+  "completed_steps": [],
+  "current_step": null,
+  "failed_steps": [],
+  "observed_state": "",
+  "verification_results": [],
+  "retry_count": 0,
+  "replan_count": 0,
+  "total_steps": 0,
+  "final_status": "FAILED",
+  "plan_version": 0,
+  "started_at": 1789988867.1605482,
+  "ended_at": 1789988867.1607428,
+  "artifacts": {},
+  "log": [
+    "[TASK] id=9fc4814344c5 goal=\"Tell me about my battery level\"",
+    "[PLAN] v0 rejected — action 'get_date' not authorized for this request; action 'type_text' not authorized for this request"
+  ],
+  "blocker": "The generated plan contained no executable actions: action 'get_date' not authorized for this request; action 'type_text' not authorized for this request",
+  "evidence_log": [],
+  "pending_confirmation": null,
+  "confirmation_reason": "",
+  "referenced_entity": "",
+  "active_goal": ""
+}
