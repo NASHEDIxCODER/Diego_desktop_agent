@@ -1187,6 +1187,20 @@ class CommandListener:
         self._gate_closed_at = None
         self._drain_requested = True
         self._listen_enabled.set()
+        # ENDLESS SESSION (2026-09-21): a partial Whisper decode still in
+        # flight from the previous turn is stale the moment the turn ends —
+        # its result is only a log hint, but leaving it running can cross
+        # the turn boundary (and race the next turn's final decode, which
+        # must be the ONLY active inference). Cancel it eagerly; the
+        # single-inflight guard then frees the next final immediately.
+        try:
+            task = self._partial_task
+            if task is not None and not task.done():
+                task.cancel()
+                self._partial_inflight = False
+                self._partial_task = None
+        except Exception as e:
+            logger.debug("[CMD] partial cancel in rearm_between_turns: %s", e)
         try:
             unified_vad.reset_state()
         except Exception as e:

@@ -45,6 +45,7 @@ RUNTIME DIAGNOSTICS (every state transition):
 
 import asyncio
 import logging
+import re
 import threading
 import time
 from enum import Enum
@@ -103,6 +104,25 @@ GOODBYE_PHRASES = SLEEP_PHRASES
 AUTH_SESSION_S = 600.0  # 10 minutes
 CHIME_PATH = Path(__file__).resolve().parent.parent / "Diego.wav"
 
+# ── ENDLESS SESSION lifecycle (2026-09-21) ────────────────────
+# Why the conversation session closed. ONLY an explicit sleep command is
+# a normal close that returns Diego to wake-word mode; every other close
+# is an internal failure the endless session must RECOVER from (it
+# re-opens itself — the user never has to repeat the wake word).
+SESSION_CLOSE_SLEEP = "sleep_command"
+SESSION_CLOSE_ERROR = "session_error"
+SESSION_CLOSE_STT_UNAVAILABLE = "stt_unavailable"
+SESSION_CLOSE_SHUTDOWN = "shutdown"
+# How often the session loop wakes up to check pump health / shutdown,
+# even while the silence deadline is still far away. A dead STT pump
+# must never leave a deaf, immortal session running.
+SESSION_POLL_S = 1.0
+# Bounded recovery: after this many consecutive session attempts that
+# failed for INTERNAL reasons, Diego gives up and returns to wake mode
+# (with one spoken explanation) instead of spinning forever.
+SESSION_MAX_STREAM_RETRIES = 3
+SESSION_RETRY_DELAY_S = 0.5
+
 
 # ═══════════════════════════════════════════════════════════════
 # States
@@ -132,6 +152,30 @@ ALLOWED_TRANSITIONS = {
     EngineState.THINK:     {EngineState.SPEAK},
     EngineState.SPEAK:     {EngineState.LISTEN, EngineState.IDLE},
 }
+
+
+# ═══════════════════════════════════════════════════════════════
+# ENDLESS conversation-session state machine (2026-09-21)
+# ═══════════════════════════════════════════════════════════════
+
+class SessionState(str, Enum):
+    """Lifecycle of the persistent post-auth conversation session.
+
+        IDLE ──(wake + face auth)──▶ ACTIVE ──(explicit sleep)──▶ CLOSED
+                                     │  ▲
+                                     └──┘ internal errors re-open it
+
+      IDLE     — wake mode: no conversation session exists.
+      ACTIVE   — the endless LISTEN → THINK → SPEAK → LISTEN loop. Silence,
+                 completed commands and TTS NEVER leave this state.
+      CLOSING  — a close was requested (normally an explicit sleep command);
+                 the farewell response is still being spoken.
+      CLOSED   — the stream is torn down; `close_reason` records why.
+    """
+    IDLE = "IDLE"
+    ACTIVE = "ACTIVE"
+    CLOSING = "CLOSING"
+    CLOSED = "CLOSED"
 
 
 
@@ -169,13 +213,133 @@ class ConversationEngine:
 
         # Session
         self._session_deadline: float = 0.0
-        # Endless conversation session (2026-09-21): True while the
-        # wake+auth LISTEN → THINK → SPEAK → LISTEN session is active.
-        # While True, silence NEVER ends the session (the deadline is
-        # refreshed instead) and the LISTEN watchdog ceiling is exempt —
-        # only an explicit SLEEP command closes the session.
-        self._endless_session: bool = False
+        # ── ENDLESS CONVERSATION SESSION STATE MACHINE (2026-09-21) ──
+        # After wake + face authentication the engine runs a PERSISTENT
+        # session: LISTEN → THINK → SPEAK → LISTEN continuously. Silence,
+        # completed commands and TTS NEVER return Diego to wake-word mode;
+        # only an explicit SLEEP command does (then IDLE → WAKE). The
+        # session lifecycle is tracked explicitly (state + id + turn count
+        # + close reason) so tests and diagnostics can prove the invariant.
+        self._session_state: SessionState = SessionState.IDLE
+        self._session_id: int = 0
+        self._session_started_at: float = 0.0
+        self._session_turns: int = 0
+        self._session_close_reason: Optional[str] = None
         self._turn_count = 0
+
+    # ── Endless-session state machine ─────────────────────
+
+    @property
+    def _endless_session(self) -> bool:
+        """Back-compat flag: True while an endless conversation session is
+        active or closing. While True the LISTEN watchdog ceiling is
+        exempt — silence must never tear the session down."""
+        return self._session_state in (SessionState.ACTIVE, SessionState.CLOSING)
+
+    def _begin_session(self) -> None:
+        """Open a fresh endless conversation session."""
+        self._session_id += 1
+        self._session_state = SessionState.ACTIVE
+        self._session_started_at = time.monotonic()
+        self._session_turns = 0
+        self._session_close_reason = None
+        logger.info("[SESSION] #%d opened — endless LISTEN ↔ THINK ↔ SPEAK "
+                    "(exit only on an explicit sleep command)", self._session_id)
+
+    def _request_session_close(self, reason: str) -> None:
+        """Record WHY the session is closing.
+
+        Only an explicit sleep command ('go to sleep', 'stop listening', …)
+        is a normal close; every other reason is an internal failure the
+        endless session recovers from by re-opening itself.
+        """
+        self._session_close_reason = reason
+        if self._session_state == SessionState.ACTIVE:
+            self._session_state = SessionState.CLOSING
+        logger.info("[SESSION] #%d close requested (%s)",
+                    self._session_id, reason)
+
+    def _end_session(self) -> None:
+        """Close the session; the close reason is preserved for the run
+        loop (wake mode on sleep, self-recovery on internal errors)."""
+        self._session_state = SessionState.CLOSED
+        logger.info("[SESSION] #%d closed (%s) turns=%d duration=%.1fs",
+                    self._session_id, self._session_close_reason or "unknown",
+                    self._session_turns,
+                    time.monotonic() - self._session_started_at
+                    if self._session_started_at else 0.0)
+
+    @staticmethod
+    def _is_sleep_command(text: str) -> bool:
+        """True ONLY for an explicit sleep command (endless-session exit).
+
+        Matching rules:
+          * the normalized utterance IS one of SLEEP_PHRASES, or
+          * a SLEEP_PHRASES phrase appears as WHOLE WORDS in the
+            utterance ("hey diego, go to sleep now" closes the session;
+            the old raw-substring check let "cancel" inside
+            "cancellation" or "cancelled" close it too), or
+          * the utterance ENDS with the bare word "sleep" ("diego sleep",
+            "please sleep") — but "sleep" INSIDE another command ("sleep
+            music", "sleep paralysis") must never close the session.
+        """
+        lower = (text or "").strip().lower()
+        lower = re.sub(r"[^\w\s']", " ", lower)
+        lower = " ".join(lower.split())
+        if not lower:
+            return False
+        if lower in SLEEP_PHRASES:
+            return True
+        words = lower.split()
+        # A trailing bare "sleep" is an explicit sleep command even when
+        # the ASR prepends fragments ("diego sleep", "please sleep") — but
+        # "sleep" INSIDE another command ("sleep music", "sleep paralysis")
+        # must never close the session.
+        if words[-1] == "sleep":
+            return True
+        for phrase in SLEEP_PHRASES:
+            # Short single-word phrases (≤5 chars, i.e. "sleep") are
+            # handled by the exact match + trailing-word rule above only —
+            # a whole-word search here would end the session on any
+            # sentence containing the word "sleep".
+            if len(phrase) <= 5 and " " not in phrase:
+                continue
+            if re.search(r"\b" + re.escape(phrase) + r"\b", lower):
+                return True
+        return False
+
+    def _finish_turn_rearm(
+            self, events: "asyncio.Queue[UtteranceEvent]") -> None:
+        """Between-turns re-arm for the ENDLESS session.
+
+        Runs after EVERY turn (Brain turn, identity response, failure
+        response) before returning to LISTEN, so NO stale drain/gate/VAD
+        state survives the THINK/SPEAK boundary:
+
+          1. rearm_between_turns(): gate OPEN + drain request (consumed by
+             the live streaming loop) + eager VAD reset,
+          2. drain stale STT events produced during the turn (TTS / action
+             contamination would otherwise become a phantom interruption
+             or a phantom command),
+          3. refresh the between-turns silence deadline.
+        """
+        try:
+            command_listener.rearm_between_turns()
+        except Exception as e:
+            logger.warning("[LISTEN] rearm_between_turns failed: %s", e)
+
+        drained = 0
+        while True:
+            try:
+                events.get_nowait()
+                drained += 1
+            except asyncio.QueueEmpty:
+                break
+        if drained:
+            logger.info("[LISTEN] Drained %d stale STT events "
+                        "(TTS contamination)", drained)
+
+        self._session_deadline = time.monotonic() + CONVERSATION_TIMEOUT_S
 
         # GUI pump
         self._gui_pump_task: Optional[asyncio.Task] = None
@@ -602,298 +766,448 @@ class ConversationEngine:
     async def _conversation_session(self) -> None:
         """ENDLESS conversation session: LISTEN → THINK → SPEAK → LISTEN …
 
-        After wake + face auth the session NEVER ends on its own: silence
-        refreshes the listen deadline and Diego keeps listening. The session
-        closes ONLY on an explicit SLEEP command (SLEEP_PHRASES), then the
-        engine returns to wake mode (IDLE → WAKE).
+        After wake + face auth the session NEVER ends on its own:
+
+          * silence refreshes the listen deadline (never returns to wake),
+          * completed commands return to LISTEN (never to wake),
+          * TTS is re-armed between turns (never to wake),
+          * internal failures (dead STT pump, stream errors, Brain
+            exceptions) RE-OPEN the session — the user never has to
+            repeat the wake word.
+
+        The session closes ONLY on an explicit SLEEP command (see
+        `_is_sleep_command` / SLEEP_PHRASES), then the engine returns to
+        wake mode (IDLE → WAKE).
         """
         loop = asyncio.get_event_loop()
         t_session_start = time.time()
+        stream_failures = 0
 
-        if not command_listener.ready:
-            ok = await loop.run_in_executor(None, command_listener.initialize)
-            if not ok:
-                logger.error("[LISTEN] Whisper unavailable — returning to IDLE")
-                await self._speak_guarded("My speech recognizer isn't available right now.")
-                return
-
-        # ── POST-WAKE READINESS FIX (2026-09-20) ──
-        # The post-wake path runs FACE_AUTH (which greets via
-        # _speak_guarded → resume_listening → _drain_requested=True) BEFORE
-        # this LISTEN session. That drain request lingers because no command
-        # stream consumed it, and stream_utterances()'s first loop iteration
-        # would then execute it AFTER establishing its command_session_start
-        # boundary — discarding the first 1-2s of the spoken command. Prepare
-        # the listener NOW (clear stale drain, force gate open, reset VAD,
-        # anchor the boundary) so the command session boundary is honored
-        # from the very first sample after face auth.
-        try:
-            command_listener.prepare_command_session()
-        except Exception as e:
-            logger.warning("[LISTEN] prepare_command_session failed: %s", e)
-
-        events: "asyncio.Queue[UtteranceEvent]" = asyncio.Queue()
-        # CRITICAL FIX (2026-08-29): stream_utterances() can raise (e.g.
-        # _frames_to_bytes ValueError on empty frames). Wrap it so the
-        # engine never crashes — it recovers by returning to IDLE.
-        try:
-            stream = command_listener.stream_utterances()
-        except Exception as e:
-            logger.error("[LISTEN] stream_utterances failed: %s", e)
-            await self._speak_guarded("I had trouble starting to listen.")
-            return
-        pump = asyncio.create_task(self._stt_event_pump(stream, events))
-
-        # ── ENDLESS SESSION (2026-09-21) ──
-        # Mark the session active ONLY here (after the early-error returns,
-        # inside the try/finally reach): the finally block clears it, so the
-        # LISTEN watchdog exemption can never leak past a failed session.
-        self._endless_session = True
-        self._session_deadline = time.monotonic() + CONVERSATION_TIMEOUT_S
-        self._set_state(EngineState.LISTEN)
-
-        try:
-            while self._running:
-                remaining = self._session_deadline - time.monotonic()
-                if remaining <= 0:
-                    if self._endless_session:
-                        # ── ENDLESS SESSION (2026-09-21) ──
-                        # Silence NEVER ends the session. Refresh the
-                        # deadline and keep listening until an explicit
-                        # SLEEP command.
-                        logger.info(
-                            "[LISTEN] Silence %.0fs — endless session stays "
-                            "open (say a sleep command to end)",
-                            CONVERSATION_TIMEOUT_S)
-                        self._session_deadline = (
-                            time.monotonic() + CONVERSATION_TIMEOUT_S)
-                        continue
-                    logger.info("[LISTEN] Silence %.0fs — conversation timeout",
-                                CONVERSATION_TIMEOUT_S)
+        # ── ENDLESS SESSION outer loop ────────────────────────
+        # One iteration = one complete stream lifecycle. The loop re-opens
+        # the session after internal errors; it exits ONLY on an explicit
+        # sleep command, recognizer unavailability, or shutdown.
+        while self._running:
+            if not command_listener.ready:
+                ok = await loop.run_in_executor(
+                    None, command_listener.initialize)
+                if not ok:
+                    logger.error(
+                        "[LISTEN] Whisper unavailable — returning to IDLE")
+                    await self._speak_guarded(
+                        "My speech recognizer isn't available right now.")
+                    self._request_session_close(SESSION_CLOSE_STT_UNAVAILABLE)
                     break
 
-                try:
-                    ev = await asyncio.wait_for(events.get(), timeout=remaining)
-                except asyncio.TimeoutError:
-                    if self._endless_session:
-                        logger.info(
-                            "[LISTEN] Silence %.0fs — endless session stays "
-                            "open (say a sleep command to end)",
-                            CONVERSATION_TIMEOUT_S)
-                        self._session_deadline = (
-                            time.monotonic() + CONVERSATION_TIMEOUT_S)
-                        continue
-                    logger.info("[LISTEN] Silence %.0fs — conversation timeout",
-                                CONVERSATION_TIMEOUT_S)
-                    break
-
-                if ev.kind == "speech_start":
-                    logger.info("Speech detected")
-                    self._session_deadline = time.monotonic() + CONVERSATION_TIMEOUT_S
-                    continue
-
-                if ev.kind == "partial":
-                    logger.info("Partial: '%s' (conf=%.3f, audio=%.0fms)",
-                                ev.text, ev.confidence, ev.audio_duration_ms)
-                    continue
-
-                # ── TASK 6: explicit failure responses ──
-                # Diego must NEVER silently return to wake mode after a
-                # detected speech attempt. A "failure" event carries an
-                # explicit reason and must be spoken.
-                if ev.kind == "failure":
-                    reason = getattr(ev, "failure_reason", "") or "MISUNDERSTOOD"
-                    logger.info("[LISTEN] Failure event (reason=%s, audio=%.0fms)",
-                                reason, ev.audio_duration_ms)
-                    self._session_deadline = time.monotonic() + CONVERSATION_TIMEOUT_S
-                    await self._speak_failure_response(reason)
-                    continue
-
-                if ev.kind != "final":
-                    continue
-
-                text = (ev.text or "").strip()
-                if not text:
-                    continue
-
-                dur_ms = ev.audio_duration_ms
-                logger.info("Endpoint (%.0fms, reason=%s)", dur_ms, ev.endpoint_reason)
-                logger.info("Transcript: '%s' (conf=%.3f)", text, ev.confidence)
-                self._session_deadline = time.monotonic() + CONVERSATION_TIMEOUT_S
-
-                # ── Record utterance metrics ──
-                session_recorder.record_utterance(
-                    transcript=text,
-                    confidence=ev.confidence,
-                    speech_duration_ms=dur_ms,
-                    endpoint_reason=ev.endpoint_reason,
-                    whisper_latency_ms=ev.whisper_latency_ms,
-                )
-
-                lower = text.lower()
-
-                # Filler-only: keep listening
-                if is_filler(text):
-                    logger.info("[LISTEN] Filler '%s' — turn stays open", text)
-                    continue
-
-                # ── Self-introduction ──
-                if self._is_identity_question(lower):
-                    self._set_state(EngineState.THINK)
-                    intro = (
-                        "I'm Diego, your desktop assistant. "
-                        "I can control your computer, open apps, manage files, "
-                        "play music, search the web, and help with coding. "
-                        "Just say 'hello Diego' to wake me up, then tell me what you need."
-                    )
-                    await self._think_and_speak(intro, events, canned=True)
-                    continue
-
-                # ── SLEEP COMMAND (endless session exit, 2026-09-21) ──
-                # Only an explicit sleep command closes the session and
-                # returns Diego to wake mode. Silence never does.
-                if lower in SLEEP_PHRASES or any(
-                        g in lower for g in SLEEP_PHRASES if len(g) > 5):
-                    self._set_state(EngineState.THINK)
-                    await self._think_and_speak(personality.farewell(), events, canned=True)
-                    logger.info("[ENGINE] Sleep command '%s' — session over, "
-                                "returning to wake mode", text)
-                    break
-
-                self._turn_count += 1
-                logger.info("[THINK] Turn #%d: '%s'", self._turn_count, text)
-
-                t_turn_start = time.time()
-
-                # ── STATE: THINK — Brain orchestrates the full pipeline ──
-                # Brain.process_command() runs:
-                #   perceive → decide → plan → dispatch → verify → learn → respond
-                # The engine ONLY speaks the response. No bypass is possible.
-                self._set_state(EngineState.THINK)
-
-                # Pause listening during THINK so the command listener does
-                # not keep streaming and queue "speech_start" events from the
-                # user's continued speech (or TTS echo). Those stale events
-                # would otherwise be seen by the interruption monitor when
-                # TTS starts, causing an immediate false interrupt.
-                command_listener.pause_listening()
-
-                from agent.brain import agent_brain
-
-                # ── RESPONSE GUARANTEE: never silent ──
-                # Wrap the full turn (process → speak) so that every
-                # completed utterance gets a spoken response. If the
-                # Brain fails, returns an empty response, or TTS fails,
-                # the guarantee layer speaks a recovery/generic fallback.
-                result_holder: dict = {}
-
-                async def _process() -> Any:
-                    # BLOCKER 1 FIX (2026-08-30): forward the STT
-                    # confidence + utterance audio duration so the Brain's
-                    # intent sanity gate can combine transcript quality,
-                    # speech evidence, and intent confidence before any
-                    # tool execution.
-                    r = await agent_brain.process_command(
-                        text,
-                        stt_confidence=getattr(ev, "confidence", None),
-                        audio_duration_ms=getattr(ev, "audio_duration_ms", None),
-                    )
-                    result_holder["result"] = r
-                    return r
-
-                async def _speak(response: str) -> bool:
-                    spoke = await self._think_and_speak(response, events, canned=True)
-                    # If the action spoke immediately, speak the followup
-                    # confirmation after verification completes.
-                    r = result_holder.get("result")
-                    if spoke and r is not None and getattr(r, "speak_immediately", False):
-                        followup = getattr(r, "followup_response", "") or ""
-                        if followup and followup.strip():
-                            spoke2 = await self._think_and_speak(followup, events, canned=True)
-                            spoke = spoke or spoke2
-                    return spoke
-
-                await response_guarantee.run_turn(
-                    transcript=text,
-                    process_fn=_process,
-                    speak_fn=_speak,
-                )
-
-                result = result_holder.get("result")
-
-                # ── LISTENING GUARD FIX (2026-08-30) ──
-                # The TTS guard pauses the command listener for the whole
-                # Brain turn (which can include perception/planner work —
-                # hence the repeated "listen gate CLOSED for >1s" logs).
-                # If ANY path left the listener paused (e.g. the Brain turn
-                # completed without TTS, or TTS failed), the microphone
-                # would never accept the NEXT real command. Explicitly
-                # resume (idempotent) before returning to LISTEN. This also
-                # requests a drain + VAD reset so stale audio from the turn
-                # is discarded before the next command is captured. TTS
-                # protection is NOT removed — _think_and_speak still pauses
-                # during playback and resumes after the echo decay.
-                # ── ENDLESS SESSION (2026-09-21) ──
-                # rearm_between_turns() combines the resume above with an
-                # eager VAD reset so NO stale drain/gate/VAD state survives
-                # the THINK/SPEAK boundary between turns (the stream keeps
-                # running across turns of the endless session, so the drain
-                # it requests is consumed by the live streaming loop).
-                command_listener.rearm_between_turns()
-
-                # ── Record decision ──
-                if result is not None:
-                    session_recorder.record_decision(
-                        classification=result.path or "BRAIN",
-                        confidence=1.0,
-                        latency_us=0.0,
-                        llm_used=result.used_llm,
-                        action=None,
-                        actions=None,
-                    )
-
-                    benchmark.record_turn(
-                        text=text, llm_used=result.used_llm,
-                        router_kind=result.path,
-                        latency_ms=result.latency_ms,
-                        action_executed=result.actions_executed > 0,
-                        action_success=result.actions_failed == 0,
-                    )
-
-                # ── Record turn end ──
-                session_recorder.record_turn_end(
-                    total_latency_ms=(time.time() - t_turn_start) * 1000,
-                )
-
-                # Drain stale events from TTS/action contamination
-                drained = 0
-                while True:
-                    try:
-                        events.get_nowait()
-                        drained += 1
-                    except asyncio.QueueEmpty:
-                        break
-                if drained:
-                    logger.info("[LISTEN] Drained %d stale STT events (TTS contamination)", drained)
-
-                # ── Back to LISTEN ──
-                self._set_state(EngineState.LISTEN,
-                                latency_breakdown=f"turn={(time.time() - t_turn_start) * 1000:.0f}ms")
-
-        finally:
-            pump.cancel()
-            command_listener.stop_streaming()
-            await asyncio.gather(pump, return_exceptions=True)
+            # ── POST-WAKE READINESS FIX (2026-09-20) ──
+            # The post-wake path runs FACE_AUTH (which greets via
+            # _speak_guarded → resume_listening → _drain_requested=True)
+            # BEFORE this LISTEN session. That drain request lingers because
+            # no command stream consumed it, and stream_utterances()'s first
+            # loop iteration would then execute it AFTER establishing its
+            # command_session_start boundary — discarding the first 1-2s of
+            # the spoken command. Prepare the listener NOW (clear stale
+            # drain, force gate open, reset VAD, anchor the boundary) so the
+            # command session boundary is honored from the very first sample
+            # after face auth.
             try:
-                await stream.aclose()
-            except Exception:
-                pass
-            # Session closed (sleep command / error) — clear the endless
-            # flag so the LISTEN watchdog ceiling is enforced again on the
-            # next session entry and silence semantics return to normal.
-            self._endless_session = False
-            logger.info("[STT] Streaming Whisper stopped (session over)")
+                command_listener.prepare_command_session()
+            except Exception as e:
+                logger.warning("[LISTEN] prepare_command_session failed: %s", e)
 
+            events: "asyncio.Queue[UtteranceEvent]" = asyncio.Queue()
+            # CRITICAL FIX (2026-08-29): stream_utterances() can raise (e.g.
+            # _frames_to_bytes ValueError on empty frames). Wrap it so the
+            # engine never crashes — an endless session re-opens itself.
+            try:
+                stream = command_listener.stream_utterances()
+            except Exception as e:
+                stream_failures += 1
+                logger.error(
+                    "[LISTEN] stream_utterances failed (%d/%d): %s",
+                    stream_failures, SESSION_MAX_STREAM_RETRIES, e)
+                self._request_session_close(SESSION_CLOSE_ERROR)
+                if stream_failures >= SESSION_MAX_STREAM_RETRIES:
+                    try:
+                        await self._speak_guarded(
+                            "I'm having trouble listening right now. "
+                            "Say 'hello Diego' to try again.")
+                    except Exception:
+                        pass
+                    break
+                await asyncio.sleep(SESSION_RETRY_DELAY_S)
+                continue
+            pump = asyncio.create_task(self._stt_event_pump(stream, events))
+
+            # ── ENDLESS SESSION (2026-09-21) ──
+            # Mark the session active ONLY here (after the setup-error
+            # paths, inside the try/finally reach): the finally block ends
+            # the session state, so the LISTEN watchdog exemption can never
+            # leak past a failed session attempt.
+            self._begin_session()
+            self._session_deadline = time.monotonic() + CONVERSATION_TIMEOUT_S
+            self._set_state(EngineState.LISTEN)
+
+            try:
+                while self._running:
+                    # ── ENDLESS SESSION robustness ──
+                    # If the STT pump/stream dies, the session would idle
+                    # deaf forever — it could not even hear a sleep command.
+                    # Detect it and re-open the session instead.
+                    if pump.done():
+                        try:
+                            exc = pump.exception()
+                        except Exception:
+                            exc = None  # cancelled pump — treat as clean exit
+                        logger.error(
+                            "[LISTEN] STT pump stopped (%s) — re-opening "
+                            "the endless session",
+                            repr(exc) if exc else "clean exit")
+                        self._request_session_close(SESSION_CLOSE_ERROR)
+                        break
+
+                    remaining = self._session_deadline - time.monotonic()
+                    if remaining <= 0:
+                        if self._endless_session:
+                            # ── ENDLESS SESSION (2026-09-21) ──
+                            # Silence NEVER ends the session. Refresh the
+                            # deadline and keep listening until an explicit
+                            # SLEEP command.
+                            logger.info(
+                                "[LISTEN] Silence %.0fs — endless session "
+                                "stays open (say a sleep command to end)",
+                                CONVERSATION_TIMEOUT_S)
+                            self._session_deadline = (
+                                time.monotonic() + CONVERSATION_TIMEOUT_S)
+                            continue
+                        logger.info(
+                            "[LISTEN] Silence %.0fs — conversation timeout",
+                            CONVERSATION_TIMEOUT_S)
+                        break
+
+                    # Short poll so pump death / shutdown is noticed even
+                    # while the silence deadline is still far away.
+                    try:
+                        ev = await asyncio.wait_for(
+                            events.get(),
+                            timeout=min(remaining, SESSION_POLL_S))
+                    except asyncio.TimeoutError:
+                        if time.monotonic() < self._session_deadline:
+                            continue  # poll tick — re-check pump/shutdown
+                        if self._endless_session:
+                            logger.info(
+                                "[LISTEN] Silence %.0fs — endless session "
+                                "stays open (say a sleep command to end)",
+                                CONVERSATION_TIMEOUT_S)
+                            self._session_deadline = (
+                                time.monotonic() + CONVERSATION_TIMEOUT_S)
+                            continue
+                        logger.info(
+                            "[LISTEN] Silence %.0fs — conversation timeout",
+                            CONVERSATION_TIMEOUT_S)
+                        break
+
+                    if ev.kind == "speech_start":
+                        logger.info("Speech detected")
+                        self._session_deadline = (
+                            time.monotonic() + CONVERSATION_TIMEOUT_S)
+                        continue
+
+                    if ev.kind == "partial":
+                        logger.info("Partial: '%s' (conf=%.3f, audio=%.0fms)",
+                                    ev.text, ev.confidence, ev.audio_duration_ms)
+                        continue
+
+                    # ── TASK 6: explicit failure responses ──
+                    # Diego must NEVER silently return to wake mode after a
+                    # detected speech attempt. A "failure" event carries an
+                    # explicit reason and must be spoken.
+                    if ev.kind == "failure":
+                        reason = (getattr(ev, "failure_reason", "")
+                                  or "MISUNDERSTOOD")
+                        logger.info("[LISTEN] Failure event (reason=%s, "
+                                    "audio=%.0fms)", reason,
+                                    ev.audio_duration_ms)
+                        await self._speak_failure_response(reason)
+                        # Failure turns must leave the listener re-armed too
+                        # (endless session): gate open, stale audio drained.
+                        self._finish_turn_rearm(events)
+                        continue
+
+                    if ev.kind != "final":
+                        continue
+
+                    text = (ev.text or "").strip()
+                    if not text:
+                        continue
+
+                    dur_ms = ev.audio_duration_ms
+                    logger.info("Endpoint (%.0fms, reason=%s)",
+                                dur_ms, ev.endpoint_reason)
+                    logger.info("Transcript: '%s' (conf=%.3f)",
+                                text, ev.confidence)
+
+                    # ── Record utterance metrics ──
+                    session_recorder.record_utterance(
+                        transcript=text,
+                        confidence=ev.confidence,
+                        speech_duration_ms=dur_ms,
+                        endpoint_reason=ev.endpoint_reason,
+                        whisper_latency_ms=ev.whisper_latency_ms,
+                    )
+
+                    lower = text.lower()
+
+                    # Filler-only: keep listening
+                    if is_filler(text):
+                        logger.info("[LISTEN] Filler '%s' — turn stays open",
+                                    text)
+                        continue
+
+                    # ── Self-introduction ──
+                    if self._is_identity_question(lower):
+                        self._set_state(EngineState.THINK)
+                        intro = (
+                            "I'm Diego, your desktop assistant. "
+                            "I can control your computer, open apps, manage files, "
+                            "play music, search the web, and help with coding. "
+                            "Just say 'hello Diego' to wake me up, then tell me what you need."
+                        )
+                        # FIX (2026-09-21): the response leaves the engine in
+                        # SPEAK state. The old code `continue`d without
+                        # returning to LISTEN, so the SPEAK watchdog (120s)
+                        # eventually force-stopped the LIVE command stream
+                        # mid-session. Identity turns are just turns: speak,
+                        # re-arm, back to LISTEN — the endless session stays.
+                        try:
+                            await self._think_and_speak(
+                                intro, events, canned=True)
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as e:
+                            logger.error("[LISTEN] Identity turn failed: %s", e)
+                        self._finish_turn_rearm(events)
+                        self._set_state(EngineState.LISTEN,
+                                        latency_breakdown="turn=identity")
+                        continue
+
+                    # ── SLEEP COMMAND (endless session exit, 2026-09-21) ──
+                    # ONLY an explicit sleep command closes the session and
+                    # returns Diego to wake mode. Silence, completed commands
+                    # and TTS never do. Matching is whole-word based so
+                    # "cancellation" or "sleepy" can never end the session.
+                    if self._is_sleep_command(text):
+                        self._request_session_close(SESSION_CLOSE_SLEEP)
+                        self._set_state(EngineState.THINK)
+                        await self._think_and_speak(
+                            personality.farewell(), events, canned=True)
+                        logger.info("[ENGINE] Sleep command '%s' — session "
+                                    "over, returning to wake mode", text)
+                        break
+
+                    self._turn_count += 1
+                    self._session_turns += 1
+                    logger.info("[THINK] Turn #%d: '%s'",
+                                self._turn_count, text)
+
+                    t_turn_start = time.time()
+
+                    # ── STATE: THINK — Brain orchestrates the full pipeline ──
+                    # Brain.process_command() runs:
+                    #   perceive → decide → plan → dispatch → verify → learn → respond
+                    # The engine ONLY speaks the response. No bypass is possible.
+                    self._set_state(EngineState.THINK)
+
+                    # Pause listening during THINK so the command listener does
+                    # not keep streaming and queue "speech_start" events from the
+                    # user's continued speech (or TTS echo). Those stale events
+                    # would otherwise be seen by the interruption monitor when
+                    # TTS starts, causing an immediate false interrupt.
+                    command_listener.pause_listening()
+
+                    # ── ENDLESS SESSION (2026-09-21) ──
+                    # The whole turn is exception-contained: a Brain crash,
+                    # dispatcher failure or TTS explosion must NEVER end the
+                    # session — Diego speaks a recovery response and keeps
+                    # listening. Only an explicit sleep command may close it.
+                    try:
+                        from agent.brain import agent_brain
+
+                        # ── RESPONSE GUARANTEE: never silent ──
+                        # Wrap the full turn (process → speak) so that every
+                        # completed utterance gets a spoken response. If the
+                        # Brain fails, returns an empty response, or TTS fails,
+                        # the guarantee layer speaks a recovery/generic fallback.
+                        result_holder: dict = {}
+
+                        async def _process() -> Any:
+                            # BLOCKER 1 FIX (2026-08-30): forward the STT
+                            # confidence + utterance audio duration so the Brain's
+                            # intent sanity gate can combine transcript quality,
+                            # speech evidence, and intent confidence before any
+                            # tool execution.
+                            r = await agent_brain.process_command(
+                                text,
+                                stt_confidence=getattr(ev, "confidence", None),
+                                audio_duration_ms=getattr(
+                                    ev, "audio_duration_ms", None),
+                            )
+                            result_holder["result"] = r
+                            return r
+
+                        async def _speak(response: str) -> bool:
+                            spoke = await self._think_and_speak(
+                                response, events, canned=True)
+                            # If the action spoke immediately, speak the followup
+                            # confirmation after verification completes.
+                            r = result_holder.get("result")
+                            if (spoke and r is not None
+                                    and getattr(r, "speak_immediately", False)):
+                                followup = (getattr(r, "followup_response", "")
+                                            or "")
+                                if followup and followup.strip():
+                                    spoke2 = await self._think_and_speak(
+                                        followup, events, canned=True)
+                                    spoke = spoke or spoke2
+                            return spoke
+
+                        await response_guarantee.run_turn(
+                            transcript=text,
+                            process_fn=_process,
+                            speak_fn=_speak,
+                        )
+
+                        result = result_holder.get("result")
+                        # The turn completed cleanly — reset the bounded
+                        # recovery counter of the endless session.
+                        stream_failures = 0
+
+                        # ── Record decision ──
+                        if result is not None:
+                            session_recorder.record_decision(
+                                classification=result.path or "BRAIN",
+                                confidence=1.0,
+                                latency_us=0.0,
+                                llm_used=result.used_llm,
+                                action=None,
+                                actions=None,
+                            )
+
+                            benchmark.record_turn(
+                                text=text, llm_used=result.used_llm,
+                                router_kind=result.path,
+                                latency_ms=result.latency_ms,
+                                action_executed=result.actions_executed > 0,
+                                action_success=result.actions_failed == 0,
+                            )
+
+                        # ── Record turn end ──
+                        session_recorder.record_turn_end(
+                            total_latency_ms=(
+                                time.time() - t_turn_start) * 1000,
+                        )
+
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as e:
+                        # ── ENDLESS SESSION (2026-09-21) ──
+                        # A turn error must NEVER end the session: speak a
+                        # short recovery response and keep listening. Only
+                        # an explicit sleep command may close the session.
+                        logger.exception(
+                            "[LISTEN] Turn failed — endless session stays "
+                            "open: %s", e)
+                        try:
+                            await self._speak_failure_response(
+                                "MISUNDERSTOOD")
+                        except Exception as speak_err:
+                            logger.error(
+                                "[LISTEN] Failure response also failed: %s",
+                                speak_err)
+                    finally:
+                        # ── LISTENING GUARD FIX (2026-08-30) ──
+                        # The TTS guard pauses the command listener for the
+                        # whole Brain turn. If ANY path left the listener
+                        # paused (e.g. the Brain turn completed without TTS,
+                        # or TTS failed), the microphone would never accept
+                        # the NEXT real command.
+                        # ── ENDLESS SESSION (2026-09-21) ──
+                        # _finish_turn_rearm() combines the resume with an
+                        # eager drain + VAD reset + stale-event purge so NO
+                        # stale drain/gate/VAD state survives the THINK/SPEAK
+                        # boundary between turns (the stream keeps running
+                        # across turns, so the drain it requests is consumed
+                        # by the live streaming loop). Runs on EVERY exit
+                        # path — success, failure, or cancellation.
+                        self._finish_turn_rearm(events)
+
+                        # ── Back to LISTEN ──
+                        self._set_state(
+                            EngineState.LISTEN,
+                            latency_breakdown=(
+                                f"turn={(time.time() - t_turn_start) * 1000:.0f}ms"))
+
+                # ── ENDLESS SESSION: stream teardown + bounded recovery ──
+                # Reaching here means the inner loop broke: an explicit
+                # sleep command, shutdown, or an internal failure.
+                if self._session_close_reason == SESSION_CLOSE_SLEEP:
+                    # Explicit sleep → wake mode (the ONLY normal close).
+                    break
+                if not self._running:
+                    break
+                if self._session_close_reason == SESSION_CLOSE_STT_UNAVAILABLE:
+                    break
+
+                # Internal failure → re-open the session (the user must
+                # NEVER have to repeat the wake word). Bounded: after
+                # SESSION_MAX_STREAM_RETRIES consecutive failures, give up
+                # and return to wake mode with one spoken explanation.
+                stream_failures += 1
+                logger.error(
+                    "[LISTEN] Session failed internally (reason=%s, %d/%d) "
+                    "— %s", self._session_close_reason or "unknown",
+                    stream_failures, SESSION_MAX_STREAM_RETRIES,
+                    "re-opening the endless session"
+                    if stream_failures < SESSION_MAX_STREAM_RETRIES
+                    else "giving up — returning to wake mode")
+                if stream_failures >= SESSION_MAX_STREAM_RETRIES:
+                    try:
+                        await self._speak_guarded(
+                            "I'm having trouble listening right now. "
+                            "Say 'hello Diego' to try again.")
+                    except Exception:
+                        pass
+                    break
+                await asyncio.sleep(SESSION_RETRY_DELAY_S)
+
+            finally:
+                # Endless session stream teardown. ALWAYS executed: sleep
+                # close, shutdown, internal errors, and cancellations.
+                pump.cancel()
+                command_listener.stop_streaming()
+                await asyncio.gather(pump, return_exceptions=True)
+                try:
+                    await stream.aclose()
+                except Exception:
+                    pass
+                # Session closed — end the session state so the LISTEN
+                # watchdog ceiling is enforced again outside a session and
+                # silence semantics return to normal.
+                self._end_session()
+                logger.info(
+                    "[STT] Streaming Whisper stopped (session over: %s)",
+                    self._session_close_reason or "unknown")
+
+        # ── ENDLESS SESSION post-loop bookkeeping ─────────────
+        # Reset the close reason and return the session machine to IDLE.
+        # The run() loop routes back to wake mode (IDLE → WAKE) because
+        # this method only ever returns after a sleep close, shutdown, a
+        # recognizer failure, or an unrecoverable stream failure — never
+        # after mere silence or a completed command.
+        logger.info("[SESSION] Endless conversation session ended (%s) — "
+                    "returning to wake mode",
+                    self._session_close_reason or "shutdown")
+        self._session_close_reason = None
         self._set_state(EngineState.IDLE,
                         session_duration=f"{(time.time() - t_session_start):.1f}s",
                         turns=self._turn_count)
@@ -1167,6 +1481,29 @@ class ConversationEngine:
             "running": self._running,
             "last_diag": self._diag,
             "response_guarantee": response_guarantee.get_diagnostics(),
+            # ── ENDLESS SESSION (2026-09-21) ──
+            # Session lifecycle for diagnostics/UI/tests: the session must
+            # be ACTIVE (or CLOSING) for the whole wake→auth→LISTEN phase
+            # and only IDLE again in wake mode.
+            "session": self.get_session_diagnostics(),
+        }
+
+    def get_session_diagnostics(self) -> dict:
+        """ENDLESS conversation-session lifecycle snapshot (2026-09-21).
+
+        Exposed for tests, the UI and logs so the invariant
+        "silence/completed commands never close the session; only an
+        explicit sleep command does" is observable at runtime.
+        """
+        return {
+            "state": self._session_state.value,
+            "id": self._session_id,
+            "turns": self._session_turns,
+            "started_at": self._session_started_at,
+            "duration_s": round(
+                time.monotonic() - self._session_started_at, 1)
+            if self._session_state == SessionState.ACTIVE else 0.0,
+            "close_reason": self._session_close_reason,
         }
 
 
