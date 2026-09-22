@@ -429,6 +429,20 @@ class AgentTrace:
         return self.emit(etype, task_id=task_id, action=action, target=target,
                          detail=detail, **kwargs)
 
+    def browser_session(self, evidence: Optional[Dict[str, Any]] = None,
+                        *, task_id: str = "", **kwargs: Any) -> TraceEvent:
+        """Explicit browser-session evidence (existing-Chrome attach contract).
+
+        `evidence` carries exactly: browser_process, user_data_dir,
+        profile_directory, connection_method, authenticated_state,
+        active_tab, current_url (plus `unavailable` + `reason` on the
+        honest BROWSER_SESSION_UNAVAILABLE path).
+        """
+        ev = dict(evidence or {})
+        return self.emit(TraceEventType.BROWSER_SESSION, task_id=task_id,
+                         method=str(ev.get("connection_method") or ""),
+                         evidence=ev, **kwargs)
+
     def completed(self, summary: str = "", *, task_id: str = "",
                   evidence: Optional[Dict[str, Any]] = None,
                   **kwargs: Any) -> TraceEvent:

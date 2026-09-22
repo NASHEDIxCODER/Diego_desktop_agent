@@ -1,0 +1,32 @@
+{
+  "task_id": "b27865cd4e81",
+  "original_request": "open vscode and start working",
+  "normalized_goal": "open vscode and start working",
+  "current_plan": [],
+  "completed_steps": [],
+  "current_step": null,
+  "failed_steps": [],
+  "observed_state": "",
+  "verification_results": [],
+  "retry_count": 0,
+  "replan_count": 1,
+  "total_steps": 0,
+  "final_status": "FAILED",
+  "plan_version": 1,
+  "started_at": 1790026615.9077208,
+  "ended_at": 1790026625.3096595,
+  "artifacts": {},
+  "log": [
+    "[TASK] id=b27865cd4e81 goal=\"open vscode and start working\"",
+    "[PLAN] v1 steps=0",
+    "[REPLAN] state changed, replan 1/3, remaining goal: open vscode and start working",
+    "[TASK] STOPPED — replanning exhausted",
+    "[TASK] FAILED (steps=0 ok, 0 failed, replans=1, latency=9402ms)"
+  ],
+  "blocker": "re-plan produced no valid new actions",
+  "evidence_log": [],
+  "pending_confirmation": null,
+  "confirmation_reason": "",
+  "referenced_entity": "",
+  "active_goal": ""
+}

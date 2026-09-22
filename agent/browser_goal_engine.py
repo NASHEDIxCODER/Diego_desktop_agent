@@ -262,6 +262,9 @@ class BrowserGoalEngine:
         self._runs: Dict[str, BrowserTaskRun] = {}
         # task_id -> AgentTrace unsubscribe callable (per-run trace mirror).
         self._unsubs: Dict[str, Any] = {}
+        # task_id -> merged browser-session evidence (existing-Chrome attach
+        # contract; emitted as BROWSER_SESSION trace events).
+        self._session_evidence: Dict[str, Dict[str, Any]] = {}
         # Phase 23 (live/integration): optional local server overrides so the
         # engine can resolve known site names to a controlled HTTP base instead
         # of a public resolution (no external dependency required).
@@ -679,6 +682,7 @@ class BrowserGoalEngine:
         ctx = self.observer().observe(note=note)
         run.observation_count += 1
         run.last_context = ctx
+        self._refresh_session_evidence(run, ctx)
         state = ctx.page_state
         line = f"{state.value} — {ctx.summary()}"
         if note:
@@ -881,6 +885,106 @@ class BrowserGoalEngine:
                     step.action.value, step.target[:60], verdict.result.value,
                     verdict.detail[:120])
         return verdict
+
+    # ── existing-Chrome session evidence ─────────────────────────
+
+    def _browser_tier_source(self) -> str:
+        """Which browser the session contract applies to for THIS engine.
+
+        Deterministic harnesses inject controller/observer (or bind their
+        own page) and own their browser entirely; production uses the real
+        existing-Chrome adapter.
+        """
+        if self._controller is not None or self._observer is not None:
+            return "injected_harness"
+        try:
+            from computer import browser_controller as _bctl
+            if getattr(_bctl, "_external_page", None) is not None:
+                return "bound_page"
+        except Exception:
+            pass
+        return "production"
+
+    def _ensure_browser_session(self, run: BrowserTaskRun) -> Optional[str]:
+        """Attach to the user's CURRENT Chrome session; None = ready.
+
+        Production: agent.browser → agent.chrome_session (discover the
+        running Chrome, its real user-data dir + profile, validate against
+        the process, attach over DevTools). On failure returns the
+        BROWSER_SESSION_UNAVAILABLE reason so the task fails honestly.
+        """
+        source = self._browser_tier_source()
+        if source != "production":
+            self._record_session_evidence(run, {
+                "browser_process": source,
+                "user_data_dir": "(owned by the caller)",
+                "profile_directory": "(owned by the caller)",
+                "connection_method": f"{source}",
+                "authenticated_state": "unknown",
+            })
+            return None
+        try:
+            from agent.browser import browser_controller as bc
+        except Exception as e:
+            return f"browser controller import failed: {e}"
+        try:
+            attached = bool(getattr(bc, "is_attached", False)) or \
+                bool(bc.initialize())
+        except Exception as e:
+            return f"browser session attach raised: {e}"
+        if attached:
+            self._record_session_evidence(run, bc.session_evidence())
+            return None
+        evidence = bc.unavailable_evidence()
+        self._record_session_evidence(run, evidence)
+        return str(evidence.get("unavailable")
+                   or "browser session unavailable")
+
+    def _record_session_evidence(self, run: BrowserTaskRun,
+                                 evidence: Dict[str, Any]) -> None:
+        """Merge + emit the BROWSER_SESSION trace event (never raises)."""
+        merged = dict(self._session_evidence.get(run.task_id) or {})
+        merged.update({k: v for k, v in dict(evidence or {}).items()
+                       if v not in (None, "")})
+        self._session_evidence[run.task_id] = merged
+        try:
+            self.trace().browser_session(dict(merged), task_id=run.task_id)
+        except Exception:
+            pass
+        logger.info("[BROWSER-GOAL] browser session: %s",
+                    {k: str(v)[:60] for k, v in merged.items()})
+
+    def _refresh_session_evidence(self, run: BrowserTaskRun,
+                                  ctx: BrowserContext) -> None:
+        """Keep authenticated_state / active_tab / current_url truthful.
+
+        Updated from the OBSERVED page state — emitted only when something
+        actually changed, so the trace stays readable.
+        """
+        evidence = self._session_evidence.get(run.task_id)
+        if evidence is None or not evidence:
+            return
+        try:
+            state_value = ctx.page_state.value
+        except Exception:
+            state_value = ""
+        if ctx.authenticated:
+            auth = "authenticated"
+        elif state_value == PageState.LOGIN_REQUIRED.value:
+            auth = "unauthenticated"
+        else:
+            auth = "unknown"
+        active_tab = str(ctx.page_title or "")
+        current_url = str(ctx.current_url or "")
+        if (evidence.get("authenticated_state") == auth
+                and evidence.get("active_tab") == active_tab
+                and evidence.get("current_url") == current_url):
+            return
+        self._record_session_evidence(run, {
+            "authenticated_state": auth,
+            "active_tab": active_tab,
+            "current_url": current_url,
+        })
 
     # ── one step: OBSERVE → ACT → OBSERVE → VERIFY (+recovery) ──
 
@@ -1483,6 +1587,14 @@ class BrowserGoalEngine:
         self._phase(run, "PLANNING", f"{len(run.steps)} step(s) planned")
         logger.info("[BROWSER-GOAL] start %s: %s (%d steps)", task_id,
                     goal.describe()[:100], len(run.steps))
+        # The task runs on the USER'S EXISTING Chrome session. Attach (or
+        # verify the attach) BEFORE any step; an unattachable running Chrome
+        # fails the task HONESTLY with BROWSER_SESSION_UNAVAILABLE — it is
+        # never silently swapped for a fresh/clean browser.
+        session_error = self._ensure_browser_session(run)
+        if session_error:
+            self._fail(run, "BROWSER_SESSION_UNAVAILABLE",
+                       detail=session_error[:280])
         return run
 
     def resume(self, answer: str, *, task_id: str = "") -> \
@@ -1504,6 +1616,14 @@ class BrowserGoalEngine:
             except Exception:
                 pass
             self._fail(run, "cancelled by the user")
+            return run
+        # A paused task resumes on the SAME existing Chrome session. If that
+        # session is gone (Chrome closed / debugging endpoint lost), fail
+        # honestly instead of continuing against a dead or different browser.
+        session_error = self._ensure_browser_session(run)
+        if session_error:
+            self._fail(run, "BROWSER_SESSION_UNAVAILABLE",
+                       detail=session_error[:280])
             return run
         if run.status == BrowserStatus.ASKING_USER:
             chosen = resolve_answer_to_candidate(text, list(run.candidates))

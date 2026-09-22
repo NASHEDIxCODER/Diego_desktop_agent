@@ -174,7 +174,14 @@ class DesktopBackend:
 
         ensured = self.ensure_browser()
         if not ensured.get("success"):
+            # Honest unavailability: surface BROWSER_SESSION_UNAVAILABLE (with
+            # the exact reason + remediation) on the action result so the
+            # runtime reports WHY instead of pretending the task succeeded.
             first["browser_ensure"] = ensured
+            if ensured.get("unavailable"):
+                first.setdefault("unavailable", True)
+                first["error"] = str(ensured.get("error") or first.get("error")
+                                     or ensured.get("error"))
             return first
 
         retry = self._computer("browser_navigate", {"url": url})
@@ -204,19 +211,34 @@ class DesktopBackend:
         return out
 
     def ensure_browser(self) -> Dict[str, Any]:
-        """Attach to / launch the persistent CDP browser (real, not faked)."""
+        """Attach to the user's EXISTING Chrome session (never fake success).
+
+        Delegates to agent.chrome_session.CurrentChromeSession via the
+        BrowserController singleton. When the running Chrome cannot be
+        attached this returns success=False with `unavailable=True` and the
+        EXACT `BROWSER_SESSION_UNAVAILABLE` reason + remediation — never a
+        fresh/temporary profile fallback and never a pretend success.
+        """
         try:
             from agent.browser import browser_controller as bc
         except Exception as e:
-            return _ok(False, error=f"browser controller import failed: {e}")
+            return _ok(False, unavailable=True,
+                       error=f"browser controller import failed: {e}")
         try:
             if not bc.is_available:
                 if not bc.initialize():
-                    return _ok(False, error="browser tier unavailable")
+                    # Honest BROWSER_SESSION_UNAVAILABLE (reason + remediation)
+                    # plus the discovered-session evidence that IS known.
+                    return _ok(False, unavailable=True,
+                               session=bc.unavailable_evidence(),
+                               error=(bc.unavailable_reason
+                                      or "browser session unavailable"))
             return _ok(True, attached=bool(bc.is_attached),
+                       session=bc.session_evidence(),
                        url=str(bc.get_current_url() or ""))
         except Exception as e:
-            return _ok(False, error=str(e))
+            return _ok(False, unavailable=True,
+                       error=f"browser session attach failed: {e}")
 
     def browser_read(self) -> Dict[str, Any]:
         """Structured page observation in the GoalRuntime contract.

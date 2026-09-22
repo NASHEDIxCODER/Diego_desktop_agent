@@ -1,0 +1,93 @@
+{
+  "task_id": "dd0c3fa60d08",
+  "original_request": "Open Firefox",
+  "normalized_goal": "Open Firefox",
+  "current_plan": [
+    {
+      "action": "desktop_open",
+      "params": {
+        "app": "firefox"
+      }
+    }
+  ],
+  "completed_steps": [
+    {
+      "index": 1,
+      "action": "desktop_open",
+      "params": {
+        "app": "firefox"
+      },
+      "description": "",
+      "status": "completed",
+      "result": "Opened firefox",
+      "verification": "success",
+      "verified": true,
+      "retries": 0,
+      "error": "",
+      "latency_ms": 0.0209808349609375,
+      "evidence_source": "unknown",
+      "sensitive_reason": ""
+    }
+  ],
+  "current_step": null,
+  "failed_steps": [],
+  "observed_state": "firefox window focused",
+  "verification_results": [
+    {
+      "step": 1,
+      "action": "desktop_open",
+      "verified": true,
+      "evidence": "Opened firefox",
+      "reason": ""
+    }
+  ],
+  "retry_count": 0,
+  "replan_count": 0,
+  "total_steps": 1,
+  "final_status": "SUCCESS",
+  "plan_version": 1,
+  "started_at": 1790026857.7401133,
+  "ended_at": 1790026857.7430263,
+  "artifacts": {
+    "last_app": "firefox"
+  },
+  "log": [
+    "[TASK] id=dd0c3fa60d08 goal=\"Open Firefox\"",
+    "[PLAN] v1 steps=1",
+    "[STEP 1/1] desktop_open",
+    "[VERIFY] success",
+    "[TASK] COMPLETE",
+    "[TASK] SUCCESS (steps=1 ok, 0 failed, replans=0, latency=3ms)"
+  ],
+  "blocker": "",
+  "evidence_log": [
+    {
+      "fact": "Window: [unknown] ‎⁨Devin⁩ – (164)\nPage: settings\nWindow: ‎⁨Devin⁩ – (164)\nApplication: TelegramDesktop (unknown)\nProcess: Telegram (PID 105603)\nSummary: Screen type: settings\nClipboard: STOP feature work and fix the live browser integration first.\n\nThe GoalRuntime 1",
+      "source": "live_observation",
+      "timestamp": 1790026857.743343,
+      "confidence": 1.0
+    },
+    {
+      "fact": "",
+      "source": "local_knowledge",
+      "timestamp": 1790026857.7433472,
+      "confidence": 1.0368
+    },
+    {
+      "fact": "",
+      "source": "local_knowledge",
+      "timestamp": 1790026857.7433488,
+      "confidence": 1.0368
+    },
+    {
+      "fact": "",
+      "source": "local_knowledge",
+      "timestamp": 1790026857.7433505,
+      "confidence": 1.0368
+    }
+  ],
+  "pending_confirmation": null,
+  "confirmation_reason": "",
+  "referenced_entity": "",
+  "active_goal": ""
+}

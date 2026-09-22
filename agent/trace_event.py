@@ -42,6 +42,9 @@ class TraceEventType(str, Enum):
     # Phase 23: the coarse OPERATIONAL phase of the workflow (what the
     # workflow panel shows instead of private chain-of-thought).
     PHASE_CHANGED = "PHASE_CHANGED"
+    # Browser-session evidence: the adapter attached to (or launched) the
+    # user's existing Chrome session, or — honestly — could not.
+    BROWSER_SESSION = "BROWSER_SESSION"
 
 
 # Terminal events — a task that emits one of these is finished.

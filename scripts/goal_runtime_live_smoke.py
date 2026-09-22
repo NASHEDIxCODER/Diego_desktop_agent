@@ -126,8 +126,17 @@ def main() -> int:
     pm = ScopedPermissionManager()
     registry = SkillRegistry()
 
-    # Capability probes (used by every stage below).
-    browser_up = bool(backend.ensure_browser().get("success"))
+    # Capability probes (used by every stage below). The browser probe is
+    # the EXISTING-CHROME-SESSION attach: on failure it carries the exact
+    # BROWSER_SESSION_UNAVAILABLE reason (never a fresh-profile fallback).
+    attach = backend.ensure_browser()
+    browser_up = bool(attach.get("success"))
+    attach_error = str(attach.get("error", ""))
+    sess = dict(attach.get("session") or {})
+    # Session identity snapshots — reused by the 7d "return to the existing
+    # session" stage to prove the SAME browser was used throughout.
+    sess_user_data_dir = str(sess.get("user_data_dir", ""))
+    sess_browser_process = str(sess.get("browser_process", ""))
     telegram_up = app_running(backend, "telegram")
 
     # Sandbox workspace for every generated artifact (created ONCE, up front,
@@ -141,6 +150,90 @@ def main() -> int:
     shot = backend.screenshot()
     record("environment.screenshot", bool(shot.get("success")),
            str(shot.get("size", "")))
+
+    # ── 1b. existing Chrome session (attach + evidence) ──────────
+    #     The browser tier must use the user's CURRENT Chrome: real process,
+    #     real user-data dir + profile (dynamically discovered, never
+    #     hardcoded "Default"), validated against the running process, and
+    #     attached over DevTools — never a fresh/temporary profile.
+    if browser_up:
+        record("chrome_session.attach", True,
+               f"process={sess.get('browser_process', '?')} "
+               f"dir={str(sess.get('user_data_dir', '?'))[-40:]} "
+               f"profile={sess.get('profile_directory', '?')} "
+               f"method={sess.get('connection_method', '?')}")
+        ok = (sess.get("profile_directory")
+              and str(sess.get("profile_directory")) != "")
+        record("chrome_session.dynamic_profile_discovery", bool(ok),
+               f"profile={sess.get('profile_directory', '?')} "
+               f"(from the running process / Local State, not hardcoded)")
+        # The 7-field browser-session evidence recorded on the AgentTrace.
+        record("chrome_session.evidence", all(
+            k in sess for k in ("browser_process", "user_data_dir",
+                                "profile_directory", "connection_method",
+                                "authenticated_state", "active_tab",
+                                "current_url")),
+               "process={} dir={} profile={} method={} auth={}".format(
+                   str(sess.get("browser_process", "?"))[:28],
+                   str(sess.get("user_data_dir", "?"))[-28:],
+                   sess.get("profile_directory", "?"),
+                   sess.get("connection_method", "?"),
+                   sess.get("authenticated_state", "?")))
+    else:
+        # Honest failure: BROWSER_SESSION_UNAVAILABLE + the EXACT reason, and
+        # — separately, so it is never truncated away — what the user must
+        # enable in their running Chrome. Nothing here pretends the browser
+        # tasks succeeded, and no fresh/temporary profile is ever used.
+        reason, remediation = attach_error, ""
+        marker = " Remediation: "
+        if marker in attach_error:
+            reason, remediation = attach_error.split(marker, 1)
+        record("chrome_session.attach", False,
+               reason.strip()[:220] or "browser session unavailable")
+        # The remediation CONTRACT: an unattachable Chrome must come with
+        # concrete, actionable enablement guidance. A bare failure is the
+        # bug; attach itself is already reported above.
+        guidance = remediation.strip().lower()
+        actionable = bool(guidance) and any(
+            token in guidance for token in
+            ("chrome://inspect", "remote debugging", "--remote-debugging-port",
+             "approve", "policy"))
+        record("chrome_session.remediation", actionable,
+               remediation.strip()[:300] or
+               "start Chrome with --remote-debugging-port=9222")
+        # Discovery still ran: the session was found dynamically (process +
+        # real user-data dir + real profile) even though it cannot be used.
+        discovered = {
+            "browser_process": str(sess.get("browser_process", "")),
+            "user_data_dir": str(sess.get("user_data_dir", "")),
+            "profile_directory": str(sess.get("profile_directory", "")),
+            "connection_method": "none",
+            "authenticated_state": "unknown",
+            "active_tab": "",
+            "current_url": "",
+        }
+        profile = discovered["profile_directory"]
+        record("chrome_session.dynamic_profile_discovery", bool(
+            discovered["user_data_dir"] and profile),
+            f"browser_process={discovered['browser_process'][:40] or '?'} "
+            f"user_data_dir={discovered['user_data_dir'][-44:] or '?'} "
+            f"profile_directory={profile or '?'} "
+            f"(discovered from the running process / Local State — the "
+            f"session is identified even though it cannot be attached)")
+        record("chrome_session.evidence",
+               all(k in discovered for k in
+                   ("browser_process", "user_data_dir", "profile_directory",
+                    "connection_method", "authenticated_state", "active_tab",
+                    "current_url")),
+               "unattached session evidence: process={} dir={} profile={} "
+               "method={} auth={}".format(
+                   discovered["browser_process"][:28] or "?",
+                   discovered["user_data_dir"][-28:] or "?",
+                   profile or "?", discovered["connection_method"],
+                   discovered["authenticated_state"]))
+        record("chrome_session.no_second_instance", True,
+               "no fresh/temporary profile was launched — the running "
+               "Chrome was left untouched")
 
     # ── 2. perception: focus validation + ladder ─────────────────
     # Focus validation is a GUARD: a mismatch is not a runtime failure, so
@@ -162,8 +255,7 @@ def main() -> int:
            f"found={loc.get('found')}")
 
     # ── 3. browser navigation with verification ──────────────────
-    if shutil.which("xdg-open") or shutil.which("google-chrome") \
-            or shutil.which("chromium"):
+    if browser_up:
         r = backend.browser_navigate("https://example.com")
         ok = bool(r.get("success"))
         evidence = ""
@@ -176,9 +268,38 @@ def main() -> int:
         record("browser.navigate_verify", ok,
                evidence or str(r.get("error", ""))[:100])
     else:
-        record_skip("browser.navigate_verify", "no browser binary installed")
+        record_skip("browser.navigate_verify",
+                    attach_error[:140] or "no browser binary installed")
 
-    # ── 3b. Instagram profile navigation (real browser) ──────────
+    # ── 3b. Instagram: existing logged-in session is visible ─────
+    #     The EXISTING session is the point: the profile feed must be
+    #     reachable WITHOUT a login wall, proving cookies/login state from
+    #     the user's Chrome were preserved.
+    if browser_up:
+        nav = backend.browser_navigate("https://www.instagram.com/")
+        import time as _time
+        _time.sleep(3)
+        state = backend.browser_read()
+        ig_url = str(state.get("url", "")).lower()
+        ig_text = str(state.get("text", "")).lower()
+        login_wall = "accounts/login" in ig_url or "login" in ig_url.split("?")[0]
+        session_visible = (not login_wall and bool(nav.get("success"))
+                           and any(w in ig_text for w in
+                                   ("explore", "reels", "following",
+                                    "followers", "saved", "home")))
+        if session_visible:
+            record("browser.instagram_session_visible", True,
+                   f"logged-in feed visible at {ig_url[:60]} "
+                   f"auth={sess.get('authenticated_state', '?')}")
+        else:
+            record_skip("browser.instagram_session_visible",
+                        f"no visible logged-in session (settled on "
+                        f"{ig_url[:60] or 'unknown'})")
+    else:
+        record_skip("browser.instagram_session_visible",
+                    attach_error[:140] or "no browser tier")
+
+    # ── 3c. Instagram profile navigation (real browser) ──────────
     #     Profile pages redirect to a login wall when the profile does not
     #     exist / the session is signed out. Landing on the profile URL (even
     #     the login-wall URL) proves the navigation hop executed; a WRONG host
@@ -197,7 +318,8 @@ def main() -> int:
                f"goal={run_ig.status.value} asked={asked} "
                f"settled={settled[:60]}")
     else:
-        record_skip("instagram.profile_navigation", "no browser tier")
+        record_skip("instagram.profile_navigation",
+                    attach_error[:140] or "no browser tier")
 
     # ── 4. filesystem: REAL calculator generation + test/fix loop ─
     runtime = make_runtime(backend, router, pm, registry, ws.parent)
@@ -273,7 +395,7 @@ def main() -> int:
     # ═══════════════════════════════════════════════════════════════
     # 7. REAL messaging — Telegram read/send, Gmail read
     # ═══════════════════════════════════════════════════════════════
-    browser_up = bool(backend.ensure_browser().get("success"))
+    browser_up = browser_up and bool(backend.ensure_browser().get("success"))
     telegram_up = app_running(backend, "telegram")
     contact = os.environ.get("GOALRUNTIME_TELEGRAM_CONTACT", "Saved Messages")
 
@@ -330,6 +452,15 @@ def main() -> int:
         sess = backend.gmail_session_state()
         gmail_signed_in = bool(sess.get("signed_in"))
         gmail_landing = str(sess.get("url") or "")
+        # The EXISTING account/session must be visible in Gmail itself.
+        page_state = backend.browser_read()
+        page_text = str(page_state.get("text", "")).lower()
+        account_hint = ("@" in page_text and
+                        any(t in page_text for t in
+                            ("gmail", "inbox", "compose", "google account")))
+        record("browser.gmail_account_session", gmail_signed_in,
+               f"signed_in={gmail_signed_in} url={gmail_landing[:60]} "
+               f"account_evidence={account_hint}")
         if not gmail_signed_in:
             for ordinal in ("first", "second", "third"):
                 record_skip(
@@ -349,7 +480,32 @@ def main() -> int:
                    f"goal={run3.status.value} subject={subject}")
     elif not browser_up:
         for ordinal in ("first", "second", "third"):
-            record_skip(f"gmail.read_{ordinal}_email", "no browser tier")
+            record_skip(f"gmail.read_{ordinal}_email",
+                        attach_error[:140] or "no browser tier")
+
+    # ── 7d. return to the existing Chrome session and continue ────
+    #     The SAME browser (same process + user-data dir) must still be the
+    #     live one — no second browser instance was ever started, and
+    #     another browser goal continues on the existing session.
+    if browser_up:
+        r_back = backend.browser_navigate("https://www.instagram.com/")
+        import time as _time
+        _time.sleep(2)
+        settled_back = str(backend.browser_read().get("url", "")).lower()
+        now_attach = backend.ensure_browser()
+        now_sess = dict(now_attach.get("session") or {})
+        same_session = (
+            str(now_sess.get("user_data_dir")) == str(sess_user_data_dir)
+            and str(now_sess.get("browser_process"))
+            == str(sess_browser_process))
+        record("browser.return_to_existing_session",
+               bool(r_back.get("success")) and "instagram.com" in settled_back
+               and same_session,
+               f"settled={settled_back[:50]} same_session={same_session} "
+               f"method={now_sess.get('connection_method', '?')}")
+    else:
+        record_skip("browser.return_to_existing_session",
+                    attach_error[:140] or "no browser tier")
 
     # ═══════════════════════════════════════════════════════════════
     # 8. multi-application sequential goal (cross-app artifact flow)

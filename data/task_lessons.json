@@ -46,12 +46,12 @@
    "task_pattern": "open_application",
    "lesson": "strategy that worked: desktop_open → open_folder",
    "evidence": "verified_success",
-   "confidence": 0.15,
-   "timestamp": 1789807919.2699325,
+   "confidence": 0.05,
+   "timestamp": 1790026703.345735,
    "source_task_id": "f196156e43d5",
-   "reuse_count": 107,
+   "reuse_count": 110,
    "successes": 36,
-   "failures": 71
+   "failures": 74
   },
   {
    "id": "fe453af215",
@@ -59,12 +59,12 @@
    "task_pattern": "open_application",
    "lesson": "firefox launches reliably via desktop_open on this system",
    "evidence": "verified_success",
-   "confidence": 0.35,
-   "timestamp": 1789807919.2704844,
+   "confidence": 0.25,
+   "timestamp": 1790062219.1475751,
    "source_task_id": "f196156e43d5",
-   "reuse_count": 409,
-   "successes": 195,
-   "failures": 214
+   "reuse_count": 483,
+   "successes": 224,
+   "failures": 259
   },
   {
    "id": "30796f2fb5",
@@ -72,12 +72,12 @@
    "task_pattern": "open_application",
    "lesson": "strategy that worked: desktop_open → shutdown",
    "evidence": "verified_success",
-   "confidence": 0.1,
-   "timestamp": 1789807730.4342809,
+   "confidence": 0.05,
+   "timestamp": 1790062218.9854307,
    "source_task_id": "4a9e6a260638",
-   "reuse_count": 48,
+   "reuse_count": 61,
    "successes": 4,
-   "failures": 44
+   "failures": 57
   },
   {
    "id": "5213acf190",
@@ -85,12 +85,12 @@
    "task_pattern": "open_application",
    "lesson": "strategy that worked: desktop_open → close_app",
    "evidence": "verified_success",
-   "confidence": 0.1,
-   "timestamp": 1789807729.252995,
+   "confidence": 0.05,
+   "timestamp": 1790062216.6274889,
    "source_task_id": "3dfb48709543",
-   "reuse_count": 34,
+   "reuse_count": 43,
    "successes": 4,
-   "failures": 30
+   "failures": 39
   },
   {
    "id": "0db270a83e",
@@ -98,12 +98,12 @@
    "task_pattern": "open_application",
    "lesson": "strategy that worked: desktop_open → desktop_open",
    "evidence": "verified_success",
-   "confidence": 0.05,
-   "timestamp": 1789807730.6079273,
+   "confidence": 0.15,
+   "timestamp": 1790062219.1469643,
    "source_task_id": "81be4455c9a1",
-   "reuse_count": 47,
+   "reuse_count": 60,
    "successes": 7,
-   "failures": 40
+   "failures": 53
   },
   {
    "id": "58e6503b3a",
@@ -111,12 +111,12 @@
    "task_pattern": "open_application",
    "lesson": "strategy that worked: desktop_open",
    "evidence": "verified_success",
-   "confidence": 0.15,
-   "timestamp": 1789807919.2397606,
+   "confidence": 0.05,
+   "timestamp": 1790026703.3117077,
    "source_task_id": "ad38955c54e9",
-   "reuse_count": 58,
+   "reuse_count": 60,
    "successes": 19,
-   "failures": 39
+   "failures": 41
   },
   {
    "id": "4cef51e4cc",
@@ -124,12 +124,12 @@
    "task_pattern": "open_application",
    "lesson": "no verified steps: No further actions could be planned from the current state.",
    "evidence": "verified_failure",
-   "confidence": 0.15,
-   "timestamp": 1789807917.665781,
+   "confidence": 0.2,
+   "timestamp": 1790026701.8624651,
    "source_task_id": "30866d296ee7",
-   "reuse_count": 290,
-   "successes": 174,
-   "failures": 116
+   "reuse_count": 330,
+   "successes": 202,
+   "failures": 128
   },
   {
    "id": "d2cce46868",
@@ -137,12 +137,12 @@
    "task_pattern": "open_application",
    "lesson": "desktop_open failed here (firefox is not installed) — do not repeat this strategy blindly",
    "evidence": "verified_failure",
-   "confidence": 0.2,
-   "timestamp": 1789807918.9590492,
+   "confidence": 0.15,
+   "timestamp": 1790026703.0230954,
    "source_task_id": "721b0c06b6ce",
-   "reuse_count": 334,
-   "successes": 167,
-   "failures": 167
+   "reuse_count": 378,
+   "successes": 175,
+   "failures": 203
   },
   {
    "id": "58efa00608",
@@ -190,11 +190,11 @@
    "lesson": "no verified steps: re-plan produced no valid new actions",
    "evidence": "verified_failure",
    "confidence": 0.05,
-   "timestamp": 1789807801.0264792,
+   "timestamp": 1790026625.3144386,
    "source_task_id": "c9d666dbb447",
-   "reuse_count": 15,
+   "reuse_count": 16,
    "successes": 3,
-   "failures": 12
+   "failures": 13
   },
   {
    "id": "685573643f",
@@ -283,9 +283,9 @@
    "confidence": 0.05,
    "timestamp": 1789371551.0098414,
    "source_task_id": "9c5c356bed4f",
-   "reuse_count": 13,
+   "reuse_count": 24,
    "successes": 0,
-   "failures": 13
+   "failures": 24
   },
   {
    "id": "4248d4006d",
@@ -449,12 +449,12 @@
    "task_pattern": "general",
    "lesson": "no verified steps: The generated plan contained no executable actions: action 'open_url' not authorized for this request; action 'type_text' not authorized for this request",
    "evidence": "verified_failure",
-   "confidence": 0.5,
+   "confidence": 0.25,
    "timestamp": 1789904646.8535001,
    "source_task_id": "050f425b26ef",
-   "reuse_count": 0,
-   "successes": 0,
-   "failures": 0
+   "reuse_count": 11,
+   "successes": 7,
+   "failures": 4
   },
   {
    "id": "a4ef227bf8",
@@ -462,12 +462,12 @@
    "task_pattern": "open_application",
    "lesson": "strategy that worked: open_url",
    "evidence": "verified_success",
-   "confidence": 1.0,
+   "confidence": 0.05,
    "timestamp": 1789989383.5142562,
    "source_task_id": "45e62fb31c78",
-   "reuse_count": 2,
-   "successes": 2,
-   "failures": 0
+   "reuse_count": 10,
+   "successes": 3,
+   "failures": 7
   },
   {
    "id": "15c6dbf4ab",
@@ -475,12 +475,12 @@
    "task_pattern": "open_application",
    "lesson": "click_text failed here (repeated identical failure x3: click_text:FailureKind.UNAVAILABLE_CAPABILITY:Couldn't find Messaging to click:r0) — do not repeat this strategy blindly",
    "evidence": "verified_failure",
-   "confidence": 0.7,
+   "confidence": 0.05,
    "timestamp": 1789908650.0233626,
    "source_task_id": "472efedd40f2",
-   "reuse_count": 2,
+   "reuse_count": 7,
    "successes": 2,
-   "failures": 0
+   "failures": 5
   },
   {
    "id": "386444a5f2",
@@ -488,12 +488,12 @@
    "task_pattern": "general",
    "lesson": "no verified steps: The generated plan contained no executable actions: action 'open_url' not authorized for this request; action 'click_text' not authorized for this request; action 'type_text' not authorized for this r",
    "evidence": "verified_failure",
-   "confidence": 0.6,
+   "confidence": 0.15,
    "timestamp": 1789908993.3096826,
    "source_task_id": "abf477bc5e01",
-   "reuse_count": 2,
-   "successes": 2,
-   "failures": 0
+   "reuse_count": 33,
+   "successes": 23,
+   "failures": 10
   },
   {
    "id": "4f2dbada80",
@@ -501,12 +501,12 @@
    "task_pattern": "open_application",
    "lesson": "strategy that worked: open_url → open_url",
    "evidence": "verified_success",
-   "confidence": 0.75,
+   "confidence": 0.05,
    "timestamp": 1789909360.546866,
    "source_task_id": "1c67feb28e45",
-   "reuse_count": 1,
+   "reuse_count": 6,
    "successes": 1,
-   "failures": 0
+   "failures": 5
   },
   {
    "id": "fdc57a21fa",
@@ -514,12 +514,12 @@
    "task_pattern": "information_summary",
    "lesson": "no verified steps: The generated plan contained no executable actions: action 'get_date' not authorized for this request; action 'type_text' not authorized for this request",
    "evidence": "verified_failure",
-   "confidence": 0.5,
+   "confidence": 0.35,
    "timestamp": 1789988867.1615112,
    "source_task_id": "9fc4814344c5",
-   "reuse_count": 0,
+   "reuse_count": 1,
    "successes": 0,
-   "failures": 0
+   "failures": 1
   },
   {
    "id": "ed6d7f0035",
@@ -527,12 +527,12 @@
    "task_pattern": "general",
    "lesson": "no verified steps: The generated plan contained no executable actions: action 'get_date' not authorized for this request",
    "evidence": "verified_failure",
-   "confidence": 0.5,
+   "confidence": 0.95,
    "timestamp": 1789988919.9397578,
    "source_task_id": "002601884112",
-   "reuse_count": 0,
-   "successes": 0,
-   "failures": 0
+   "reuse_count": 25,
+   "successes": 22,
+   "failures": 3
   }
  ]
 }
