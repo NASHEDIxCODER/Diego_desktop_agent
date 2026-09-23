@@ -547,6 +547,87 @@ class AgentBrain:
             self._last_intent_verdict = verdict
         self._last_intent_authorization = auth
 
+        # ── Step 0.44: Desktop GOAL delegation (PHASE 24) ─────
+        # Generic desktop-application goals (messaging: "send Rahul: X on
+        # telegram") go to the DesktopGoalEngine, which achieves the GOAL
+        # through the existing ComputerController (semantic perception,
+        # contact ambiguity handling, explicit send confirmation, target-
+        # verified send). Everything else keeps the existing pipeline.
+        if tool_execution_allowed:
+            try:
+                from agent.desktop_goal_engine import desktop_goal_engine
+                _dmsg = await asyncio.to_thread(
+                    desktop_goal_engine.handle_command, text)
+                if _dmsg:
+                    result.path = "DESKTOP_GOAL"
+                    result.response = _dmsg
+                    result.used_llm = False
+                    _drun = desktop_goal_engine.pending_run()
+                    result.verified = bool(
+                        _drun is not None and _drun.finished
+                        and _drun.verified)
+                    from agent.desktop_goal import DesktopStatus as _dstat
+                    if result.verified:
+                        result.task_status = "SUCCESS"
+                    elif _drun is not None and _drun.status in (
+                            _dstat.ASKING_USER, _dstat.WAITING_CONFIRMATION):
+                        result.task_status = "WAITING_USER"
+                    else:
+                        result.task_status = "FAILED"
+                    conv_memory.add_assistant(_dmsg)
+                    result.latency_ms = (time.time() - t0) * 1000
+                    logger.info(
+                        "[Brain] Desktop goal handled: task=%s verified=%s "
+                        "latency=%.0fms", (_drun.task_id if _drun else ""),
+                        result.verified, result.latency_ms)
+                    return result
+            except ImportError:
+                pass  # engine unavailable — the existing pipeline continues
+            except Exception as e:
+                logger.warning("[Brain] Desktop goal engine failed, falling "
+                               "back to the existing pipeline: %s", e)
+
+        # ── Step 0.45: Browser GOAL delegation (PHASE 23) ─────
+        # Site-scoped browser goals ("open linkedin", "search linkedin for
+        # X") go to the BrowserGoalEngine, which achieves the GOAL through
+        # the existing ComputerController (observe→act→verify per step,
+        # login/ambiguity pauses, bounded recovery). Everything else keeps
+        # the existing pipeline untouched. Runs in a thread: the engine is
+        # a deterministic sync loop and must not block this event loop.
+        if tool_execution_allowed:
+            try:
+                from agent.browser_goal_engine import browser_goal_engine
+                _bmsg = await asyncio.to_thread(
+                    browser_goal_engine.handle_command, text)
+                if _bmsg:
+                    result.path = "BROWSER_GOAL"
+                    result.response = _bmsg
+                    result.used_llm = False
+                    _brun = browser_goal_engine.pending_run()
+                    result.verified = bool(
+                        _brun is not None and _brun.finished
+                        and _brun.verified)
+                    from agent.browser_goal import BrowserStatus as _bstat
+                    if result.verified:
+                        result.task_status = "SUCCESS"
+                    elif _brun is not None and _brun.status in (
+                            _bstat.ASKING_USER, _bstat.WAITING_FOR_USER):
+                        result.task_status = "WAITING_USER"
+                    else:
+                        result.task_status = "FAILED"
+                    conv_memory.add_assistant(_bmsg)
+                    result.latency_ms = (time.time() - t0) * 1000
+                    logger.info(
+                        "[Brain] Browser goal handled: task=%s verified=%s "
+                        "latency=%.0fms", (_brun.task_id if _brun else ""),
+                        result.verified, result.latency_ms)
+                    return result
+            except ImportError:
+                pass  # engine unavailable — the existing pipeline continues
+            except Exception as e:
+                logger.warning("[Brain] Browser goal engine failed, falling "
+                               "back to the existing pipeline: %s", e)
+
         # ── Step 0.5: Conversation First (NEW) ────────────────
         # Before ANY planning or action, check if this is just
         # conversation. Greetings, thanks, how-are-you, corrections,
@@ -570,7 +651,11 @@ class AgentBrain:
         # pipeline (screen capture + OCR + accessibility tree) for the
         # majority of commands. This saves 500ms-2s per simple command.
         perception_ctx = None
+        t_resolve = time.perf_counter()
         decision = await self._decide(text, None)
+        logger.info("[TIMING] action_resolution=%.1fms resolved=%s",
+                    (time.perf_counter() - t_resolve) * 1000.0,
+                    getattr(decision, "resolved", False))
 
         # ── Step 1b: Perceive (ONLY if the decision needs screen context) ──
         # Perception is only needed for:
@@ -1463,6 +1548,7 @@ class AgentBrain:
         params = action.get("params", {}) or {}
 
         MAX_ACTION_RETRIES = 2
+        t_pipeline = time.perf_counter()   # execution+verification timing
 
         for attempt in range(MAX_ACTION_RETRIES + 1):
             # ── Step 4a: Capture PRE-action state (BEFORE dispatch) ──
@@ -1478,12 +1564,16 @@ class AgentBrain:
                     logger.debug("[Brain] Pre-action capture failed: %s", e)
 
             # ── Step 4b: Dispatch (execute) ───────────────────
+            t_exec = time.perf_counter()
             try:
                 result = await self._dispatcher.execute(action)
+                exec_ms = (time.perf_counter() - t_exec) * 1000.0
                 self._actions_dispatched += 1
             except Exception as e:
-                logger.warning("[Brain] Dispatch failed for %s (attempt %d): %s",
-                               action_name, attempt + 1, e)
+                exec_ms = (time.perf_counter() - t_exec) * 1000.0
+                logger.warning("[Brain] Dispatch failed for %s (attempt %d, "
+                               "%.1fms): %s",
+                               action_name, attempt + 1, exec_ms, e)
                 if attempt < MAX_ACTION_RETRIES:
                     action = self._adjust_params_for_retry(action_name, action)
                     await asyncio.sleep(0.5)
@@ -1493,8 +1583,15 @@ class AgentBrain:
                 return False, ""
 
             # ── Step 5: Verify ──────────────────────────────────
+            t_ver = time.perf_counter()
             verified = await self._verify(action_name, params, result)
+            ver_ms = (time.perf_counter() - t_ver) * 1000.0
             self._actions_verified += 1
+            logger.info(
+                "[TIMING] action=%s attempt=%d execution=%.1fms "
+                "verification=%.1fms total=%.1fms verified=%s",
+                action_name, attempt + 1, exec_ms, ver_ms,
+                (time.perf_counter() - t_pipeline) * 1000.0, verified)
 
             if verified:
                 # ── Step 6: Learn ───────────────────────────────
@@ -1581,10 +1678,14 @@ class AgentBrain:
 
         Verification strategy (most reliable first):
           1. If dispatch returned an explicit failure ("Couldn't...") → fail fast
-          2. OS-level process verification for desktop_open / browser actions
-             (pgrep — authoritative: did the app actually launch?)
-          3. Vision/screen comparison for UI actions (click, type, scroll)
-          4. Trust dispatch result on verification subsystem failure
+          2. desktop_open/close_app: canonical AppIdentity check
+             (services/app_resolver) — process/window of the TARGET app
+             only. Authoritative; a failed TARGET check returns False
+             immediately and NEVER falls through to vision/screen deltas.
+          3. browser actions: observed-URL goal check (process-alive is
+             never sufficient).
+          4. Vision/screen comparison for UI actions (click, type, scroll)
+          5. Trust dispatch result on verification subsystem failure
         """
         # ── Fail fast if the dispatcher itself reported failure ──
         # CRITICAL FIX (audit B3): music/media actions have no OS or
@@ -1599,141 +1700,75 @@ class AgentBrain:
                              result_str[:80])
                 return False
 
-        # ── OS-level process verification (authoritative for apps/browsers) ──
+        # ── OS-level verification (authoritative for desktop_open/close) ──
+        # Uses the SAME canonical AppIdentity the dispatcher launched, so
+        # resolution and verification can never disagree about the target.
+        # A failed TARGET check returns False IMMEDIATELY — generic screen
+        # deltas must never rescue a missing process (false-positive fix,
+        # 2026-09-17).
         try:
-            import subprocess
-            import shutil
-            if shutil.which("pgrep"):
-                if action_name == "desktop_open":
-                    app = str(params.get("app", "")).lower()
-                    # Map friendly names to process names
-                    proc_map = {
-                        "code": "code", "vscode": "code", "vs code": "code",
-                        "firefox": "firefox", "browser": "firefox",
-                        "chrome": "chrome", "google-chrome": "chrome",
-                        "spotify": "spotify", "gnome-terminal": "gnome-terminal",
-                        "terminal": "gnome-terminal", "nautilus": "nautilus",
-                        "files": "nautilus", "slack": "slack",
-                        "discord": "discord", "telegram-desktop": "telegram",
-                        "notion-app": "notion",
-                    }
-                    proc = proc_map.get(app, app)
-                    # ── SETTLE-WAIT (CRITICAL FIX) ──
-                    # Desktop apps take 1-3 s to spawn after dispatch.
-                    # Checking pgrep immediately after dispatch finds
-                    # nothing, falsely failing the launch. Poll for up
-                    # to ~1.5s before declaring failure.
-                    # OPTIMIZATION: Reduced from 3.0s to 1.5s. Most desktop
-                    # apps spawn within 1-1.5s; the extra 1.5s of polling
-                    # added unnecessary latency to every app-open command.
-                    settle_deadline = time.time() + 1.5
-                    while time.time() < settle_deadline:
-                        # CRITICAL FIX (2026-08-29): Use `pgrep -x` (exact
-                        # process name) instead of `pgrep -f` (full command
-                        # line). `pgrep -f` can match Diego's own process tree
-                        # or wrapper shells, falsely verifying success.
-                        chk = subprocess.run(
-                            ["pgrep", "-x", proc],
-                            capture_output=True, text=True, timeout=3,
-                        )
-                        if chk.returncode == 0:
-                            logger.info("[Brain] Verify OK: process '%s' running "
-                                        "(after %.1fs settle)", proc,
-                                        time.time() - (settle_deadline - 1.5))
-                            return True
-                        # Also try alternate binaries
-                        for alt in (proc.replace("-", ""), f"{proc}-esr", f"{proc}-stable"):
-                            chk2 = subprocess.run(
-                                ["pgrep", "-x", alt],
-                                capture_output=True, text=True, timeout=3,
-                            )
-                            if chk2.returncode == 0:
-                                logger.info("[Brain] Verify OK: process '%s' running",
-                                            alt)
-                                return True
-                        time.sleep(0.3)
-                    logger.warning("[Brain] Verify FAIL: process '%s' did not "
-                                   "appear within 1.5s settle-wait", proc)
-
-                elif action_name in ("browser_navigate", "browser_search"):
-                    # GOAL-LEVEL VERIFICATION (reliability layer, 2026-09-13):
-                    # "browser process is alive" is NOT proof that the
-                    # navigation succeeded. Observe the REAL current URL
-                    # and require an actual URL match against the target.
-                    from core.goal_verification import verify_browser_navigation
-                    observed_url = await self._observe_browser_url()
-                    if observed_url is None:
-                        # Observation is unavailable — never guess.
-                        logger.warning(
-                            "[Brain] Verify NO_EVIDENCE: could not observe "
-                            "browser URL for %s — treating as FAILED",
-                            action_name)
-                        return False
-                    target_url = (params.get("url")
-                                  or params.get("query") or "")
-                    goal = verify_browser_navigation(
-                        str(target_url), observed_url)
-                    if goal.passed:
-                        logger.info("[Brain] Verify GOAL PASS: %s (%s)",
-                                    action_name, goal.evidence)
-                        return True
+            if action_name in ("desktop_open", "close_app"):
+                from services.app_resolver import (
+                    check_presence as _check_presence,
+                    log_verify as _log_verify,
+                    resolve_app as _resolve_app,
+                    wait_for_presence as _wait_for_presence,
+                )
+                _requested = str(params.get("app", ""))
+                _res = _resolve_app(_requested)
+                _identity = _res.identity if _res is not None else None
+                if _identity is None:
+                    # Unknown/unresolvable app: honest failure. There is no
+                    # target identity to look for, so no weaker evidence
+                    # may verify this action.
                     logger.warning(
-                        "[Brain] Verify GOAL FAIL for %s: %s (observed=%s)",
-                        action_name, goal.evidence, goal.observation[:120])
+                        "[APP-VERIFY] action=%s app='%s' verified=False "
+                        "reason=resolution_failed (%s)",
+                        action_name, _requested,
+                        _res.message if _res is not None else "no resolver")
                     return False
-
-                elif action_name == "close_app":
-                    # CRITICAL FIX: verify the app process is GONE (not running).
-                    # Previously close_app fell through to vision verification
-                    # with the "open_app" type, which checked for a window
-                    # APPEARING — the exact opposite of what close should do.
-                    app = str(params.get("app", "")).lower()
-                    proc_map = {
-                        "vs code": "code", "vscode": "code", "code": "code",
-                        "browser": "firefox", "firefox": "firefox",
-                        "chrome": "chrome", "google-chrome": "chrome",
-                        "spotify": "spotify", "terminal": "xterm",
-                        "gnome-terminal": "gnome-terminal", "xterm": "xterm",
-                        "konsole": "konsole", "alacritty": "alacritty",
-                        "kitty": "kitty", "wezterm": "wezterm", "tilix": "tilix",
-                        "files": "nautilus", "nautilus": "nautilus",
-                        "calculator": "gnome-calculator",
-                        "settings": "gnome-control-center", "slack": "slack",
-                        "discord": "discord", "telegram": "telegram-desktop",
-                        "notion": "notion-app", "pycharm": "pycharm",
-                    }
-                    proc = proc_map.get(app, app)
-                    # Use -x (exact name) NOT -f (full cmdline) to avoid
-                    # matching wrapper shells / the invoking process.
-                    chk = subprocess.run(
-                        ["pgrep", "-x", proc],
-                        capture_output=True, text=True, timeout=3,
-                    )
-                    if chk.returncode != 0:
-                        logger.info("[Brain] Verify OK: process '%s' is gone (closed)", proc)
-                        return True
-                    # pgrep matched — but check for ZOMBIES. A zombie (state
-                    # 'Z') is already dead; its exit status just hasn't been
-                    # reaped by its parent yet. Treat zombies as "closed".
-                    live_pids = []
-                    for pid_str in chk.stdout.split():
-                        pid_str = pid_str.strip()
-                        if not pid_str.isdigit():
-                            continue
-                        pid = int(pid_str)
-                        try:
-                            with open(f"/proc/{pid}/stat") as f:
-                                state = f.read().split()[2]
-                            if state != "Z":
-                                live_pids.append(pid)
-                        except (FileNotFoundError, ProcessLookupError, IndexError):
-                            continue
-                    if not live_pids:
-                        logger.info("[Brain] Verify OK: process '%s' is gone (closed, only zombies remain)", proc)
-                        return True
-                    # Live process still running — close failed
-                    logger.warning("[Brain] Verify FAIL: process '%s' still running after close (pids=%s)", proc, live_pids)
+                if action_name == "desktop_open":
+                    # Bounded settle-wait: desktop apps take 1-4 s to spawn.
+                    _evidence = _wait_for_presence(_identity, timeout_s=4.0)
+                    _log_verify(action_name, _identity, _evidence,
+                                _evidence.present)
+                    # Authoritative: process/window of the TARGET app only.
+                    # A failed TARGET check returns False IMMEDIATELY —
+                    # generic screen deltas must never rescue it.
+                    return bool(_evidence.present)
+                # close_app: verify the TARGET process/window is GONE.
+                # Zombies (state Z) count as closed — already dead.
+                _closed_evidence = _check_presence(_identity)
+                _closed = not _closed_evidence.present
+                _log_verify(action_name, _identity, _closed_evidence,
+                            _closed)
+                return bool(_closed)
+            if action_name in ("browser_navigate", "browser_search"):
+                # GOAL-LEVEL VERIFICATION (reliability layer, 2026-09-13):
+                # "browser process is alive" is NOT proof that the
+                # navigation succeeded. Observe the REAL current URL
+                # and require an actual URL match against the target.
+                from core.goal_verification import verify_browser_navigation
+                observed_url = await self._observe_browser_url()
+                if observed_url is None:
+                    # Observation is unavailable — never guess.
+                    logger.warning(
+                        "[Brain] Verify NO_EVIDENCE: could not observe "
+                        "browser URL for %s — treating as FAILED",
+                        action_name)
                     return False
+                target_url = (params.get("url")
+                              or params.get("query") or "")
+                goal = verify_browser_navigation(
+                    str(target_url), observed_url)
+                if goal.passed:
+                    logger.info("[Brain] Verify GOAL PASS: %s (%s)",
+                                action_name, goal.evidence)
+                    return True
+                logger.warning(
+                    "[Brain] Verify GOAL FAIL for %s: %s (observed=%s)",
+                    action_name, goal.evidence, goal.observation[:120])
+                return False
         except Exception as e:
             logger.debug("[Brain] OS-level verify failed: %s", e)
 
@@ -1858,6 +1893,11 @@ class AgentBrain:
             return f"I ran into an issue with {result.actions_failed} of the steps."
 
         # Otherwise, use the LLM to generate a response.
+        # ── INDEXER INTERACTION PAUSE (M-H) ──
+        # Deprioritize background indexing while a response is being
+        # generated (retrieval + LLM contend with extraction/embedding);
+        # resumed in `finally` below so no path can leak a paused indexer.
+        self._pause_indexing()
         # CRITICAL FIX: inject the perception context (what Diego sees on
         # screen) so "what is going on" / "click here" actually work.
         # Without this, the LLM has no idea what's on the screen.
@@ -1968,6 +2008,19 @@ class AgentBrain:
                             len(answer), len(k_results))
                         return sanitize_spoken(answer, allow_paths=False)
                 local_ctx = knowledge_service.context_for_llm(text) or ""
+                # ── GROUNDED RAG LAYER (hybrid activation gate) ──
+                # Knowledge questions the fast synthesis shortcut did not
+                # answer go through the structured pipeline: query → retrieve
+                # → rerank → evidence pack → ANSWER/ACTION/CLARIFICATION/
+                # ABSTAIN. Live-state transcripts and resolved-capability
+                # fast paths never reach here (should_activate gates them):
+                # live answers come from live perception (local_ctx above
+                # only grounds the LLM beneath live state), capabilities
+                # keep their deterministic/semantic-router route.
+                rag_response = await self._rag_structured_response(
+                    text, screen_ctx, web_ctx)
+                if rag_response is not None:
+                    return rag_response
             except LookupError:
                 logger.debug("[Brain] local knowledge skipped (small-talk "
                              "transcript): '%s'", text[:50])
@@ -2003,6 +2056,9 @@ class AgentBrain:
         except Exception as e:
             logger.warning("[Brain] LLM response failed: %s", e)
             return "I'm having trouble with that right now."
+        finally:
+            # ── INDEXER INTERACTION RESUME (M-H) ──
+            self._resume_indexing()
 
     @staticmethod
     def _is_live_state_request(text: str) -> bool:
@@ -2016,6 +2072,127 @@ class AgentBrain:
                     or DecisionEngine._is_live_desktop_query(t))
         except Exception:
             return False
+
+    async def _rag_structured_response(
+            self, text: str, screen_ctx: str,
+            web_ctx: Optional[str]) -> Optional[str]:
+        """Grounded RAG layer (hybrid activation + live-state guard).
+
+        Returns a spoken/action response when the orchestrator produced a
+        grounded verdict; returns None to fall through to the generic LLM
+        path (ABSTAIN, insufficient evidence, orchestrator unavailable, or
+        a fast-path/live-state transcript). Never executes anything itself:
+        an ACTION result is validated against the capability registry and
+        emitted through the EXISTING ``ACTION: {json}`` channel that the
+        capability router / dispatcher already consumes.
+        """
+        try:
+            from agent.rag_orchestrator import (
+                RAGOrchestrator,
+                should_activate,
+                validate_action,
+            )
+        except Exception as e:
+            logger.debug("[Brain] RAG layer unavailable: %s", e)
+            return None
+        try:
+            # Hybrid activation gate: resolved capabilities keep their fast
+            # path (no retrieval, no LLM cost) and live-state questions are
+            # answered by live perception — the stale index must never
+            # answer them.
+            if not should_activate(text):
+                return None
+            from knowledge.service import knowledge_service
+            from knowledge.presentation import sanitize_spoken
+
+            async def _llm(prompt: str) -> str:
+                # Reuse the EXISTING streaming LLM seam — never a second
+                # LLM framework. The RAG prompt demands a single JSON
+                # object; parse_structured_result tolerates wrapping.
+                from agent.streaming_llm import streaming_llm
+                parts: List[str] = []
+                async for sentence in streaming_llm.generate(prompt):
+                    parts.append(sentence)
+                return " ".join(parts)
+
+            # Per-call instance so the retriever binding always tracks the
+            # *current* knowledge_service object (module-level singletons
+            # get swapped in tests and by service reloads).
+            orch = RAGOrchestrator(retriever=knowledge_service,
+                                   llm_call=_llm)
+            outcome = await orch.run(
+                text,
+                desktop_context=screen_ctx or None,
+                browser_context=web_ctx or None,
+            )
+            if getattr(outcome, "needs_live_state", False):
+                # Live perception answers this; index content only grounded
+                # the prompt at lower priority.
+                return None
+            result = outcome.result or {}
+            rtype = result.get("type")
+            if rtype == "ANSWER":
+                answer = str(result.get("answer") or "").strip()
+                if not answer:
+                    return None
+                logger.info(
+                    "[RAG] brain ANSWER evidence=%d total=%.1fms",
+                    len(getattr(outcome.pack, "retrieved_evidence", [])
+                         or []),
+                    float(outcome.timings.get("total_ms", 0.0)))
+                return sanitize_spoken(answer, allow_paths=False)
+            if rtype == "CLARIFICATION":
+                question = str(result.get("question") or "").strip()
+                return question or None
+            if rtype == "ACTION":
+                allowed = list(
+                    getattr(outcome.pack, "available_capabilities", []) or [])
+                if not validate_action(result, allowed):
+                    logger.info(
+                        "[RAG] brain ACTION refused (capability gate): %s",
+                        result.get("capability"))
+                    return None  # never execute an unvalidated capability
+                line = "ACTION: " + json.dumps({
+                    "action": result["capability"],
+                    "params": result.get("arguments") or {},
+                    "capability": result["capability"],
+                    "requires_confirmation": bool(
+                        result.get("requires_confirmation")),
+                    "evidence_ids": result.get("evidence_ids") or [],
+                })
+                goal = str(result.get("goal") or "").strip() or "On it."
+                logger.info("[RAG] brain ACTION capability=%s (confirm=%s)",
+                            result["capability"],
+                            result.get("requires_confirmation"))
+                return f"{goal}\n{line}"
+            # ABSTAIN / unknown type → fall through to the generic LLM path
+            # with the bounded local_ctx computed by the caller.
+            logger.debug("[Brain] RAG fall-through type=%s reason=%s",
+                         rtype, result.get("reason"))
+            return None
+        except Exception as e:
+            logger.debug("[Brain] RAG structured layer skipped: %s", e)
+            return None
+
+    # ── Indexer interaction pause (M-H) ────────────────────────
+
+    @staticmethod
+    def _pause_indexing() -> None:
+        """Deprioritize background knowledge indexing during interaction."""
+        try:
+            from knowledge.service import knowledge_service
+            knowledge_service.pause_indexing()
+        except Exception:
+            pass
+
+    @staticmethod
+    def _resume_indexing() -> None:
+        """Resume indexing paused above (finally-safe; idempotent)."""
+        try:
+            from knowledge.service import knowledge_service
+            knowledge_service.resume_indexing()
+        except Exception:
+            pass
 
     # ── Helpers ────────────────────────────────────────────────
 

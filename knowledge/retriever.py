@@ -113,11 +113,15 @@ class KnowledgeRetriever:
         """Hybrid search. Returns ranked results with citations.
 
         Each result: text, doc_path, filename, locator, chunk_index,
-        score, source (semantic/keyword/both), file_type.
+        score, source (semantic/keyword/both), file_type — plus chunk
+        provenance (evidence_id, chunk_id, line_start/line_end, heading,
+        symbol, semantic/lexical/relevance scores, provenance text).
 
         Deterministic: identical index + query always produce identical
         ranked output. Results below MIN_RELEVANCE are dropped.
         """
+        from knowledge.evidence import make_evidence_fields
+
         t0 = time.time()
         query = (query or "").strip()
         if not query:
@@ -181,7 +185,7 @@ class KnowledgeRetriever:
                 pass
             source = ("both" if i in sem_scores and i in kw_scores
                       else "semantic" if i in sem_scores else "keyword")
-            results.append({
+            res = {
                 "text": c.get("text", ""),
                 "doc_path": c.get("doc_path", ""),
                 "filename": c.get("filename", ""),
@@ -190,7 +194,14 @@ class KnowledgeRetriever:
                 "file_type": c.get("file_type", ""),
                 "score": round(score, 4),
                 "source": source,
-            })
+            }
+            # Chunk-level provenance: evidence_id / chunk_id / line range
+            # / heading / symbol + score components. Lines are ATTRIBUTION
+            # only — the retrieval unit is always the full semantic chunk.
+            res.update(make_evidence_fields(
+                c, semantic=sem, lexical=kw, relevance=score,
+                source=source))
+            results.append(res)
 
         # DETERMINISTIC RANKING: primary by score, ties broken by
         # (doc_path, chunk_index, locator) — never by set iteration

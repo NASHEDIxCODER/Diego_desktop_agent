@@ -1,17 +1,11 @@
-# ============================================================
-# DIEGO Desktop Assistant - Git Ignore
-# ============================================================
 
-# ------------------------------------------------------------
-# Python
-# ------------------------------------------------------------
 __pycache__/
 *.py[cod]
 *$py.class
 *.pyo
 *.pyd
 
-# Python environments
+
 .venv/
 venv/
 env/
@@ -20,20 +14,20 @@ ENV/
 
 
 
-# Runtime DuckDB files
+
 data/*.duckdb.wal
 data/*.duckdb-shm
 data/*.duckdb.tmp
 
 
-# Packaging / build
+
 build/
 dist/
 *.egg-info/
 .eggs/
 pip-wheel-metadata/
 
-# Pytest / coverage
+
 .pytest_cache/
 .coverage
 .coverage.*
@@ -45,9 +39,7 @@ htmlcov/
 .pytype/
 .ruff_cache/
 
-# ------------------------------------------------------------
-# Environment / secrets
-# ------------------------------------------------------------
+
 .env
 .env.*
 !.env.example
@@ -58,18 +50,14 @@ htmlcov/
 *.p12
 *.pfx
 
-# Google/Firebase/service credentials
+
 serviceAccountKey.json
 **/serviceAccountKey.json
 credentials.json
 token.json
 client_secret*.json
 
-# ------------------------------------------------------------
-# Authentication / personal biometric data
-# ------------------------------------------------------------
 
-# Face encodings / biometric databases
 auth/Known_encodings.p
 **/Known_encodings.p
 
@@ -81,15 +69,11 @@ auth/images/
 auth/*.p
 auth/*.pickle
 
-# ------------------------------------------------------------
-# Telegram / messaging sessions
-# ------------------------------------------------------------
+
 *.session
 **/*.session
 
-# ------------------------------------------------------------
-# Local databases / persistent user state
-# ------------------------------------------------------------
+
 *.db
 *.sqlite
 *.sqlite3
@@ -105,9 +89,7 @@ data/embedding_cache.pkl
 *.pkl
 *.pickle
 
-# ------------------------------------------------------------
-# Audio recordings
-# ------------------------------------------------------------
+
 *.wav
 *.mp3
 *.flac
@@ -123,9 +105,7 @@ debug/verification_*.wav
 Diego.wav
 Diego_voice_backup.wav
 
-# ------------------------------------------------------------
-# Screenshots / captured UI / camera data
-# ------------------------------------------------------------
+
 *.png
 *.jpg
 *.jpeg
@@ -144,9 +124,7 @@ debug/vision/screenshots/
 debug/*_*.jpg
 debug/*_*.jpeg
 
-# ------------------------------------------------------------
-# Logs
-# ------------------------------------------------------------
+
 *.log
 logs/
 *.jsonl
@@ -157,9 +135,7 @@ debug/audio_report.json
 debug/audit_report.json
 debug/acceptance_report.json
 
-# ------------------------------------------------------------
-# Runtime / temporary files
-# ------------------------------------------------------------
+
 *.tmp
 *.temp
 *.bak
@@ -169,16 +145,12 @@ debug/acceptance_report.json
 .DS_Store
 Thumbs.db
 
-# ------------------------------------------------------------
-# Profiling
-# ------------------------------------------------------------
+
 *.out
 *.prof
 profile.out
 
-# ------------------------------------------------------------
-# Model artifacts
-# ------------------------------------------------------------
+
 
 # Large locally trained/generated models
 models/
@@ -200,9 +172,7 @@ models/wake/positives_orig/
 models/wake/negatives/
 models/wake/backup_pre_int16/
 
-# ------------------------------------------------------------
-# Debug datasets / generated test data
-# ------------------------------------------------------------
+
 debug/verification_*.wav
 debug/auth_*.jpg
 debug/auth_*.txt
@@ -211,20 +181,14 @@ debug/auth_*.txt
 debug/*benchmark*.json
 debug/*benchmark*.txt
 
-# ------------------------------------------------------------
-# Local telemetry
-# ------------------------------------------------------------
+
 telemetry/*.log
 telemetry/*.json
 
-# ------------------------------------------------------------
-# Generated task / progress state
-# ------------------------------------------------------------
+
 task_progress.md
 
-# ------------------------------------------------------------
-# OS / editor
-# ------------------------------------------------------------
+
 .vscode/
 .idea/
 *.iml
@@ -233,7 +197,41 @@ task_progress.md
 *.swp
 *.swo
 
-# ------------------------------------------------------------
-# Temporary project files
-# ------------------------------------------------------------
+
 tree.txt
+
+
+
+
+# Test suite
+tests/
+
+# Benchmarks
+benchmarks/
+
+
+debug/
+
+# Generated runtime workspaces
+runtime_workspace/
+
+# Generated task execution state
+data/tasks/
+
+# Test / benchmark datasets and outputs
+data/*benchmark*.json
+data/stt_benchmark.json
+data/asr_benchmark.json
+data/asr_alternatives_benchmark.json
+data/scenarios.json
+data/asr_test_audio/
+
+# Local/generated knowledge state
+data/knowledge_base.json
+data/task_lessons.json
+
+# Machine-specific runtime selections
+data/audio_devices.json
+data/mic_selection.json
+data/camera_selection.json
+data/hardware_selection.json

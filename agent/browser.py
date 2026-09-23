@@ -1,32 +1,39 @@
 """
-BrowserController — Controls an existing persistent Chrome profile.
+BrowserController — drives the USER'S EXISTING Chrome session.
 
-Uses Chrome DevTools Protocol (CDP) via Playwright's connect_over_cdp
-to attach to a running Chrome instance with your existing profile.
+Attaches over Chrome DevTools Protocol (CDP) via Playwright's
+connect_over_cdp to the Chrome the user is ALREADY running, with its
+existing profile, cookies, logged-in accounts, tabs and session state:
 
-This means:
-- Existing tabs, cookies, sessions, bookmarks are preserved
-- No login required
-- No temporary profile
-- Full browser automation capability
+    existing Chrome session
+        ↓ attach / reuse the current browser (never a second instance)
+    existing profile + cookies + login state
+        ↓
+    BrowserGoalEngine
 
-If attach mode fails, falls back to a dedicated persistent profile.
+The session strategy lives in agent.chrome_session (CurrentChromeSession):
+it dynamically discovers the running Chrome process, its REAL user-data dir
+and profile (never hardcoded "Default"), validates the profile against the
+running process, and attaches to the DevTools endpoint — supporting Chrome
+144+ existing-session auto-connect (approval mode) where available.
+
+There is NO fallback to a fresh/temporary profile for production tasks. If
+the running Chrome cannot be attached, initialize() fails honestly with
+BROWSER_SESSION_UNAVAILABLE plus the exact reason and what to enable.
+The user's profile is never copied, written to, or modified.
 """
 
 import logging
-import os
 import time
-from pathlib import Path
 from typing import Optional, List, Dict, Any
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+
+from agent.chrome_session import (
+    UNAVAILABLE as _BROWSER_SESSION_UNAVAILABLE,
+    chrome_session,
+)
 
 logger = logging.getLogger(__name__)
-
-# Default Chrome remote debugging port
-DEFAULT_CDP_PORT = 9222
-
-# Path for persistent Diego browser profile
-DIEGO_PROFILE_DIR = Path.home() / ".Diego" / "browser_profile"
 
 
 @dataclass
@@ -40,14 +47,18 @@ class BrowserTab:
 
 class BrowserController:
     """
-    Controls an existing persistent Chrome browser.
+    Controls the user's existing persistent Chrome browser.
 
-    Strategy:
-    1. Try to attach to running Chrome via CDP (chrome://inspect)
-    2. If that fails, launch Chrome with a persistent Diego profile
-    3. Never create temporary/anonymous profiles
+    Strategy (enforced, never silently deviated from):
+      1. Discover the CURRENT Chrome process, its real user-data dir and
+         profile (dynamic discovery, never a hardcoded "Default").
+      2. Attach to its DevTools/remote-debugging endpoint — including the
+         Chrome 144+ auto-connect (approval-mode) endpoint.
+      3. When NO Chrome is running at all, launch the user's REAL Chrome on
+         their REAL profile with a debugging port (logins preserved).
 
-    All operations are thread-safe and reuse the same connection.
+    Never: a fresh/anonymous profile, a profile copy, or a second browser
+    instance while the user's Chrome is already open.
     """
 
     def __init__(self):
@@ -56,204 +67,109 @@ class BrowserController:
         self._context = None
         self._page = None
         self._attached = False
-        self._cdp_port = DEFAULT_CDP_PORT
-        self._warning_shown = False
+        self._session_info = None
+        self._discovered_info = None
+        self._unavailable_reason = ""
 
     def initialize(self) -> bool:
         """
-        Initialize browser connection.
+        Attach to the user's CURRENT Chrome session (see agent.chrome_session).
 
-        Strategy:
-        1. Try CDP attach to existing Chrome session (preserves all sessions/cookies)
-        2. If CDP fails (Chrome 136+ security), launch with persistent Diego profile
-        3. Never create temporary/anonymous profiles
+        On failure this fails HONESTLY: returns False and stores
+        `unavailable_reason` starting with BROWSER_SESSION_UNAVAILABLE plus
+        the exact reason and what needs to be enabled. No fresh profile is
+        ever created as a fallback.
 
-        Chrome 136+ Note:
-        Newer Chrome versions restrict CDP connections to the default profile
-        for security reasons. When attach fails, we automatically fall back to
-        a dedicated Diego persistent profile at ~/.Diego/browser_profile.
-        This preserves sessions within Diego's profile but won't have the user's
-        existing logged-in sessions from their default Chrome profile.
-
-        Returns True if browser is available.
+        Returns True if the existing session is attached.
         """
-        logger.info("Initializing browser controller...")
+        logger.info("Initializing browser controller (existing session)...")
+        try:
+            info, pw, browser, context, page = chrome_session().attach()
+        except Exception as e:
+            # ChromeSessionUnavailable already carries reason + remediation;
+            # anything else must still fail honestly instead of falling back.
+            reason = getattr(e, "reason", "")
+            remediation = getattr(e, "remediation", "")
+            # The discovered session evidence survives the failure: the trace
+            # still reports WHICH Chrome was found and why it is unusable.
+            self._session_info = getattr(e, "info", None)
+            self._discovered_info = getattr(e, "info", None)
+            self._unavailable_reason = (
+                f"{_BROWSER_SESSION_UNAVAILABLE}: "
+                f"{reason or f'Chrome attach failed: {e}'}"
+                + (f" Remediation: {remediation}" if remediation else ""))
+            self._attached = False
+            self._page = None
+            # Keep the DISCOVERED identity (process/data dir/profile) so the
+            # honest failure still records WHICH Chrome could not be attached.
+            self._remember_discovery()
+            logger.error("%s", self._unavailable_reason)
+            return False
 
-        # Step 1: Try CDP attach to already-running Chrome
-        if self._try_cdp_attach():
-            self._attached = True
-            logger.info("Browser attached via CDP (existing Chrome session)")
-            return True
+        self._playwright = pw
+        self._browser = browser
+        self._context = context
+        self._page = page
+        self._session_info = info
+        self._attached = True
+        self._unavailable_reason = ""
+        logger.info("Attached to the existing Chrome session: %s",
+                    info.evidence())
+        return True
 
-        # Step 2: Try launching Chrome with CDP enabled
-        if self._ensure_chrome_running():
-            if self._try_cdp_attach():
-                self._attached = True
-                logger.info("Browser attached via CDP (launched Chrome)")
-                return True
+    # ── Session evidence (AgentTrace contract) ──────────
 
-        # Step 3: Fallback to persistent Diego profile
-        # This is the recommended path for Chrome 136+ which blocks
-        # attaching to the default profile via CDP
-        logger.info(
-            "CDP attach failed (Chrome 136+ may block default profile access). "
-            "Falling back to persistent Diego profile at %s",
-            DIEGO_PROFILE_DIR,
-        )
-        if self._try_persistent_launch():
-            logger.info("Browser launched with persistent Diego profile")
-            return True
+    def _remember_discovery(self) -> None:
+        """Best-effort snapshot of the DISCOVERED Chrome (never raises).
 
-        logger.warning("No browser available — agent mode limited to desktop actions")
-        return False
-
-    def _find_chrome_binary(self) -> Optional[str]:
-        """Find the Chrome/Chromium binary on the system."""
-        import shutil
-        # Common Chrome binary names
-        chrome_names = [
-            "google-chrome",
-            "google-chrome-stable",
-            "chromium-browser",
-            "chromium",
-            "chrome",
-        ]
-        for name in chrome_names:
-            path = shutil.which(name)
-            if path:
-                return path
-        return None
-
-    def _ensure_chrome_running(self) -> bool:
+        Used on the honest failure path so the trace still records which
+        browser process/data dir/profile could not be attached.
         """
-        Ensure Chrome is running with remote debugging enabled.
-        
-        Checks if Chrome is already running on the CDP port.
-        If not, launches Chrome with --remote-debugging-port.
-        """
-        import socket
-        import subprocess
-        import shutil
-
-        # Check if something is already listening on the CDP port
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
-            result = sock.connect_ex(('127.0.0.1', self._cdp_port))
-            sock.close()
-            if result == 0:
-                # Port is already in use — Chrome might be running
-                logger.debug("CDP port %d is already in use", self._cdp_port)
-                return True
-        except Exception:
-            sock.close()
+            from agent.chrome_session import discover_chrome_session
+            self._discovered_info = discover_chrome_session()
+        except Exception as e:      # discovery must never mask the failure
+            logger.debug("session discovery for evidence failed: %s", e)
 
-        # Find Chrome binary
-        chrome_path = self._find_chrome_binary()
-        if not chrome_path:
-            logger.warning("Chrome binary not found")
-            return False
+    @property
+    def unavailable_reason(self) -> str:
+        """BROWSER_SESSION_UNAVAILABLE + exact reason + remediation."""
+        return self._unavailable_reason
 
-        # Find user's default Chrome profile
-        import os
-        home = os.path.expanduser("~")
-        # Common Chrome profile paths
-        profile_paths = [
-            os.path.join(home, ".config", "google-chrome"),
-            os.path.join(home, ".config", "chromium"),
-            os.path.join(home, "snap", "chromium", "current", ".config", "chromium"),
-        ]
-        
-        user_data_dir = None
-        for p in profile_paths:
-            if os.path.isdir(p):
-                user_data_dir = p
-                break
+    def session_evidence(self) -> dict:
+        """Explicit browser-session evidence for the AgentTrace."""
+        evidence = {
+            "browser_process": "unknown",
+            "user_data_dir": "unknown",
+            "profile_directory": "unknown",
+            "connection_method": "none",
+            "authenticated_state": "unknown",
+            "active_tab": "",
+            "current_url": "",
+        }
+        info = self._session_info or self._discovered_info
+        if info is not None:
+            evidence.update(info.evidence())
+        if self._page is not None:
+            try:
+                evidence["active_tab"] = str(self._page.title() or "")
+            except Exception:
+                pass
+            try:
+                evidence["current_url"] = str(self._page.url or "")
+            except Exception:
+                pass
+        return evidence
 
-        if not user_data_dir:
-            # Use default location
-            user_data_dir = os.path.join(home, ".config", "google-chrome")
+    def unavailable_evidence(self) -> dict:
+        """Session evidence for the honest unavailability path."""
+        evidence = self.session_evidence()
+        evidence["connection_method"] = "none"
+        evidence["unavailable"] = (self._unavailable_reason
+                                   or f"{_BROWSER_SESSION_UNAVAILABLE}: "
+                                      f"not initialized")
+        return evidence
 
-        # Launch Chrome with remote debugging
-        try:
-            subprocess.Popen(
-                [
-                    chrome_path,
-                    f"--remote-debugging-port={self._cdp_port}",
-                    f"--user-data-dir={user_data_dir}",
-                    "--no-first-run",
-                    "--no-default-browser-check",
-                ],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            logger.info("Launched Chrome with CDP on port %d (profile: %s)",
-                       self._cdp_port, user_data_dir)
-            
-            # Wait for Chrome to start
-            import time
-            time.sleep(2)
-            return True
-        except Exception as e:
-            logger.warning("Failed to launch Chrome: %s", e)
-            return False
-
-    def _try_cdp_attach(self) -> bool:
-        """Try to attach to a running Chrome instance via CDP."""
-        try:
-            from playwright.sync_api import sync_playwright
-
-            self._playwright = sync_playwright().start()
-            cdp_url = f"http://localhost:{self._cdp_port}"
-
-            # Try to connect
-            self._browser = self._playwright.chromium.connect_over_cdp(cdp_url)
-            self._context = self._browser.contexts[0] if self._browser.contexts else None
-            self._page = self._browser.pages[0] if self._browser.pages else None
-
-            if self._page:
-                logger.info("CDP attach successful: %s", self._page.url)
-                return True
-
-            # No pages yet — create one
-            if self._context:
-                self._page = self._context.new_page()
-                return True
-
-            return False
-
-        except Exception as e:
-            logger.debug("CDP attach failed: %s", e)
-            return False
-
-    def _try_persistent_launch(self) -> bool:
-        """Launch Chrome with a persistent Diego profile."""
-        try:
-            from playwright.sync_api import sync_playwright
-
-            self._playwright = sync_playwright().start()
-
-            # Ensure profile directory exists
-            DIEGO_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
-
-            # Launch with persistent context
-            self._context = self._playwright.chromium.launch_persistent_context(
-                user_data_dir=str(DIEGO_PROFILE_DIR),
-                headless=False,
-                args=[
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-gpu",
-                ],
-            )
-            self._page = self._context.pages[0] if self._context.pages else self._context.new_page()
-            self._browser = self._context  # Persistent context IS the browser
-
-            logger.info("Persistent browser launched: %s", DIEGO_PROFILE_DIR)
-            return True
-
-        except Exception as e:
-            logger.debug("Persistent launch failed: %s", e)
-            return False
 
     # ── Navigation ──────────────────────────────────────
 
@@ -474,15 +390,25 @@ class BrowserController:
     # ── State ───────────────────────────────────────────
 
     def _ensure_page(self) -> bool:
-        """Ensure we have an active page."""
+        """Ensure we have an active page ON the attached session.
+
+        The page always comes from the ATTACHED context — the user's own
+        Chrome. `new_page()` therefore opens a new TAB in that same Chrome
+        window; it never creates a browser/context. An unattached controller
+        creates nothing at all: returning False is what makes
+        BROWSER_SESSION_UNAVAILABLE honest instead of a silent clean browser.
+        """
         if self._page:
             return True
-        if self._context:
-            try:
-                self._page = self._context.new_page()
-                return True
-            except Exception:
-                pass
+        if not self._attached or self._context is None:
+            return False
+        try:
+            # A new TAB inside the user's existing Chrome — never a new
+            # browser, never a fresh/temporary profile.
+            self._page = self._context.new_page()
+            return True
+        except Exception:
+            pass
         return False
 
     @property

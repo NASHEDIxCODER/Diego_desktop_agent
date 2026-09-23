@@ -46,6 +46,7 @@ class DecisionPath(str, Enum):
     WORKING_MEMORY = "WORKING_MEMORY"
     SESSION_MEMORY = "SESSION_MEMORY"
     DIRECT_EXECUTION = "DIRECT_EXECUTION"
+    SEMANTIC = "SEMANTIC"  # Phase 25 L3.5 — semantic capability router
     REUSED_PLAN = "REUSED_PLAN"
     VISION = "VISION"
     LOCAL_COMPUTER = "LOCAL_COMPUTER"
@@ -447,6 +448,31 @@ class DecisionEngine:
         if result is not None:
             self._record(
                 DecisionPath.DIRECT_EXECUTION,
+                t_start,
+            )
+
+            self._cache_decision(
+                cache_key,
+                result,
+            )
+
+            return result
+
+        # ──────────────────────────────────────────────────────
+        # L3.5 — Semantic capability router (Phase 25)
+        # Description-only contracts ranked by semantic similarity;
+        # resolution requires permission + precondition + availability
+        # gates too. Semantic similarity ALONE never executes anything.
+        # An unresolved outcome falls through to L4-L8 unchanged.
+        # ──────────────────────────────────────────────────────
+
+        result = await self._check_semantic_capability(
+            normalized
+        )
+
+        if result is not None:
+            self._record(
+                DecisionPath.SEMANTIC,
                 t_start,
             )
 
@@ -1192,6 +1218,88 @@ class DecisionEngine:
             )
 
         return None
+
+    # ──────────────────────────────────────────────────────────
+    # L3.5 — Semantic capability router (Phase 25)
+    # ──────────────────────────────────────────────────────────
+
+    async def _check_semantic_capability(
+        self,
+        text: str,
+    ) -> Optional[Decision]:
+        """Rank description-only capability contracts and, ONLY if every
+        gate clears (similarity + ambiguity margin + permission +
+        preconditions + action availability), resolve to a canonical
+        action dict for the EXISTING execution infrastructure.
+
+        The router never executes: an unresolved/ambiguous/unauthorized
+        outcome returns None so the existing L4-L8 fallback handles it
+        (correction: semantic similarity alone must never execute).
+        """
+        t0 = time.perf_counter_ns()
+
+        # Existing intent guards stay authoritative: web-search intents
+        # and local-knowledge requests own their request shapes (the
+        # same guards L3 applies); explicit vision intent already
+        # returned before L3.
+        try:
+            if self._needs_search(text):
+                return None
+        except Exception:
+            pass
+        try:
+            from nlp.intent_authorizer import _match_local_knowledge
+
+            if _match_local_knowledge(text):
+                return None
+        except Exception:
+            pass
+
+        try:
+            from core.semantic_router import semantic_router
+
+            outcome = semantic_router.route(text)
+        except Exception as e:
+            logger.debug("[DECIDE:L3.5] semantic router unavailable: %s", e)
+            return None
+
+        gate_ms = (time.perf_counter_ns() - t0) / 1e6
+
+        if outcome is None or not getattr(outcome, "resolved", False):
+            logger.debug(
+                "[DECIDE:L3.5] fall-through (%s): %s",
+                getattr(outcome, "reason", "no_outcome"),
+                text[:120],
+            )
+            return None
+
+        logger.info(
+            "[DECIDE:L3.5] %s → %s (%.2f, %.1fms, %s)",
+            text[:80],
+            outcome.capability,
+            outcome.confidence,
+            outcome.route_ms,
+            outcome.budget,
+        )
+        return Decision(
+            path=DecisionPath.SEMANTIC,
+            needs_llm=False,
+            confidence=round(float(outcome.confidence), 3),
+            action=outcome.action,
+            latency_us=(time.perf_counter_ns() - t0) / 1000.0,
+            debug={
+                "capability": outcome.capability,
+                "similarity": round(float(outcome.similarity), 3),
+                "similarity_kind": outcome.scoring,
+                "side_effects": outcome.side_effects,
+                "verification": outcome.verification,
+                # Timing instrumentation (correction): route-stage cost
+                # recorded per decision for latency comparison.
+                "semantic_route_ms": round(float(outcome.route_ms), 3),
+                "gate_check_ms": round(gate_ms, 3),
+                "decision_budget": "semantic",
+            },
+        )
 
     # ──────────────────────────────────────────────────────────
     # L5 — Reusable plans

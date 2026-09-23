@@ -103,6 +103,11 @@ class KnowledgeIndexer:
         self._rescan_thread: Optional[threading.Thread] = None
         self._rescan_stop = threading.Event()
         self._rescan_interval = 300.0
+        # Interaction pause (M-H): cleared while the agent is generating a
+        # response — background indexing deprioritizes itself and waits;
+        # resume() (from a finally) releases it. Event set == allowed to run.
+        self._interaction_pause = threading.Event()
+        self._interaction_pause.set()
 
     # ── Public API ────────────────────────────────────────────
 
@@ -153,8 +158,11 @@ class KnowledgeIndexer:
         detection, purge of denied material). Cancellation-aware."""
         while not self._rescan_stop.is_set():
             try:
-                self._cancel.clear()  # a prior cancel must not leak in
-                self._scan()
+                # Interaction pause (M-H): deprioritize the cycle while the
+                # agent is busy; skip cleanly if cancelled while waiting.
+                if self._wait_if_paused():
+                    self._cancel.clear()  # a prior cancel must not leak in
+                    self._scan()
             except Exception as e:
                 logger.error("[KNOWLEDGE] rescan cycle failed (recovered): %s",
                              e)
@@ -164,6 +172,34 @@ class KnowledgeIndexer:
     def cancel(self) -> None:
         """Request cancellation of the running scan."""
         self._cancel.set()
+
+    # ── Interaction pause (M-H) ────────────────────────────────
+
+    def pause(self) -> None:
+        """Deprioritize indexing during agent interaction (idempotent)."""
+        if self._interaction_pause.is_set():
+            self._interaction_pause.clear()
+            logger.info("[KNOWLEDGE] indexing paused (agent interaction)")
+
+    def resume(self) -> None:
+        """Resume indexing paused by pause() (idempotent; finally-safe)."""
+        if not self._interaction_pause.is_set():
+            self._interaction_pause.set()
+            logger.info("[KNOWLEDGE] indexing resumed")
+
+    @property
+    def paused(self) -> bool:
+        return not self._interaction_pause.is_set()
+
+    def _wait_if_paused(self) -> bool:
+        """Block while paused (indexing deprioritized). Returns False when
+        the caller must abort: cancel/stop requested while waiting."""
+        while not self._interaction_pause.is_set():
+            if self._cancel.is_set() or self._rescan_stop.is_set():
+                return False
+            # Short wait so pause/cancel/resume are noticed promptly.
+            self._interaction_pause.wait(timeout=0.25)
+        return not self._cancel.is_set()
 
     def scan(self, roots: Optional[List[Path]] = None) -> Dict:
         """Synchronous incremental scan (used by tests / CLI)."""
@@ -385,6 +421,10 @@ class KnowledgeIndexer:
 
     def _index_file(self, path: Path) -> None:
         """Extract + chunk + embed + persist one file. Never raises."""
+        # Interaction pause (M-H): deprioritize heavy per-file work while
+        # the agent is generating a response; cancel wins over pause.
+        if not self._wait_if_paused():
+            return
         # DEFENSE IN DEPTH: the policy is re-checked HERE, before the
         # file is stat'ed, hashed, opened, extracted, chunked, embedded,
         # or persisted. Secret material never reaches any of those steps.

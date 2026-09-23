@@ -1,4 +1,4 @@
-# Diego Desktop Assistant
+# Diego Desktop Agent
 
 Technical architecture reference for the Diego desktop agent.
 This is the single canonical documentation file for the production codebase.
@@ -116,7 +116,7 @@ Microphone
 ```
 
 Per-turn flow is driven by `ConversationEngine._conversation_session()`:
-LISTEN → (final utterance) → THINK (`agent_brain.process_command`) → SPEAK (`_think_and_speak`) → back to LISTEN. 60s silence / goodbye phrase returns to IDLE.
+LISTEN → (final utterance) → THINK (`agent_brain.process_command`) → SPEAK (`_think_and_speak`) → back to LISTEN. The session is ENDLESS (2026-09-21): silence NEVER returns to IDLE — only an explicit sleep command (`SLEEP_PHRASES`: "go to sleep", "stop listening", "cancel", …) closes the session and returns to wake mode.
 
 Interruption: while SPEAK, a `speech_start` STT event stops TTS immediately (`_watch_interruption`).
 
@@ -400,11 +400,11 @@ Legal transitions (enforced in `ALLOWED_TRANSITIONS`, logged by `_set_state`):
 | IDLE | WAKE, FACE_AUTH (wake bypass/degraded), LISTEN (auth disabled/session valid) |
 | WAKE | FACE_AUTH, LISTEN (auth disabled) |
 | FACE_AUTH | LISTEN |
-| LISTEN | THINK, IDLE (timeout/goodbye) |
+| LISTEN | THINK, IDLE (explicit sleep command only — silence NEVER ends the session) |
 | THINK | SPEAK |
 | SPEAK | LISTEN (continue conversation), IDLE (end session) |
 
-Watchdogs (`STATE_TIMEOUTS_S`): LISTEN 75s, THINK 60s, SPEAK 120s. On timeout, the watchdog breaks the stalled stream and resets the state timer. WAKE/FACE_AUTH are intentionally unbounded.
+Watchdogs (`STATE_TIMEOUTS_S`): LISTEN 75s, THINK 60s, SPEAK 120s. On timeout, the watchdog breaks the stalled stream and resets the state timer. WAKE/FACE_AUTH are intentionally unbounded, and LISTEN is exempt while the endless conversation session is active (`_endless_session`) — the session only ends on an explicit sleep command.
 
 ---
 
@@ -645,7 +645,7 @@ _(Because 165 production modules contain ~2,000 functions, this reference is pro
 - `_face_auth_gate(trigger)` — auth if needed; on success greet (guarded TTS); on failure log honest, keep provider.
 - `_wake_listen_loop()` -> Optional[WakeEvent].
 - `_play_wake_chime()` — wave play to TTS device.
-- `_conversation_session()` — LISTEN→THINK→SPEAK loop; identity/goodbye; response_guarantee.run_turn; drain stale events.
+- `_conversation_session()` — ENDLESS LISTEN→THINK→SPEAK loop (silence never ends it; explicit sleep command closes it); identity/sleep; response_guarantee.run_turn; `rearm_between_turns()` between turns; drain stale events.
 - `_stt_event_pump(stream, events)` — queue events.
 - `_think_and_speak(user_text, events, canned)` -> bool — SPEAK via TTS; duplicate-text guard; interruption monitor; echo-decay.
 - `_watch_interruption(events)` — speech_start during SPEAK → stop TTS.

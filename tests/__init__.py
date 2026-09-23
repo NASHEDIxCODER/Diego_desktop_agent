@@ -1,1 +1,0 @@
-# Diego Desktop Assistant - Tests Package

@@ -102,12 +102,63 @@ GOAL_EXPECTATIONS: Dict[str, GoalExpectation] = {
     ),
     "desktop_open": GoalExpectation(
         action="desktop_open",
-        intended_effect="Target application process is running.",
-        success_condition="Process actually present (pgrep exact match).",
-        failure_condition="Process absent after settle wait.",
-        observable_evidence=["process table"],
+        intended_effect=("Target application identity is present: its own "
+                         "process running and/or its own window visible."),
+        success_condition=("Canonical AppIdentity (services/app_resolver) "
+                           "present via process and/or window match. "
+                           "A generic screen/frame delta is NOT sufficient."),
+        failure_condition=("Target identity absent after settle wait, or "
+                          "the app name did not resolve to a target."),
+        observable_evidence=[
+            "process table (exact comm match of target patterns)",
+            "window list (WM_CLASS/title match of target patterns)",
+            "resolution trail ([APP-RESOLVE] canonical/exe/entry)",
+        ],
     ),
 }
+
+
+def verify_desktop_open(
+    canonical: str,
+    process_running: Optional[bool],
+    window_visible: Optional[bool],
+    resolution_ok: bool = True,
+) -> GoalVerificationResult:
+    """GOAL verification for desktop_open against TARGET identity.
+
+    PASS requires the TARGET app's own process and/or window to be
+    observed. Generic "screen changed" evidence is never accepted —
+    callers must not pass it here. Missing observation is NO_EVIDENCE
+    (never guess); failed resolution is FAIL.
+    """
+    exp = GOAL_EXPECTATIONS["desktop_open"]
+    if not resolution_ok:
+        return GoalVerificationResult(
+            action="desktop_open",
+            expected_effect=exp.intended_effect,
+            observation=f"requested='{canonical}' did not resolve",
+            evidence="no launch target — nothing to observe",
+            result=GoalResult.FAIL,
+        )
+    if process_running is None and window_visible is None:
+        return GoalVerificationResult(
+            action="desktop_open",
+            expected_effect=exp.intended_effect,
+            observation="",
+            evidence="no process/window observation available",
+            result=GoalResult.NO_EVIDENCE,
+        )
+    present = bool(process_running) or bool(window_visible)
+    return GoalVerificationResult(
+        action="desktop_open",
+        expected_effect=exp.intended_effect,
+        observation=(f"canonical='{canonical}' "
+                     f"process_running={process_running} "
+                     f"window_visible={window_visible}"),
+        evidence=(f"target identity '{canonical}' "
+                  + ("present" if present else "NOT present")),
+        result=GoalResult.PASS if present else GoalResult.FAIL,
+    )
 
 
 def _host_and_path(url: str) -> str:
@@ -206,7 +257,8 @@ def evaluate_goal(
     """Single entry point: evaluate goal-level evidence for an action.
 
     observation keys (all optional, all REAL evidence from tools):
-        observed_url, page_text, process_running
+        observed_url, page_text, process_running, window_visible,
+        resolution_ok, canonical
     """
     if action_name == "browser_navigate":
         return verify_browser_navigation(
@@ -216,6 +268,14 @@ def evaluate_goal(
         return verify_browser_click(
             str(params.get("label") or params.get("text") or ""),
             observation.get("page_text"))
+    if action_name == "desktop_open":
+        return verify_desktop_open(
+            str(observation.get("canonical")
+                or params.get("app", "")),
+            observation.get("process_running"),
+            observation.get("window_visible"),
+            bool(observation.get("resolution_ok", True)),
+        )
     return GoalVerificationResult(
         action=action_name,
         expected_effect="tool execution succeeded",

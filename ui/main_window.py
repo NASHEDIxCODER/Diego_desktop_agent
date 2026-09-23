@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
 )
 
 from ui.event_bridge import EventBridge
+from ui.agent_workflow_panel import AgentWorkflowPanel
 from ui.styles import MAIN_WINDOW_QSS, COLORS, FONTS
 from ui.tokens import (
     HEADER_HEIGHT, FOOTER_HEIGHT, RIGHT_COLUMN_MIN_WIDTH,
@@ -163,6 +164,10 @@ class DiegoMainWindow(QMainWindow):
 
         self._voice_state_panel = VoiceStatePanel()
         right_layout.addWidget(self._voice_state_panel)
+
+        # Phase 22: live GOAL→PLAN→ACT→VERIFY→RECOVERY→COMPLETION workflow.
+        self._workflow_panel = AgentWorkflowPanel()
+        right_layout.addWidget(self._workflow_panel, 1)
 
         self._activity_panel = ActivityPanel()
         right_layout.addWidget(self._activity_panel, 1)
