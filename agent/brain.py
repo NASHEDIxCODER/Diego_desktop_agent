@@ -651,7 +651,11 @@ class AgentBrain:
         # pipeline (screen capture + OCR + accessibility tree) for the
         # majority of commands. This saves 500ms-2s per simple command.
         perception_ctx = None
+        t_resolve = time.perf_counter()
         decision = await self._decide(text, None)
+        logger.info("[TIMING] action_resolution=%.1fms resolved=%s",
+                    (time.perf_counter() - t_resolve) * 1000.0,
+                    getattr(decision, "resolved", False))
 
         # ── Step 1b: Perceive (ONLY if the decision needs screen context) ──
         # Perception is only needed for:
@@ -1544,6 +1548,7 @@ class AgentBrain:
         params = action.get("params", {}) or {}
 
         MAX_ACTION_RETRIES = 2
+        t_pipeline = time.perf_counter()   # execution+verification timing
 
         for attempt in range(MAX_ACTION_RETRIES + 1):
             # ── Step 4a: Capture PRE-action state (BEFORE dispatch) ──
@@ -1559,12 +1564,16 @@ class AgentBrain:
                     logger.debug("[Brain] Pre-action capture failed: %s", e)
 
             # ── Step 4b: Dispatch (execute) ───────────────────
+            t_exec = time.perf_counter()
             try:
                 result = await self._dispatcher.execute(action)
+                exec_ms = (time.perf_counter() - t_exec) * 1000.0
                 self._actions_dispatched += 1
             except Exception as e:
-                logger.warning("[Brain] Dispatch failed for %s (attempt %d): %s",
-                               action_name, attempt + 1, e)
+                exec_ms = (time.perf_counter() - t_exec) * 1000.0
+                logger.warning("[Brain] Dispatch failed for %s (attempt %d, "
+                               "%.1fms): %s",
+                               action_name, attempt + 1, exec_ms, e)
                 if attempt < MAX_ACTION_RETRIES:
                     action = self._adjust_params_for_retry(action_name, action)
                     await asyncio.sleep(0.5)
@@ -1574,8 +1583,15 @@ class AgentBrain:
                 return False, ""
 
             # ── Step 5: Verify ──────────────────────────────────
+            t_ver = time.perf_counter()
             verified = await self._verify(action_name, params, result)
+            ver_ms = (time.perf_counter() - t_ver) * 1000.0
             self._actions_verified += 1
+            logger.info(
+                "[TIMING] action=%s attempt=%d execution=%.1fms "
+                "verification=%.1fms total=%.1fms verified=%s",
+                action_name, attempt + 1, exec_ms, ver_ms,
+                (time.perf_counter() - t_pipeline) * 1000.0, verified)
 
             if verified:
                 # ── Step 6: Learn ───────────────────────────────
@@ -1877,6 +1893,11 @@ class AgentBrain:
             return f"I ran into an issue with {result.actions_failed} of the steps."
 
         # Otherwise, use the LLM to generate a response.
+        # ── INDEXER INTERACTION PAUSE (M-H) ──
+        # Deprioritize background indexing while a response is being
+        # generated (retrieval + LLM contend with extraction/embedding);
+        # resumed in `finally` below so no path can leak a paused indexer.
+        self._pause_indexing()
         # CRITICAL FIX: inject the perception context (what Diego sees on
         # screen) so "what is going on" / "click here" actually work.
         # Without this, the LLM has no idea what's on the screen.
@@ -1987,6 +2008,19 @@ class AgentBrain:
                             len(answer), len(k_results))
                         return sanitize_spoken(answer, allow_paths=False)
                 local_ctx = knowledge_service.context_for_llm(text) or ""
+                # ── GROUNDED RAG LAYER (hybrid activation gate) ──
+                # Knowledge questions the fast synthesis shortcut did not
+                # answer go through the structured pipeline: query → retrieve
+                # → rerank → evidence pack → ANSWER/ACTION/CLARIFICATION/
+                # ABSTAIN. Live-state transcripts and resolved-capability
+                # fast paths never reach here (should_activate gates them):
+                # live answers come from live perception (local_ctx above
+                # only grounds the LLM beneath live state), capabilities
+                # keep their deterministic/semantic-router route.
+                rag_response = await self._rag_structured_response(
+                    text, screen_ctx, web_ctx)
+                if rag_response is not None:
+                    return rag_response
             except LookupError:
                 logger.debug("[Brain] local knowledge skipped (small-talk "
                              "transcript): '%s'", text[:50])
@@ -2022,6 +2056,9 @@ class AgentBrain:
         except Exception as e:
             logger.warning("[Brain] LLM response failed: %s", e)
             return "I'm having trouble with that right now."
+        finally:
+            # ── INDEXER INTERACTION RESUME (M-H) ──
+            self._resume_indexing()
 
     @staticmethod
     def _is_live_state_request(text: str) -> bool:
@@ -2035,6 +2072,127 @@ class AgentBrain:
                     or DecisionEngine._is_live_desktop_query(t))
         except Exception:
             return False
+
+    async def _rag_structured_response(
+            self, text: str, screen_ctx: str,
+            web_ctx: Optional[str]) -> Optional[str]:
+        """Grounded RAG layer (hybrid activation + live-state guard).
+
+        Returns a spoken/action response when the orchestrator produced a
+        grounded verdict; returns None to fall through to the generic LLM
+        path (ABSTAIN, insufficient evidence, orchestrator unavailable, or
+        a fast-path/live-state transcript). Never executes anything itself:
+        an ACTION result is validated against the capability registry and
+        emitted through the EXISTING ``ACTION: {json}`` channel that the
+        capability router / dispatcher already consumes.
+        """
+        try:
+            from agent.rag_orchestrator import (
+                RAGOrchestrator,
+                should_activate,
+                validate_action,
+            )
+        except Exception as e:
+            logger.debug("[Brain] RAG layer unavailable: %s", e)
+            return None
+        try:
+            # Hybrid activation gate: resolved capabilities keep their fast
+            # path (no retrieval, no LLM cost) and live-state questions are
+            # answered by live perception — the stale index must never
+            # answer them.
+            if not should_activate(text):
+                return None
+            from knowledge.service import knowledge_service
+            from knowledge.presentation import sanitize_spoken
+
+            async def _llm(prompt: str) -> str:
+                # Reuse the EXISTING streaming LLM seam — never a second
+                # LLM framework. The RAG prompt demands a single JSON
+                # object; parse_structured_result tolerates wrapping.
+                from agent.streaming_llm import streaming_llm
+                parts: List[str] = []
+                async for sentence in streaming_llm.generate(prompt):
+                    parts.append(sentence)
+                return " ".join(parts)
+
+            # Per-call instance so the retriever binding always tracks the
+            # *current* knowledge_service object (module-level singletons
+            # get swapped in tests and by service reloads).
+            orch = RAGOrchestrator(retriever=knowledge_service,
+                                   llm_call=_llm)
+            outcome = await orch.run(
+                text,
+                desktop_context=screen_ctx or None,
+                browser_context=web_ctx or None,
+            )
+            if getattr(outcome, "needs_live_state", False):
+                # Live perception answers this; index content only grounded
+                # the prompt at lower priority.
+                return None
+            result = outcome.result or {}
+            rtype = result.get("type")
+            if rtype == "ANSWER":
+                answer = str(result.get("answer") or "").strip()
+                if not answer:
+                    return None
+                logger.info(
+                    "[RAG] brain ANSWER evidence=%d total=%.1fms",
+                    len(getattr(outcome.pack, "retrieved_evidence", [])
+                         or []),
+                    float(outcome.timings.get("total_ms", 0.0)))
+                return sanitize_spoken(answer, allow_paths=False)
+            if rtype == "CLARIFICATION":
+                question = str(result.get("question") or "").strip()
+                return question or None
+            if rtype == "ACTION":
+                allowed = list(
+                    getattr(outcome.pack, "available_capabilities", []) or [])
+                if not validate_action(result, allowed):
+                    logger.info(
+                        "[RAG] brain ACTION refused (capability gate): %s",
+                        result.get("capability"))
+                    return None  # never execute an unvalidated capability
+                line = "ACTION: " + json.dumps({
+                    "action": result["capability"],
+                    "params": result.get("arguments") or {},
+                    "capability": result["capability"],
+                    "requires_confirmation": bool(
+                        result.get("requires_confirmation")),
+                    "evidence_ids": result.get("evidence_ids") or [],
+                })
+                goal = str(result.get("goal") or "").strip() or "On it."
+                logger.info("[RAG] brain ACTION capability=%s (confirm=%s)",
+                            result["capability"],
+                            result.get("requires_confirmation"))
+                return f"{goal}\n{line}"
+            # ABSTAIN / unknown type → fall through to the generic LLM path
+            # with the bounded local_ctx computed by the caller.
+            logger.debug("[Brain] RAG fall-through type=%s reason=%s",
+                         rtype, result.get("reason"))
+            return None
+        except Exception as e:
+            logger.debug("[Brain] RAG structured layer skipped: %s", e)
+            return None
+
+    # ── Indexer interaction pause (M-H) ────────────────────────
+
+    @staticmethod
+    def _pause_indexing() -> None:
+        """Deprioritize background knowledge indexing during interaction."""
+        try:
+            from knowledge.service import knowledge_service
+            knowledge_service.pause_indexing()
+        except Exception:
+            pass
+
+    @staticmethod
+    def _resume_indexing() -> None:
+        """Resume indexing paused above (finally-safe; idempotent)."""
+        try:
+            from knowledge.service import knowledge_service
+            knowledge_service.resume_indexing()
+        except Exception:
+            pass
 
     # ── Helpers ────────────────────────────────────────────────
 

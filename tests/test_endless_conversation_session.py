@@ -38,7 +38,6 @@ import pytest
 import core.conversation_engine as CE
 from core.conversation_engine import (
     ALLOWED_TRANSITIONS,
-    CONVERSATION_TIMEOUT_S,
     EngineState,
     SLEEP_PHRASES,
     SESSION_CLOSE_ERROR,
@@ -305,8 +304,11 @@ def test_desktop_sequence_wake_auth_five_commands_silence_sleep_wake(
         for i, cmd in enumerate(commands):
             await say(listener, brain, engine, cmd)
             # Silence period LONGER than the (patched) conversation
-            # timeout — this must NEVER end the session.
-            await asyncio.sleep(CONVERSATION_TIMEOUT_S * 2)
+            # timeout — this must NEVER end the session. Read the budget off
+            # the ENGINE MODULE (not this module's import binding) so the
+            # fixture's fast timeout applies: the bare imported name sticks
+            # at the real 60 s and turned this test into a 10-minute sleep.
+            await asyncio.sleep(CE.CONVERSATION_TIMEOUT_S * 2)
             assert engine._session_state == SessionState.ACTIVE, \
                 f"silence ended the session after command {i + 1}!"
             assert engine._state == EngineState.LISTEN
@@ -378,8 +380,9 @@ def test_silence_periods_keep_session_open(endless_engine):
     async def seq():
         task = start_session(engine)
         deadline_before = engine._session_deadline
-        # Sit through 5 consecutive silence timeouts (> 5x budget).
-        await asyncio.sleep(CONVERSATION_TIMEOUT_S * 5)
+        # Sit through 5 consecutive silence timeouts (> 5x budget). Budget is
+        # read from the engine module so the fixture's fast timeout applies.
+        await asyncio.sleep(CE.CONVERSATION_TIMEOUT_S * 5)
         assert engine._session_state == SessionState.ACTIVE
         assert engine._state == EngineState.LISTEN
         assert engine._session_deadline > deadline_before, \

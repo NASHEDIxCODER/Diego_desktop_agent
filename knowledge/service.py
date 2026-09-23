@@ -87,6 +87,22 @@ class KnowledgeService:
         self._indexer.stop_periodic_rescan()
         self._indexer.cancel()
 
+    # ── Interaction pause (M-H) ────────────────────────────────
+
+    def pause_indexing(self) -> None:
+        """Deprioritize background indexing during agent interaction."""
+        try:
+            self._indexer.pause()
+        except Exception:
+            pass
+
+    def resume_indexing(self) -> None:
+        """Resume indexing paused by pause_indexing (idempotent)."""
+        try:
+            self._indexer.resume()
+        except Exception:
+            pass
+
     def ensure_ready(self) -> None:
         """Initialize the schema WITHOUT starting background work."""
         try:

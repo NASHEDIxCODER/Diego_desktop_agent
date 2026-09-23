@@ -17,6 +17,7 @@ Covers:
 import json
 import os
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Generator
@@ -1575,3 +1576,45 @@ def test_brain_live_screen_request_not_overridden_by_local_knowledge(
     assert "/tmp/screen.txt" in captured["local"]
     # ... but the SPOKEN response never leaks it (sanitized).
     assert "/tmp/screen.txt" not in resp
+
+
+# ── M-H: interaction pause (deprioritize + finally resume) ───────
+
+def test_pause_resume_idempotent(indexer):
+    indexer.pause()
+    indexer.pause()
+    assert indexer.paused is True
+    indexer.resume()
+    indexer.resume()
+    assert indexer.paused is False
+    # Not paused → the gate passes without blocking.
+    assert indexer._wait_if_paused() is True
+
+
+def test_cancel_during_pause_aborts_without_hanging(indexer):
+    indexer.pause()
+    indexer.cancel()          # cancel wins over the pause wait
+    assert indexer._wait_if_paused() is False
+    indexer.resume()
+
+
+def test_scan_blocks_while_paused_then_finishes_after_resume(
+        indexer, root):
+    (root / "pause_doc.txt").write_text("pause gate content for scan")
+    indexer.pause()
+    finished = threading.Event()
+
+    def _run():
+        indexer.scan()
+        finished.set()
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    # Discovery may proceed, but per-file work waits at the pause gate.
+    assert not finished.wait(timeout=0.6), \
+        "scan must block while indexing is paused"
+    indexer.resume()
+    assert finished.wait(timeout=15.0), \
+        "scan must finish after resume"
+    t.join(timeout=1.0)
+    assert indexer.paused is False
