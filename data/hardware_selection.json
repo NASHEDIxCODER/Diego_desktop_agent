@@ -10,7 +10,7 @@
     "is_camera_associated_audio": false,
     "runtime_index": 5,
     "source": "auto",
-    "saved_at": 1790026684.762995
+    "saved_at": 1790086036.1261415
   },
   "output": {
     "hardware_identity": "audio|7505d64a54e0",
@@ -23,19 +23,19 @@
     "is_camera_associated_audio": false,
     "runtime_index": 10,
     "source": "auto",
-    "saved_at": 1790026684.803576
+    "saved_at": 1790086012.0611286
   },
   "camera": {
-    "hardware_identity": "/dev/v4l/by-id/usb-BC-250603-ZW_ZEB_LIVE_PRO-video-index0",
-    "friendly_name": "ZEB LIVE PRO",
-    "manufacturer": "BC-250603-ZW",
-    "model": "ZEB LIVE PRO",
-    "family_id": "family:/dev/v4l/by-id/usb-BC-250603-ZW_ZEB_LIVE_PRO-video-index0",
-    "raw_name": "ZEB LIVE PRO: ZEB LIVE PRO",
+    "hardware_identity": "/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._USB2.0_HD_UVC_WebCam-video-index0",
+    "friendly_name": "USB2.0 HD UVC WebCam",
+    "manufacturer": "Sonix Technology Co., Ltd.",
+    "model": "USB2.0 HD UVC WebCam",
+    "family_id": "family:/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._USB2.0_HD_UVC_WebCam-video-index0",
+    "raw_name": "USB2.0 HD UVC WebCam: USB2.0 HD",
     "category": "PHYSICAL",
     "is_camera_associated_audio": false,
-    "runtime_index": 0,
+    "runtime_index": 2,
     "source": "auto",
-    "saved_at": 1790026684.8041582
+    "saved_at": 1790086012.0614705
   }
 }

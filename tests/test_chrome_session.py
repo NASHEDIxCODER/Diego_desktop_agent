@@ -110,9 +110,13 @@ def test_parse_chrome_args_space_form():
 # ── discovery (dynamic, never hardcoded "Default") ───────────────────
 
 def test_discover_running_chrome_with_switches(tmp_path):
+    # The parsed profile must exist on disk to be trusted (Chrome can rewrite
+    # its argv and truncate values containing spaces) — mirror real Chrome.
+    udd = tmp_path / "udd"
+    (udd / "Profile 2").mkdir(parents=True, exist_ok=True)
     proc = _fake_proc(tmp_path,
                       (87038, ["/opt/google/chrome/chrome",
-                               "--user-data-dir=/home/u/chrome-udd",
+                               f"--user-data-dir={udd}",
                                "--profile-directory=Profile 2",
                                "--remote-debugging-port=9333"]),
                       (87078, ["/opt/google/chrome/chrome",
@@ -121,7 +125,7 @@ def test_discover_running_chrome_with_switches(tmp_path):
         proc_dir=proc,
         chrome_version_fn=lambda **kw: "Chrome/149.0.7827.102")
     assert info.running and info.pid == 87038
-    assert info.user_data_dir == "/home/u/chrome-udd"
+    assert info.user_data_dir == str(udd)
     assert info.profile_directory == "Profile 2"   # NOT hardcoded Default
     assert info.debug_port == 9333
     assert "pid=87038" in info.browser_process
@@ -325,6 +329,70 @@ def test_listening_ports_without_socket_fds_is_empty(tmp_path):
     # The process owns no socket fd → nothing is a candidate, even though
     # the namespace table shows a listener.
     assert cs._listening_ports_of_pid(78, proc_dir=tmp_path) == []
+
+
+# ── Chrome 144+ existing-session (approval-mode) endpoint ────────────
+
+def test_devtools_active_ws_parses_the_dap_file(tmp_path):
+    dap = tmp_path / "DevToolsActivePort"
+    dap.write_text("9222\n/devtools/browser/abc-123\n", encoding="utf-8")
+    assert cs.devtools_active_ws(str(tmp_path)) == \
+        "ws://127.0.0.1:9222/devtools/browser/abc-123"
+
+
+def test_devtools_active_ws_absent_is_none(tmp_path):
+    assert cs.devtools_active_ws(str(tmp_path)) is None
+
+
+def test_attach_prefers_approval_mode_ws_endpoint(monkeypatch, tmp_path):
+    """When the DAP WebSocket exists it is tried FIRST — the approval-mode
+    handshake is the Chrome 144+ existing-session attach."""
+    udd = tmp_path / "udd"
+    udd.mkdir()
+    (udd / "DevToolsActivePort").write_text(
+        "9222\n/devtools/browser/abc-123\n", encoding="utf-8")
+    info = ChromeSessionInfo(running=True, pid=42, user_data_dir=str(udd),
+                             profile_directory="Profile 9",
+                             browser_process="chrome pid=42 (chrome)")
+    monkeypatch.setattr(cs, "discover_chrome_session", lambda **kw: info)
+    urls = []
+    _page, _ctx, browser = _patch_connect(monkeypatch)
+
+    def connect(url, timeout=10000.0):
+        urls.append((url, timeout))
+        return ("PW", browser)
+
+    monkeypatch.setattr(cs, "connect_cdp", connect)
+    out, _pw, _b, _ctx, _page = CurrentChromeSession().attach(
+        allow_launch=False)
+    assert urls and urls[0][0] == \
+        "ws://127.0.0.1:9222/devtools/browser/abc-123"
+    # The approval window covers the user's time to click Allow.
+    assert urls[0][1] >= 30_000
+    assert "existing_session_approval_mode" in out.connection_method
+
+
+def test_attach_approval_mode_timeout_is_honest(monkeypatch, tmp_path):
+    """A DAP endpoint that never completes the handshake reports exactly
+    what the user must do — it is never swapped for a fresh browser."""
+    udd = tmp_path / "udd"
+    udd.mkdir()
+    (udd / "DevToolsActivePort").write_text(
+        "9222\n/devtools/browser/abc-123\n", encoding="utf-8")
+    info = ChromeSessionInfo(running=True, pid=42, user_data_dir=str(udd),
+                             profile_directory="Profile 9",
+                             browser_process="chrome pid=42 (chrome)")
+    monkeypatch.setattr(cs, "discover_chrome_session", lambda **kw: info)
+
+    def connect(url, timeout=10000.0):
+        raise RuntimeError("Timeout 90000ms exceeded")
+
+    monkeypatch.setattr(cs, "connect_cdp", connect)
+    with pytest.raises(ChromeSessionUnavailable) as exc:
+        CurrentChromeSession().attach(allow_launch=False)
+    assert "handshake" in exc.value.reason
+    assert "chrome://inspect" in exc.value.remediation
+    assert exc.value.info.profile_directory == "Profile 9"
 
 
 # ── attach: running chrome with a live endpoint ──────────────────────

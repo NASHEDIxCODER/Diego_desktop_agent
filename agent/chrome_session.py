@@ -89,6 +89,12 @@ REMOTE_DEBUGGING_TOGGLE_URL = "chrome://inspect#remote-debugging"
 # Bounded wait for a freshly launched Chrome to expose CDP.
 _LAUNCH_WAIT_S = 20.0
 _PROBE_TIMEOUT_S = 0.8
+# The Chrome 144+ approval-mode handshake: the WebSocket stays pending until
+# the user clicks "Allow" on Chrome's debugging-connection prompt. This budget
+# is consumed by `connect_over_cdp(timeout=...)`, which takes MILLISECONDS.
+_APPROVAL_WAIT_MS = 90_000.0
+# The same budget expressed in seconds — for user-facing messages only.
+_APPROVAL_WAIT_S = _APPROVAL_WAIT_MS / 1000.0
 
 _CHROME_EXE_TOKENS = ("chrome", "chromium")
 
@@ -454,6 +460,24 @@ def devtools_active_port(user_data_dir: str) -> Optional[int]:
         return None
 
 
+def devtools_active_ws(user_data_dir: str) -> Optional[str]:
+    """The browser WebSocket path Chrome records in DevToolsActivePort.
+
+    Line 1 is the port, line 2 the `/devtools/browser/<uuid>` path. This is
+    the Chrome 144+ existing-session (approval-mode) endpoint: the server
+    exists only when the user switched remote debugging ON, and the WebSocket
+    handshake stays PENDING until the user approves the connection prompt.
+    """
+    try:
+        lines = (Path(user_data_dir) / "DevToolsActivePort").read_text(
+            encoding="utf-8", errors="replace").split()
+        if len(lines) >= 2 and lines[0].isdigit() and lines[1].startswith("/"):
+            return f"ws://127.0.0.1:{lines[0]}{lines[1]}"
+    except Exception:
+        pass
+    return None
+
+
 def remote_debugging_enabled(user_data_dir: str,
                              profile_directory: str) -> Optional[bool]:
     """Is remote debugging ON for this EXACT Chrome profile?
@@ -500,11 +524,12 @@ def _diego_launch_marker() -> str:
     """The unique marker string for THIS Diego process' launches."""
     global _LAUNCH_MARKER
     if not _LAUNCH_MARKER:
-        _LAUNCH_MARKER = f"diego-browser-session-{os.getpid()}"
+        _LAUNCH_MARKER = f"{_LAUNCH_MARKER_PREFIX}{os.getpid()}"
     return _LAUNCH_MARKER
 
 
 _LAUNCH_MARKER = ""
+_LAUNCH_MARKER_PREFIX = "diego-browser-session-"
 
 
 def profile_path(user_data_dir: str, profile_directory: str) -> str:
@@ -591,13 +616,26 @@ def discover_chrome_session(proc_dir: Path = Path("/proc"),
         info.pid = pid
         info.running = True
         info.browser_process = f"chrome pid={pid} ({exe})"
+        # The launcher marker survives in the cmdline across Diego restarts:
+        # a browser carrying it was started by Diego's existing-session
+        # launcher (on the REAL profile) — honest connection_method evidence.
+        info.launched_by_diego = any(
+            a.startswith(f"--window-name={_LAUNCH_MARKER_PREFIX}")
+            for a in args)
         info.user_data_dir = (switches["user_data_dir"]
                               or resolve_default_user_data_dir())
         info.debug_port = switches["debug_port"]
-        if not switches["profile_directory"]:
+        parsed_profile = switches["profile_directory"]
+        if not parsed_profile:
             info.profile_directory = read_profile_directory(info.user_data_dir)
+        elif (Path(info.user_data_dir) / parsed_profile).is_dir():
+            info.profile_directory = parsed_profile
         else:
-            info.profile_directory = switches["profile_directory"]
+            # Chrome rewrites its argv in place: a profile value containing a
+            # space ("Profile 3") can be truncated ("Profile"). The parsed
+            # profile is then a directory that does not exist — the on-disk
+            # Local State is the truth and wins.
+            info.profile_directory = read_profile_directory(info.user_data_dir)
         info.version = chrome_version_fn(proc_dir=proc_dir, binary=exe)
     else:
         # No browser process found: fall back to the on-disk default session
@@ -707,12 +745,18 @@ def probe_cdp(port: int, timeout: float = _PROBE_TIMEOUT_S
         return None
 
 
-def connect_cdp(url: str):
-    """Playwright connect_over_cdp — attaches WITHOUT disturbing the browser."""
+def connect_cdp(url: str, timeout: float = 10000.0):
+    """Playwright connect_over_cdp — attaches WITHOUT disturbing the browser.
+
+    `timeout` is the WebSocket handshake budget in milliseconds. For the
+    Chrome 144+ existing-session endpoint this window covers the time the
+    user needs to approve the connection prompt (the handshake stays pending
+    until they do).
+    """
     from playwright.sync_api import sync_playwright
     pw = sync_playwright().start()
     try:
-        browser = pw.chromium.connect_over_cdp(url, timeout=10000)
+        browser = pw.chromium.connect_over_cdp(url, timeout=timeout)
     except Exception:
         try:
             pw.stop()
@@ -819,6 +863,49 @@ class CurrentChromeSession:
                   else allow_launch)
         info = discover_chrome_session()
 
+        # ── 1. Chrome 144+ existing-session (approval-mode) endpoint ──
+        # The DAP WebSocket only exists when the user switched remote
+        # debugging ON; the handshake then stays PENDING until they approve
+        # the connection prompt Chrome shows. This is the ONLY way to attach
+        # to a default-dir Chrome 136+ session without touching the profile.
+        ws_url = devtools_active_ws(info.user_data_dir)
+        if ws_url:
+            try:
+                pw, browser = connect_cdp(ws_url, timeout=_APPROVAL_WAIT_MS)
+            except Exception as e:
+                raise ChromeSessionUnavailable(
+                    reason=(f"the existing-session debugging endpoint "
+                            f"({ws_url.split('/devtools')[0]}…) did not "
+                            f"complete the WebSocket handshake within "
+                            f"{_APPROVAL_WAIT_S:.0f}s: {e}"),
+                    remediation=(
+                        "approve the debugging-connection prompt Chrome "
+                        "shows for this connection (make sure 'Remote "
+                        "debugging' is switched on at "
+                        "chrome://inspect/#remote-debugging in the running "
+                        "browser), then retry"),
+                    info=info,
+                ) from e
+            self._pw, self._browser = pw, browser
+            context = browser.contexts[0] if browser.contexts else \
+                browser.new_context()
+            page = context.pages[0] if context.pages else context.new_page()
+            try:
+                page.bring_to_front()
+            except Exception:
+                pass
+            info.connection_method = \
+                f"cdp:existing_session_approval_mode:{info.debug_port or ''}"
+            try:
+                info.active_tab = str(page.title() or "")
+                info.current_url = str(page.url or "")
+            except Exception:
+                pass
+            logger.info("[CHROME-SESSION] attached via approval-mode: %s",
+                        info.evidence())
+            return info, pw, browser, context, page
+
+        # ── 2. classic debug-port endpoints ──────────────────────────
         for port in candidate_debug_ports(info):
             version = probe_cdp(port)
             if not version:

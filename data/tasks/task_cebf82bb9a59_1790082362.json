@@ -1,0 +1,71 @@
+{
+  "task_id": "cebf82bb9a59",
+  "original_request": "open map",
+  "normalized_goal": "open map",
+  "current_plan": [
+    {
+      "action": "open_url",
+      "params": {
+        "url": "https://www.google.com/maps"
+      },
+      "description": "Open Google Maps in the default browser"
+    }
+  ],
+  "completed_steps": [
+    {
+      "index": 1,
+      "action": "open_url",
+      "params": {
+        "url": "https://www.google.com/maps"
+      },
+      "description": "Open Google Maps in the default browser",
+      "status": "completed",
+      "result": "Opened https://www.google.com/maps",
+      "verification": "success",
+      "verified": true,
+      "retries": 0,
+      "error": "",
+      "latency_ms": 41.565895080566406,
+      "evidence_source": "unknown",
+      "sensitive_reason": ""
+    }
+  ],
+  "current_step": null,
+  "failed_steps": [],
+  "observed_state": "Window: [unknown] ‎⁨Devin⁩ – (183)\nPage: terminal\nA11y: 0 clickable, 2 nodes (x11_window)\nWindow: ‎⁨Devin⁩ – (183)\nApplication: TelegramDesktop (unknown)\nAccessibility: 2 nodes, 0 clickable\n♿ window \"‎⁨Devin⁩ – (183)\" @(808,172,818x641) [FOCUSED] [x11_window]\n  ♿ panel \"TelegramDesktop\" [x11_window]\nSummary: Screen type: terminal\nFocused: window '‎⁨Devin⁩ – (183)'",
+  "verification_results": [
+    {
+      "step": 1,
+      "action": "open_url",
+      "verified": true,
+      "evidence": "Opened https://www.google.com/maps",
+      "reason": ""
+    }
+  ],
+  "retry_count": 0,
+  "replan_count": 0,
+  "total_steps": 1,
+  "final_status": "SUCCESS",
+  "plan_version": 1,
+  "started_at": 1790082361.9296293,
+  "ended_at": 1790082362.1227477,
+  "artifacts": {
+    "urls": [
+      "https://www.google.com/maps"
+    ]
+  },
+  "log": [
+    "[TASK] id=cebf82bb9a59 goal=\"open map\"",
+    "[PLAN] v1 steps=1",
+    "[STEP 1/1] open_url",
+    "[VERIFY] success",
+    "[TASK] COMPLETE",
+    "[TASK] SUCCESS (steps=1 ok, 0 failed, replans=0, latency=193ms)"
+  ],
+  "blocker": "",
+  "evidence_log": [],
+  "pending_confirmation": null,
+  "confirmation_reason": "",
+  "referenced_entity": "",
+  "active_goal": ""
+}

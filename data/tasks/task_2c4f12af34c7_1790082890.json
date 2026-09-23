@@ -1,0 +1,63 @@
+{
+  "task_id": "2c4f12af34c7",
+  "original_request": "stop this music",
+  "normalized_goal": "stop this music",
+  "current_plan": [
+    {
+      "action": "music_stop",
+      "params": {},
+      "description": "Stop the currently playing music"
+    }
+  ],
+  "completed_steps": [
+    {
+      "index": 1,
+      "action": "music_stop",
+      "params": {},
+      "description": "Stop the currently playing music",
+      "status": "completed",
+      "result": "Music stopped.",
+      "verification": "success",
+      "verified": true,
+      "retries": 0,
+      "error": "",
+      "latency_ms": 63.65323066711426,
+      "evidence_source": "unknown",
+      "sensitive_reason": ""
+    }
+  ],
+  "current_step": null,
+  "failed_steps": [],
+  "observed_state": "Window: [chrome] LEO Desktop Assistant Update - Google Chrome\nPage: terminal\nA11y: 0 clickable, 1 nodes (x11_window)\nWindow: LEO Desktop Assistant Update - Google Chrome\nApplication: Chrome (chrome)\nAccessibility: 1 nodes, 0 clickable\n♿ window \"(182) YouTube - Google Chrome\" @(0,0,1920x1068) [FOCUSED] [x11_window]\nSummary: Screen type: terminal | Interactive: buttons: update\nFocused: window '(182) YouTube - Google Chrome'\nClipboard: \"logger\": \"voice.command_listener\", \"message\": \"[CMD-METRICS] frames=17 audio_ms\nBrowser: LEO Desktop Assistant Update",
+  "verification_results": [
+    {
+      "step": 1,
+      "action": "music_stop",
+      "verified": true,
+      "evidence": "Music stopped.",
+      "reason": ""
+    }
+  ],
+  "retry_count": 0,
+  "replan_count": 0,
+  "total_steps": 1,
+  "final_status": "SUCCESS",
+  "plan_version": 1,
+  "started_at": 1790082890.020034,
+  "ended_at": 1790082890.2559817,
+  "artifacts": {},
+  "log": [
+    "[TASK] id=2c4f12af34c7 goal=\"stop this music\"",
+    "[PLAN] v1 steps=1",
+    "[STEP 1/1] music_stop",
+    "[VERIFY] success",
+    "[TASK] COMPLETE",
+    "[TASK] SUCCESS (steps=1 ok, 0 failed, replans=0, latency=236ms)"
+  ],
+  "blocker": "",
+  "evidence_log": [],
+  "pending_confirmation": null,
+  "confirmation_reason": "",
+  "referenced_entity": "",
+  "active_goal": ""
+}

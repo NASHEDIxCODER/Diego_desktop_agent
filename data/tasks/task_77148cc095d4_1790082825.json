@@ -1,0 +1,67 @@
+{
+  "task_id": "77148cc095d4",
+  "original_request": "Click on first music video on my screen",
+  "normalized_goal": "Click on first music video on my screen",
+  "current_plan": [
+    {
+      "action": "play_media",
+      "params": {
+        "query": "Click on first music video on my screen"
+      },
+      "description": "Play Click on first music video on my screen"
+    }
+  ],
+  "completed_steps": [
+    {
+      "index": 1,
+      "action": "play_media",
+      "params": {
+        "query": "Click on first music video on my screen"
+      },
+      "description": "Play Click on first music video on my screen",
+      "status": "completed",
+      "result": "Playing Click on first music video on my screen.",
+      "verification": "success",
+      "verified": true,
+      "retries": 0,
+      "error": "",
+      "latency_ms": 208.85729789733887,
+      "evidence_source": "unknown",
+      "sensitive_reason": ""
+    }
+  ],
+  "current_step": null,
+  "failed_steps": [],
+  "observed_state": "Window: [chrome] (182) YouTube - Google Chrome\nPage: terminal\nA11y: 0 clickable, 1 nodes (x11_window)\nWindow: (182) YouTube - Google Chrome\nApplication: Chrome (chrome)\nAccessibility: 1 nodes, 0 clickable\n♿ window \"(182) YouTube - Google Chrome\" @(0,0,1920x1068) [FOCUSED] [x11_window]\nSummary: Screen type: terminal\nOCR: ale @ o Ogi Ge ® | 9 60 a OB * + craic = = > Enaineesingrazthemalies Al Nuvzizal Analysis Albums\nFocused: window '(182) YouTube - Google Chrome'\nClipboard: \"logger\": \"voice.command_listener\", \"message\": \"[CMD-METRICS] frames=17 audio_ms\nBrowser: (182) YouTube",
+  "verification_results": [
+    {
+      "step": 1,
+      "action": "play_media",
+      "verified": true,
+      "evidence": "Playing Click on first music video on my screen.",
+      "reason": ""
+    }
+  ],
+  "retry_count": 0,
+  "replan_count": 0,
+  "total_steps": 1,
+  "final_status": "SUCCESS",
+  "plan_version": 1,
+  "started_at": 1790082825.0580022,
+  "ended_at": 1790082825.4223633,
+  "artifacts": {},
+  "log": [
+    "[TASK] id=77148cc095d4 goal=\"Click on first music video on my screen\"",
+    "[PLAN] v1 steps=1",
+    "[STEP 1/1] play_media",
+    "[VERIFY] success",
+    "[TASK] COMPLETE",
+    "[TASK] SUCCESS (steps=1 ok, 0 failed, replans=0, latency=364ms)"
+  ],
+  "blocker": "",
+  "evidence_log": [],
+  "pending_confirmation": null,
+  "confirmation_reason": "",
+  "referenced_entity": "",
+  "active_goal": ""
+}

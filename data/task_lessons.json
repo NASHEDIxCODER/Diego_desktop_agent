@@ -59,11 +59,11 @@
    "task_pattern": "open_application",
    "lesson": "firefox launches reliably via desktop_open on this system",
    "evidence": "verified_success",
-   "confidence": 0.25,
+   "confidence": 0.3,
    "timestamp": 1790062219.1475751,
    "source_task_id": "f196156e43d5",
-   "reuse_count": 483,
-   "successes": 224,
+   "reuse_count": 484,
+   "successes": 225,
    "failures": 259
   },
   {
@@ -98,11 +98,11 @@
    "task_pattern": "open_application",
    "lesson": "strategy that worked: desktop_open → desktop_open",
    "evidence": "verified_success",
-   "confidence": 0.15,
+   "confidence": 0.2,
    "timestamp": 1790062219.1469643,
    "source_task_id": "81be4455c9a1",
-   "reuse_count": 60,
-   "successes": 7,
+   "reuse_count": 61,
+   "successes": 8,
    "failures": 53
   },
   {
@@ -124,11 +124,11 @@
    "task_pattern": "open_application",
    "lesson": "no verified steps: No further actions could be planned from the current state.",
    "evidence": "verified_failure",
-   "confidence": 0.2,
+   "confidence": 0.25,
    "timestamp": 1790026701.8624651,
    "source_task_id": "30866d296ee7",
-   "reuse_count": 330,
-   "successes": 202,
+   "reuse_count": 331,
+   "successes": 203,
    "failures": 128
   },
   {
@@ -254,12 +254,12 @@
    "task_pattern": "general",
    "lesson": "strategy that worked: close_app",
    "evidence": "verified_success",
-   "confidence": 0.7,
+   "confidence": 0.55,
    "timestamp": 1789371487.9846258,
    "source_task_id": "39bd58eebdf3",
-   "reuse_count": 0,
+   "reuse_count": 1,
    "successes": 0,
-   "failures": 0
+   "failures": 1
   },
   {
    "id": "a0579a5165",
@@ -384,12 +384,12 @@
    "task_pattern": "general",
    "lesson": "strategy that worked: music_stop",
    "evidence": "verified_success",
-   "confidence": 0.7,
-   "timestamp": 1789374521.6043901,
+   "confidence": 0.45,
+   "timestamp": 1790082890.2589748,
    "source_task_id": "502288aeffee",
-   "reuse_count": 0,
+   "reuse_count": 2,
    "successes": 0,
-   "failures": 0
+   "failures": 2
   },
   {
    "id": "2f4a079fc1",
@@ -436,12 +436,12 @@
    "task_pattern": "general",
    "lesson": "no verified steps: The generated plan contained no executable actions: action 'shutdown' not authorized for this request; action 'get_time' not authorized for this request; action 'notify' not authorized for this reques",
    "evidence": "verified_failure",
-   "confidence": 0.5,
+   "confidence": 0.35,
    "timestamp": 1789904577.4081118,
    "source_task_id": "ab59468d5fb4",
-   "reuse_count": 0,
+   "reuse_count": 1,
    "successes": 0,
-   "failures": 0
+   "failures": 1
   },
   {
    "id": "afbcf95d72",
@@ -462,8 +462,8 @@
    "task_pattern": "open_application",
    "lesson": "strategy that worked: open_url",
    "evidence": "verified_success",
-   "confidence": 0.05,
-   "timestamp": 1789989383.5142562,
+   "confidence": 0.2,
+   "timestamp": 1790082972.6212587,
    "source_task_id": "45e62fb31c78",
    "reuse_count": 10,
    "successes": 3,
@@ -527,12 +527,90 @@
    "task_pattern": "general",
    "lesson": "no verified steps: The generated plan contained no executable actions: action 'get_date' not authorized for this request",
    "evidence": "verified_failure",
-   "confidence": 0.95,
+   "confidence": 0.65,
    "timestamp": 1789988919.9397578,
    "source_task_id": "002601884112",
-   "reuse_count": 25,
+   "reuse_count": 27,
    "successes": 22,
-   "failures": 3
+   "failures": 5
+  },
+  {
+   "id": "92923610cf",
+   "type": "failed_strategy",
+   "task_pattern": "general",
+   "lesson": "no verified steps: re-plan produced no valid new actions",
+   "evidence": "verified_failure",
+   "confidence": 0.5,
+   "timestamp": 1790081072.7060962,
+   "source_task_id": "9e9b87cf881a",
+   "reuse_count": 0,
+   "successes": 0,
+   "failures": 0
+  },
+  {
+   "id": "9672100029",
+   "type": "failed_strategy",
+   "task_pattern": "general",
+   "lesson": "no verified steps: The generated plan contained no executable actions: action 'open_url' not authorized for this request",
+   "evidence": "verified_failure",
+   "confidence": 0.55,
+   "timestamp": 1790081650.7302485,
+   "source_task_id": "c4b4fbbf489f",
+   "reuse_count": 1,
+   "successes": 1,
+   "failures": 0
+  },
+  {
+   "id": "3872777733",
+   "type": "successful_strategy",
+   "task_pattern": "general",
+   "lesson": "strategy that worked: play_media",
+   "evidence": "verified_success",
+   "confidence": 0.55,
+   "timestamp": 1790082825.422969,
+   "source_task_id": "77148cc095d4",
+   "reuse_count": 1,
+   "successes": 0,
+   "failures": 1
+  },
+  {
+   "id": "7c43da1869",
+   "type": "successful_strategy",
+   "task_pattern": "general",
+   "lesson": "strategy that worked: music_status → music_stop",
+   "evidence": "verified_success",
+   "confidence": 0.55,
+   "timestamp": 1790083404.263179,
+   "source_task_id": "3da78869c070",
+   "reuse_count": 1,
+   "successes": 0,
+   "failures": 1
+  },
+  {
+   "id": "cadd6c6d95",
+   "type": "failed_strategy",
+   "task_pattern": "general",
+   "lesson": "click_text failed here (Couldn't find Profile to click) — do not repeat this strategy blindly",
+   "evidence": "verified_failure",
+   "confidence": 0.6,
+   "timestamp": 1790084234.920715,
+   "source_task_id": "428f7f8f9dfc",
+   "reuse_count": 0,
+   "successes": 0,
+   "failures": 0
+  },
+  {
+   "id": "b220cb41b5",
+   "type": "successful_strategy",
+   "task_pattern": "general",
+   "lesson": "strategy that worked: read_screen",
+   "evidence": "verified_success",
+   "confidence": 0.7,
+   "timestamp": 1790084282.6804376,
+   "source_task_id": "5d7823a3a544",
+   "reuse_count": 0,
+   "successes": 0,
+   "failures": 0
   }
  ]
 }

@@ -1,0 +1,29 @@
+{
+  "task_id": "c4b4fbbf489f",
+  "original_request": "Message from telegram",
+  "normalized_goal": "Message from telegram",
+  "current_plan": [],
+  "completed_steps": [],
+  "current_step": null,
+  "failed_steps": [],
+  "observed_state": "",
+  "verification_results": [],
+  "retry_count": 0,
+  "replan_count": 0,
+  "total_steps": 0,
+  "final_status": "FAILED",
+  "plan_version": 0,
+  "started_at": 1790081650.7287257,
+  "ended_at": 1790081650.7288697,
+  "artifacts": {},
+  "log": [
+    "[TASK] id=c4b4fbbf489f goal=\"Message from telegram\"",
+    "[PLAN] v0 rejected — action 'open_url' not authorized for this request"
+  ],
+  "blocker": "The generated plan contained no executable actions: action 'open_url' not authorized for this request",
+  "evidence_log": [],
+  "pending_confirmation": null,
+  "confirmation_reason": "",
+  "referenced_entity": "",
+  "active_goal": ""
+}
