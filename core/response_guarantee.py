@@ -178,9 +178,18 @@ class ResponseGuarantee:
     # ── Response selection ────────────────────────────────
 
     def _select_response(self, result: Any) -> str:
-        """Priority 1: real response. Priority 2: recovery. Priority 3: generic."""
-        # Priority 1: real response from the Brain
+        """Priority 1: Response.speak_text. Priority 2: real response.
+        Priority 3: recovery. Priority 4: generic."""
+        # Priority 1: the single Response object owns the spoken text
+        # (control lines such as `ACTION:` stay in Result.response for the
+        # UI/dispatcher; speak_text is the TTS-safe rendering).
         if result is not None:
+            resp_obj = getattr(result, "response_obj", None)
+            speak = (getattr(resp_obj, "speak_text", "")
+                     if resp_obj is not None else "") or ""
+            if speak and speak.strip():
+                return speak.strip()
+            # Priority 2: real response from the Brain
             response = getattr(result, "response", "") or ""
             if response and response.strip():
                 return response.strip()

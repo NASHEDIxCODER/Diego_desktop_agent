@@ -407,6 +407,7 @@ class StreamingLLM:
         screen_context: Optional[str] = None,
         web_context: Optional[str] = None,
         local_context: Optional[str] = None,
+        length_hint: str = "",
     ) -> AsyncIterator[str]:
         """
         Stream a response as complete sentences.
@@ -419,6 +420,8 @@ class StreamingLLM:
                 or act on "click here" requests.
             web_context: Optional extracted web-search content, injected so
                 the LLM answers from REAL results instead of stale knowledge.
+            length_hint: Optional dynamic response-length guidance derived
+                from the transcript profile (short/medium/long).
 
         Yields:
             Complete sentences as soon as they're available.
@@ -471,6 +474,8 @@ class StreamingLLM:
                 f"\n{local_context}")
         if context:
             prompt_parts.append(f"\nContext:\n{context}")
+        if length_hint:
+            prompt_parts.append(f"\nResponse length: {length_hint}")
         prompt_parts.append(f"\nUser: {user_text}\nDiego:")
         prompt = "\n".join(prompt_parts)
 

@@ -17,6 +17,14 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
 
+from core.response_model import (
+    Response,
+    classify_response_length,
+    format_evidence_context,
+    response_length_instruction,
+    route_knowledge_path,
+)
+
 logger = logging.getLogger(__name__)
 
 # ═══════════════════════════════════════════════════════════════
@@ -94,6 +102,7 @@ class CommandResult:
     speak_immediately: bool = False     # Speak now, verify in background
     followup_response: str = ""         # Spoken after verification completes
     task_status: str = ""               # Closed-loop final status (SUCCESS/FAILED/...)
+    response_obj: Optional[Response] = None  # Single Response driving UI text + TTS speech
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -172,6 +181,12 @@ class AgentBrain:
         self._actions_dispatched: int = 0
         self._actions_verified: int = 0
         self._actions_failed: int = 0
+
+        # Single-Response threading (2026-09-24): per-turn metadata
+        # gathered while the reply is generated, consumed by
+        # process_command() to build the Response attached to CommandResult.
+        self._last_response_meta: Dict[str, Any] = {}
+        self._last_rag_pack: Optional[Any] = None
 
     # ── Wiring ─────────────────────────────────────────────────
 
@@ -294,6 +309,61 @@ class AgentBrain:
             self._pipeline_timings[stage] += ms
 
     async def process_command(self, text: str,
+                              stt_confidence: Optional[float] = None,
+                              audio_duration_ms: Optional[float] = None) -> CommandResult:
+        """
+        Public entry point: run the full pipeline, then attach the single
+        Response object that drives the UI text and the TTS speech.
+
+        The pipeline itself (flow 0-7) lives in ``_execute_pipeline``;
+        everything the turn produced — response mode, source, grounded
+        evidence, cheapest-path route and per-stage timings — is collected
+        from ``_last_response_meta`` into ``CommandResult.response_obj``.
+        """
+        self._last_response_meta = {}
+        self._last_rag_pack = None
+        result = await self._execute_pipeline(
+            text, stt_confidence, audio_duration_ms)
+        try:
+            result.response_obj = self._build_response(result)
+            resp = result.response_obj
+            logger.info(
+                "[Brain] Response route=%s mode=%s source=%s grounded=%s "
+                "evidence=%d profile=%s",
+                resp.metadata.get("route", "-"),
+                resp.response_mode, resp.source, resp.grounded,
+                len(resp.evidence),
+                resp.metadata.get("profile", "-"),
+            )
+        except Exception as e:
+            logger.debug("[Brain] Response object build skipped: %s", e)
+        return result
+
+    def _build_response(self, result: CommandResult) -> Response:
+        """Assemble the single Response for this turn.
+
+        ``text`` is the on-screen reply (may contain ACTION control lines);
+        ``speak_text`` is the TTS rendering (defaults to ``text``, may be
+        overridden per branch); the rest is observability metadata.
+        """
+        meta = dict(self._last_response_meta)
+        text = result.response or ""
+        speak_text = meta.pop("speak_text", "") or text
+        evidence = list(meta.pop("evidence", []) or [])
+        meta.setdefault("route", "pipeline")
+        meta.setdefault("profile", classify_response_length(text))
+        meta["timings"] = dict(self._pipeline_timings)
+        return Response(
+            text=text,
+            speak_text=speak_text,
+            response_mode=str(meta.pop("response_mode", "direct")),
+            source=str(meta.pop("source", "pipeline")),
+            grounded=bool(meta.pop("grounded", False)),
+            evidence=evidence,
+            metadata=meta,
+        )
+
+    async def _execute_pipeline(self, text: str,
                               stt_confidence: Optional[float] = None,
                               audio_duration_ms: Optional[float] = None) -> CommandResult:
         """
@@ -1881,6 +1951,15 @@ class AgentBrain:
         Uses the streaming LLM for complex commands. For simple
         commands, uses the decision response or a default.
         """
+        # Per-turn Response metadata starts fresh here (the public
+        # process_command() wrapper also resets it before the pipeline).
+        self._last_response_meta = {}
+        self._last_rag_pack = None
+        # Direct callers (tests/tools) may invoke _generate_response
+        # without the pipeline's per-turn reset — never write timing keys
+        # into the class-level default dict.
+        if "_pipeline_timings" not in self.__dict__:
+            self._pipeline_timings = {}
         # If we already have a response from the decision, use it
         if result.response:
             return result.response
@@ -2002,11 +2081,23 @@ class AgentBrain:
                         and not live_request and not allow_paths):
                     answer = synthesize_local_answer(text, k_results)
                     if answer:
+                        spoken = sanitize_spoken(answer, allow_paths=False)
                         logger.info(
                             "[Brain] Answered from LOCAL_KNOWLEDGE "
                             "(synthesized, %d chars, %d evidence blocks)",
-                            len(answer), len(k_results))
-                        return sanitize_spoken(answer, allow_paths=False)
+                            len(spoken), len(k_results))
+                        # CHEAPEST PATH: deterministic guard answered it —
+                        # zero LLM calls. Recorded on the single Response
+                        # for routing observability.
+                        self._last_response_meta.update({
+                            "response_mode": "direct",
+                            "source": "local_quick_answer",
+                            "grounded": True,
+                            "evidence": list(k_results),
+                            "route": route_knowledge_path(guard_hit=True),
+                            "speak_text": spoken,
+                        })
+                        return spoken
                 local_ctx = knowledge_service.context_for_llm(text) or ""
                 # ── GROUNDED RAG LAYER (hybrid activation gate) ──
                 # Knowledge questions the fast synthesis shortcut did not
@@ -2020,25 +2111,66 @@ class AgentBrain:
                 rag_response = await self._rag_structured_response(
                     text, screen_ctx, web_ctx)
                 if rag_response is not None:
+                    # CLARIFICATION / validated ACTION verdict — already the
+                    # final response (Response metadata set inside the RAG
+                    # layer).
                     return rag_response
+                # ── RAG AS EVIDENCE, NEVER AS THE FINAL ANSWER ──
+                # On ANSWER/ABSTAIN the orchestrator pack flows back here:
+                # relevance-ranked evidence replaces the generic local
+                # context so the streaming LLM below generates the ONE
+                # grounded reply (single Response drives UI and TTS).
+                rag_pack = self._last_rag_pack
+                if rag_pack is not None:
+                    rag_evidence = list(
+                        getattr(rag_pack, "retrieved_evidence", []) or [])
+                    rag_ctx = format_evidence_context(rag_evidence)
+                    if rag_ctx:
+                        local_ctx = rag_ctx
+                        self._last_response_meta["grounded"] = True
+                        self._last_response_meta["evidence"] = rag_evidence
+                        self._last_response_meta.setdefault(
+                            "route",
+                            route_knowledge_path(
+                                evidence_count=len(rag_evidence)))
             except LookupError:
                 logger.debug("[Brain] local knowledge skipped (small-talk "
                              "transcript): '%s'", text[:50])
             except Exception as e:
                 logger.debug("[Brain] local knowledge retrieval skipped: %s", e)
+            # ── DYNAMIC RESPONSE LENGTH ──
+            # Profile the transcript once: the hint rides with the
+            # grounded context so the ONE generated reply matches the
+            # question complexity (short factoid → 1-2 sentences;
+            # explain/compare/why → structured longer answer).
+            profile = classify_response_length(text)
+            self._last_response_meta.setdefault("profile", profile)
+            length_hint = response_length_instruction(profile)
+            t_gen = time.perf_counter()
             try:
                 async for sentence in streaming_llm.generate(
-                        text, screen_context=screen_ctx,
+                        text, length_hint=length_hint,
+                        screen_context=screen_ctx,
                         web_context=web_ctx,
                         local_context=local_ctx or None):
                     sentences.append(sentence)
             except TypeError:
-                # Backward compatibility: fakes/stubs without the
-                # local_context parameter keep working.
-                async for sentence in streaming_llm.generate(
-                        text, screen_context=screen_ctx,
-                        web_context=web_ctx):
-                    sentences.append(sentence)
+                # Backward compatibility: fakes/stubs without the newer
+                # keyword parameters keep working — degrade grounding
+                # gracefully instead of crashing the turn.
+                try:
+                    async for sentence in streaming_llm.generate(
+                            text, screen_context=screen_ctx,
+                            web_context=web_ctx,
+                            local_context=local_ctx or None):
+                        sentences.append(sentence)
+                except TypeError:
+                    async for sentence in streaming_llm.generate(
+                            text, screen_context=screen_ctx,
+                            web_context=web_ctx):
+                        sentences.append(sentence)
+            self._pipeline_timings["generation_ms"] = (
+                (time.perf_counter() - t_gen) * 1000.0)
             response = (" ".join(sentences) if sentences
                         else "I'm not sure how to help with that.")
             # ── SPOKEN RESPONSE GUARD ──
@@ -2052,9 +2184,22 @@ class AgentBrain:
                         response, allow_paths=allow_paths)
             except Exception:
                 pass
+            # Single-Response metadata for this generated turn.
+            self._last_response_meta.setdefault("response_mode", "direct")
+            self._last_response_meta.setdefault(
+                "route",
+                route_knowledge_path(
+                    evidence_count=len(
+                        self._last_response_meta.get("evidence", []) or [])))
+            if "source" not in self._last_response_meta:
+                self._last_response_meta["source"] = (
+                    "rag" if self._last_response_meta.get("grounded")
+                    else "llm")
+            self._last_response_meta.setdefault("speak_text", response)
             return response
         except Exception as e:
             logger.warning("[Brain] LLM response failed: %s", e)
+            self._last_response_meta.setdefault("source", "error")
             return "I'm having trouble with that right now."
         finally:
             # ── INDEXER INTERACTION RESUME (M-H) ──
@@ -2085,7 +2230,12 @@ class AgentBrain:
         an ACTION result is validated against the capability registry and
         emitted through the EXISTING ``ACTION: {json}`` channel that the
         capability router / dispatcher already consumes.
+
+        ANSWER verdicts are EVIDENCE only: the pack is stashed on
+        ``self._last_rag_pack`` and None is returned so the caller grounds
+        the streaming LLM on the ranked evidence (never RAG-as-answer).
         """
+        self._last_rag_pack = None
         try:
             from agent.rag_orchestrator import (
                 RAGOrchestrator,
@@ -2103,7 +2253,6 @@ class AgentBrain:
             if not should_activate(text):
                 return None
             from knowledge.service import knowledge_service
-            from knowledge.presentation import sanitize_spoken
 
             async def _llm(prompt: str) -> str:
                 # Reuse the EXISTING streaming LLM seam — never a second
@@ -2129,20 +2278,59 @@ class AgentBrain:
                 # Live perception answers this; index content only grounded
                 # the prompt at lower priority.
                 return None
+            # The pack is the evidence provider for the caller: ANSWER /
+            # ABSTAIN fall through with it so _generate_response can ground
+            # the streaming LLM on the relevance-ranked evidence.
+            self._last_rag_pack = outcome.pack
+            self._pipeline_timings["rag_total_ms"] = float(
+                outcome.timings.get("total_ms", 0.0) or 0.0)
+            self._pipeline_timings["rag_llm_ms"] = float(
+                outcome.timings.get("llm_total_ms", 0.0) or 0.0)
             result = outcome.result or {}
             rtype = result.get("type")
             if rtype == "ANSWER":
                 answer = str(result.get("answer") or "").strip()
                 if not answer:
                     return None
+                # RAG VERDICT ≠ FINAL ANSWER: the structured answer only
+                # certifies that grounded evidence exists. The ranked
+                # evidence flows to _generate_response, which feeds it to
+                # streaming_llm as local_context — the streaming LLM writes
+                # the single reply that drives UI text and TTS speech.
+                evidence = list(
+                    getattr(outcome.pack, "retrieved_evidence", []) or [])
+                self._last_response_meta.update({
+                    "rag_verdict": "ANSWER",
+                    "response_mode": "direct",
+                    "source": "rag",
+                    "grounded": bool(evidence),
+                    "evidence": evidence,
+                    "route": route_knowledge_path(
+                        rag_verdict="ANSWER",
+                        evidence_count=len(evidence)),
+                })
                 logger.info(
-                    "[RAG] brain ANSWER evidence=%d total=%.1fms",
-                    len(getattr(outcome.pack, "retrieved_evidence", [])
-                         or []),
+                    "[RAG] brain ANSWER→evidence evidence=%d answer_chars=%d "
+                    "total=%.1fms",
+                    len(evidence), len(answer),
                     float(outcome.timings.get("total_ms", 0.0)))
-                return sanitize_spoken(answer, allow_paths=False)
+                return None
             if rtype == "CLARIFICATION":
                 question = str(result.get("question") or "").strip()
+                if question:
+                    evidence = list(getattr(
+                        outcome.pack, "retrieved_evidence", []) or [])
+                    self._last_response_meta.update({
+                        "rag_verdict": "CLARIFICATION",
+                        "response_mode": "clarification",
+                        "source": "rag",
+                        "grounded": bool(evidence),
+                        "evidence": evidence,
+                        "route": route_knowledge_path(
+                            rag_verdict="CLARIFICATION",
+                            evidence_count=len(evidence)),
+                        "speak_text": question,
+                    })
                 return question or None
             if rtype == "ACTION":
                 allowed = list(
@@ -2151,6 +2339,8 @@ class AgentBrain:
                     logger.info(
                         "[RAG] brain ACTION refused (capability gate): %s",
                         result.get("capability"))
+                    self._last_response_meta["rag_verdict"] = (
+                        "ACTION_REFUSED")
                     return None  # never execute an unvalidated capability
                 line = "ACTION: " + json.dumps({
                     "action": result["capability"],
@@ -2164,11 +2354,32 @@ class AgentBrain:
                 logger.info("[RAG] brain ACTION capability=%s (confirm=%s)",
                             result["capability"],
                             result.get("requires_confirmation"))
+                # Response threading: ``text`` keeps the byte-compatible
+                # control line for the dispatcher/UI; ``speak_text`` is the
+                # TTS-safe goal only (speech never reads raw JSON).
+                self._last_response_meta.update({
+                    "rag_verdict": "ACTION",
+                    "response_mode": "action",
+                    "source": "rag",
+                    "grounded": True,
+                    "evidence": list(getattr(
+                        outcome.pack, "retrieved_evidence", []) or []),
+                    "route": route_knowledge_path(rag_verdict="ACTION"),
+                    "speak_text": goal,
+                })
                 return f"{goal}\n{line}"
             # ABSTAIN / unknown type → fall through to the generic LLM path
-            # with the bounded local_ctx computed by the caller.
+            # with the bounded local_ctx computed by the caller (the pack's
+            # evidence, when present, still grounds that generation).
             logger.debug("[Brain] RAG fall-through type=%s reason=%s",
                          rtype, result.get("reason"))
+            evidence_count = len(
+                getattr(outcome.pack, "retrieved_evidence", []) or [])
+            self._last_response_meta.setdefault(
+                "rag_verdict", str(rtype or "ABSTAIN"))
+            self._last_response_meta.setdefault(
+                "route",
+                route_knowledge_path(evidence_count=evidence_count))
             return None
         except Exception as e:
             logger.debug("[Brain] RAG structured layer skipped: %s", e)

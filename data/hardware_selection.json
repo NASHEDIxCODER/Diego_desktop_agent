@@ -10,44 +10,32 @@
     "is_camera_associated_audio": false,
     "runtime_index": 5,
     "source": "auto",
-<<<<<<< HEAD
-    "saved_at": 1789625748.361255
-=======
-    "saved_at": 1790086036.1261415
->>>>>>> experiment
+    "saved_at": 1790224327.5956511
   },
   "output": {
-    "hardware_identity": "audio|7505d64a54e0",
-    "friendly_name": "default",
-    "manufacturer": "",
-    "model": "default",
-    "family_id": "family:7505d64a54e0",
-    "raw_name": "default",
-    "category": "VIRTUAL",
-    "is_camera_associated_audio": false,
-    "runtime_index": 10,
-    "source": "auto",
-<<<<<<< HEAD
-    "saved_at": 1789625723.5998566
-=======
-    "saved_at": 1790086012.0611286
->>>>>>> experiment
-  },
-  "camera": {
-    "hardware_identity": "/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._USB2.0_HD_UVC_WebCam-video-index0",
-    "friendly_name": "USB2.0 HD UVC WebCam",
-    "manufacturer": "Sonix Technology Co., Ltd.",
-    "model": "USB2.0 HD UVC WebCam",
-    "family_id": "family:/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._USB2.0_HD_UVC_WebCam-video-index0",
-    "raw_name": "USB2.0 HD UVC WebCam: USB2.0 HD",
+    "hardware_identity": "alsa:generic 1|19feb23cc73c",
+    "friendly_name": "HD-Audio Generic ALC256 \u2014 Speakers",
+    "manufacturer": "snd_hda_intel",
+    "model": "Generic_1",
+    "family_id": "family:a9ad1b675c44",
+    "raw_name": "HD-Audio Generic: ALC256 Analog (hw:2,0)",
     "category": "PHYSICAL",
     "is_camera_associated_audio": false,
-    "runtime_index": 2,
+    "runtime_index": 5,
     "source": "auto",
-<<<<<<< HEAD
-    "saved_at": 1789625723.6003497
-=======
-    "saved_at": 1790086012.0614705
->>>>>>> experiment
+    "saved_at": 1790224289.6987205
+  },
+  "camera": {
+    "hardware_identity": "/dev/v4l/by-id/usb-BC-250603-ZW_ZEB_LIVE_PRO-video-index0",
+    "friendly_name": "ZEB LIVE PRO",
+    "manufacturer": "BC-250603-ZW",
+    "model": "ZEB LIVE PRO",
+    "family_id": "family:/dev/v4l/by-id/usb-BC-250603-ZW_ZEB_LIVE_PRO-video-index0",
+    "raw_name": "ZEB LIVE PRO: ZEB LIVE PRO",
+    "category": "PHYSICAL",
+    "is_camera_associated_audio": false,
+    "runtime_index": 0,
+    "source": "auto",
+    "saved_at": 1790224289.6994615
   }
 }

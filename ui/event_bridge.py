@@ -196,8 +196,13 @@ class EventBridge(QObject):
     def emit_speaking(self) -> None:
         self.emit(UIEvent(UIEventType.SPEAKING))
 
-    def emit_response(self, text: str) -> None:
-        self.emit(UIEvent(UIEventType.RESPONSE, {"text": text}))
+    def emit_response(self, text: str, meta: dict | None = None) -> None:
+        """Emit the final reply; optional meta carries the Response's
+        mode/source/grounded/route for UI observability."""
+        payload: dict = {"text": text}
+        if meta:
+            payload["meta"] = dict(meta)
+        self.emit(UIEvent(UIEventType.RESPONSE, payload))
 
     def emit_response_chunk(self, chunk: str) -> None:
         self.emit(UIEvent(UIEventType.RESPONSE_CHUNK, {"chunk": chunk}))
@@ -461,9 +466,24 @@ def wire_brain_events(bridge: EventBridge) -> None:
             bridge.emit_thinking()
             try:
                 result = await original_process(text, **kwargs)
-                # Emit the final response for UI display
-                if result.response:
-                    bridge.emit_response(result.response)
+                # Emit the final response for UI display — the single
+                # Response object owns the on-screen text (falls back to
+                # the raw string for results built without one).
+                resp_obj = getattr(result, "response_obj", None)
+                ui_text = ((getattr(resp_obj, "text", "") or "")
+                           if resp_obj is not None else "")
+                ui_text = ui_text or (result.response or "")
+                if ui_text:
+                    meta = None
+                    if resp_obj is not None:
+                        meta = {
+                            "mode": resp_obj.response_mode,
+                            "source": resp_obj.source,
+                            "grounded": resp_obj.grounded,
+                            "route": (resp_obj.metadata or {}).get(
+                                "route", ""),
+                        }
+                    bridge.emit_response(ui_text, meta=meta)
                 return result
             except Exception as e:
                 bridge.emit_error("I had trouble processing that.")
