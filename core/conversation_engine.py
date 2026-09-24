@@ -44,6 +44,7 @@ RUNTIME DIAGNOSTICS (every state transition):
 """
 
 import asyncio
+import inspect
 import logging
 import re
 import threading
@@ -318,26 +319,17 @@ class ConversationEngine:
 
           1. rearm_between_turns(): gate OPEN + drain request (consumed by
              the live streaming loop) + eager VAD reset,
-          2. drain stale STT events produced during the turn (TTS / action
-             contamination would otherwise become a phantom interruption
-             or a phantom command),
-          3. refresh the between-turns silence deadline.
+          2. refresh the between-turns silence deadline.
+
+        The shared event queue is intentionally not drained here. It is fed
+        by the asynchronous STT pump, and a valid follow-up utterance may
+        arrive while this turn is being completed. The listener's drain
+        request is responsible for clearing stale events at the source.
         """
         try:
             command_listener.rearm_between_turns()
         except Exception as e:
             logger.warning("[LISTEN] rearm_between_turns failed: %s", e)
-
-        drained = 0
-        while True:
-            try:
-                events.get_nowait()
-                drained += 1
-            except asyncio.QueueEmpty:
-                break
-        if drained:
-            logger.info("[LISTEN] Drained %d stale STT events "
-                        "(TTS contamination)", drained)
 
         self._session_deadline = time.monotonic() + CONVERSATION_TIMEOUT_S
 
@@ -1118,6 +1110,12 @@ class ConversationEngine:
                             "[LISTEN] Turn failed — endless session stays "
                             "open: %s", e)
                         try:
+                            # Recovery speech is a SPEAK phase.  The normal
+                            # turn path reaches it through THINK → SPEAK, so
+                            # do the same before guarded failure speech;
+                            # otherwise the final SPEAK → LISTEN recovery is
+                            # an invalid THINK → LISTEN transition.
+                            self._set_state(EngineState.SPEAK)
                             await self._speak_failure_response(
                                 "MISUNDERSTOOD")
                         except Exception as speak_err:
@@ -1214,14 +1212,23 @@ class ConversationEngine:
         print("\n  Listening for wake word...\n")
 
     async def _stt_event_pump(
-        self, stream: AsyncIterator[UtteranceEvent],
+        self, stream: AsyncIterator[UtteranceEvent] | Any,
         events: "asyncio.Queue[UtteranceEvent]",
     ) -> None:
         try:
-            async for ev in stream:
-                if not self._running:
-                    break
-                events.put_nowait(ev)
+            # Some command-listener implementations expose streaming as an
+            # async generator, while older/test implementations return a
+            # single event from an awaitable. Normalize both at this boundary
+            # so the session loop has one event-stream contract.
+            source = await stream if inspect.isawaitable(stream) else stream
+            if hasattr(source, "__aiter__"):
+                async for ev in source:
+                    if not self._running:
+                        break
+                    events.put_nowait(ev)
+            elif isinstance(source, UtteranceEvent):
+                if self._running:
+                    events.put_nowait(source)
         except asyncio.CancelledError:
             pass
         except Exception as e:

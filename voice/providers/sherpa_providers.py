@@ -16,11 +16,10 @@ Providers:
 
 from __future__ import annotations
 
+import importlib
 import logging
 import re
 from typing import Optional, Tuple
-
-import sherpa_onnx
 
 from voice.providers.sherpa_base import (
     SherpaOnnxProvider,
@@ -31,6 +30,12 @@ logger = logging.getLogger(__name__)
 
 
 # ── Qwen3-ASR output format ───────────────────────────────────────────────
+
+
+def _load_sherpa_onnx():
+    """Import the optional native binding only when a recognizer is built."""
+    return importlib.import_module("sherpa_onnx")
+
 # The Qwen3-ASR export is a chat model, so the decoder can emit its
 # chat-template preamble alongside the text:
 #
@@ -139,6 +144,7 @@ class Qwen3ASR17BProvider(_Qwen3ASROutputMixin, SherpaOnnxProvider):
     ]
 
     def _build_recognizer(self):
+        sherpa_onnx = _load_sherpa_onnx()
         return sherpa_onnx.OfflineRecognizer.from_qwen3_asr(
             conv_frontend=str(self._model_dir / "conv_frontend.onnx"),
             encoder=str(self._model_dir / "encoder.int8.onnx"),
@@ -176,6 +182,7 @@ class Qwen3ASRProvider(_Qwen3ASROutputMixin, SherpaOnnxProvider):
     ]
 
     def _build_recognizer(self):
+        sherpa_onnx = _load_sherpa_onnx()
         return sherpa_onnx.OfflineRecognizer.from_qwen3_asr(
             conv_frontend=str(self._model_dir / "conv_frontend.onnx"),
             encoder=str(self._model_dir / "encoder.int8.onnx"),
@@ -207,6 +214,7 @@ class ParakeetProvider(SherpaOnnxProvider):
     file_patterns = ["model.int8.onnx", "tokens.txt"]
 
     def _build_recognizer(self):
+        sherpa_onnx = _load_sherpa_onnx()
         return sherpa_onnx.OfflineRecognizer.from_nemo_ctc(
             model=str(self._model_dir / "model.int8.onnx"),
             tokens=str(self._model_dir / "tokens.txt"),
@@ -232,6 +240,7 @@ class ZipformerStreamProvider(StreamingSherpaOnnxProvider):
     ]
 
     def _build_recognizer(self):
+        sherpa_onnx = _load_sherpa_onnx()
         recognizer = sherpa_onnx.OnlineRecognizer.from_transducer(
             tokens=str(self._model_dir / "tokens.txt"),
             encoder=str(self._model_dir / "encoder-epoch-99-avg-1-chunk-16-left-128.int8.onnx"),
@@ -257,6 +266,7 @@ class FireRedASRProvider(SherpaOnnxProvider):
     file_patterns = ["model.int8.onnx", "tokens.txt"]
 
     def _build_recognizer(self):
+        sherpa_onnx = _load_sherpa_onnx()
         return sherpa_onnx.OfflineRecognizer.from_fire_red_asr_ctc(
             model=str(self._model_dir / "model.int8.onnx"),
             tokens=str(self._model_dir / "tokens.txt"),
@@ -275,6 +285,7 @@ class SenseVoiceProvider(SherpaOnnxProvider):
     file_patterns = ["model.int8.onnx", "tokens.txt"]
 
     def _build_recognizer(self):
+        sherpa_onnx = _load_sherpa_onnx()
         return sherpa_onnx.OfflineRecognizer.from_sense_voice(
             tokens=str(self._model_dir / "tokens.txt"),
             model=str(self._model_dir / "model.int8.onnx"),

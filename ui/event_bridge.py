@@ -397,6 +397,37 @@ def wire_event_bus(bridge: EventBridge) -> None:
                 bridge.emit_replanning()
             elif etype == "observation:completed":
                 bridge.emit_observing()
+            # Phase 25: dotted task-lifecycle events published by
+            # agent/task_state.py (TaskState._emit_event) on the same bus.
+            # The runner is the live source of truth for task progress,
+            # so its events must reach the status bar too.
+            elif etype == "task.started":
+                bridge.emit_executing(
+                    f"plan accepted ({event.data.get('steps', 0)} steps)")
+            elif etype == "task.step.started":
+                bridge.emit_executing(str(event.data.get("action") or ""))
+            elif etype == "task.step.completed":
+                bridge.emit_observing()
+            elif etype in ("task.step.failed", "task.verification.failed"):
+                bridge.emit_error(str(event.data.get("reason") or
+                                      "Step verification failed"))
+            elif etype == "task.retry":
+                bridge.emit_executing(
+                    f"retry {event.data.get('retry', '')} "
+                    f"{event.data.get('action') or ''}".strip())
+            elif etype in ("task.replan", "task.plan_adapted"):
+                bridge.emit_replanning()
+            elif etype == "task.completed":
+                bridge.emit_verifying()
+            elif etype == "task.failed":
+                bridge.emit_error(str(event.data.get("blocker") or
+                                      "Task failed"))
+            elif etype == "task.cancelled":
+                bridge.emit_idle()
+            elif etype in ("task.needs_confirmation", "task.needs_input"):
+                bridge.emit_error(str(event.data.get("reason") or
+                                      event.data.get("blocker") or
+                                      "Task needs your input"))
 
         # Register for all events (wildcard) and filter
         bus.on("*", on_event)

@@ -870,7 +870,9 @@ class TaskRunner:
                 if isinstance(value, str) and len(value) > 160:
                     value = value[:160] + "…"
                 payload[key] = value
-            await bus.emit(event_type, data=payload, source="task_runner")
+            # Phase 25: single source namespace ("agent") — the
+            # task runner is one of several agents on this bus.
+            await bus.emit(event_type, data=payload, source="agent")
         except Exception as e:
             logger.debug("[TaskRunner] lifecycle event '%s' not emitted: %s",
                          event_type, e)
